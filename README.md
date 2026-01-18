@@ -9,6 +9,7 @@
 | doc-writer | 写文档时自动触发 | 定义文档输出规范 |
 | doc-reader | `/read-doc` 手动触发 | 定义文档搜索读取规范 |
 | git-commit | 提交时自动触发 | Conventional Commits 规范 |
+| zentao-sync | `/zentao-sync` 手动触发 | 禅道任务同步到 Obsidian |
 
 ## 安装
 
@@ -66,6 +67,24 @@ docs: 更新API文档 #0000
 ```
 
 Type 类型：`feat` | `hotfix` | `docs` | `style` | `refactor` | `perf` | `test` | `chore` | `revert`
+
+### 禅道同步
+
+从禅道同步任务/Bug 自动创建 Obsidian 任务文档：
+
+```bash
+/zentao-sync T1234    # 同步任务
+/zentao-sync B5678    # 同步 Bug
+```
+
+**环境变量配置**（可选，用于自动登录）：
+
+```bash
+export ZENTAO_USER="your_username"
+export ZENTAO_PASSWORD="your_password"
+```
+
+未配置时将打开浏览器，需手动登录。
 
 ## 配置覆盖
 
