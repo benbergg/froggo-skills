@@ -2,8 +2,17 @@
   "name": "froggo-skills",
   "version": "1.0.0",
   "description": "个人工作流增强技能：文档管理、Git 提交规范等",
-  "author": "lg",
+  "author": {
+    "name": "benbergg"
+  },
+  "license": "MIT",
   "repository": "https://github.com/benbergg/froggo-skills",
-  "keywords": ["documentation", "git", "workflow"],
-  "license": "MIT"
+  "keywords": [
+    "claude-skill",
+    "claude-code",
+    "documentation",
+    "git",
+    "workflow",
+    "obsidian"
+  ]
 }
