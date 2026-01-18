@@ -1,6 +1,6 @@
 # froggo-skills
 
-个人工作流增强技能，用于 Claude Code。
+开发人员工作流增强技能，用于 Claude Code。
 
 ## 技能列表
 
@@ -12,20 +12,23 @@
 
 ## 安装
 
-通过 GitHub URL 安装：
+在 Claude Code 中使用 `/plugin` 命令安装：
 
 ```bash
-claude plugins add github:benbergg/froggo-skills
+# 1. 添加 marketplace
+/plugin marketplace add benbergg/froggo-skills
+
+# 2. 安装插件
+/plugin install froggo-skills@froggo-skills
+
+# 3. 重启 Claude Code 生效
 ```
 
-或在 `~/.claude/settings.json` 中配置：
+卸载：
 
-```json
-{
-  "plugins": [
-    "github:benbergg/froggo-skills"
-  ]
-}
+```bash
+/plugin uninstall froggo-skills
+/plugin marketplace remove froggo-skills
 ```
 
 ## 使用
