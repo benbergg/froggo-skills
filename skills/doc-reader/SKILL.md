@@ -1,6 +1,6 @@
 ---
 name: doc-reader
-description: "手动触发：通过 /read-doc 命令从知识库搜索和读取文档"
+description: "自动触发：当需要查找需求文档、设计文档、任务文档、开发计划时自动从知识库搜索；手动触发：通过 /read-doc 命令搜索"
 ---
 
 # 文档读取规范

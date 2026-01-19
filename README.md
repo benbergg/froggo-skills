@@ -7,9 +7,21 @@
 | 技能 | 触发方式 | 说明 |
 |------|----------|------|
 | doc-writer | 写文档时自动触发 | 定义文档输出规范 |
-| doc-reader | `/read-doc` 手动触发 | 定义文档搜索读取规范 |
+| doc-reader | 自动 + `/read-doc` | 知识库文档搜索读取 |
 | git-commit | 提交时自动触发 | Conventional Commits 规范 |
 | zentao-sync | `/zentao-sync` 手动触发 | 禅道任务同步到 Obsidian |
+| lib-docs | 查询库文档时自动触发 | 使用 Context7 获取最新文档 |
+| code-search | 搜索代码时自动触发 | 使用 Claude Context 语义搜索 |
+| session-context | 需要历史上下文时触发 | 搜索会话历史恢复上下文 |
+
+### MCP 依赖
+
+新增的搜索技能依赖以下 MCP 服务：
+
+| MCP | 技能 | 说明 |
+|-----|------|------|
+| context7 | lib-docs | 获取库/框架官方文档 |
+| claude-context | code-search, session-context | 代码语义搜索、会话历史搜索 |
 
 ## 安装
 
