@@ -1,6 +1,6 @@
 ---
 name: doc-writer
-description: "自动触发：当需要创建或保存文档时，按规范输出到指定目录"
+description: "自动触发：当创建或保存需求、设计、任务、计划、周报、KPR、技术笔记、API 文档时，按规范输出到知识库对应目录"
 ---
 
 # 文档写入规范
@@ -27,6 +27,7 @@ description: "自动触发：当需要创建或保存文档时，按规范输出
 | 周报 | `05-Reports/weekly/` | `YYYY-WXX.md` | weekly.md |
 | KPR | `05-Reports/KPR/` | `YYYY-QX-KPR.md` | kpr.md |
 | 技术笔记 | `07-Tech/` | `yyyyMMdd-主题-描述.md` | tech-note.md |
+| API文档 | `07-Tech/` | `yyyyMMdd-API-名称.md` | api.md |
 
 ### 命名说明
 
@@ -85,6 +86,7 @@ deployed: dev
 3. 用户要求创建开发计划
 4. 用户要求创建技术笔记
 5. 用户要求创建周报或 KPR
+6. 用户要求创建 API 文档
 
 ## 配置覆盖
 

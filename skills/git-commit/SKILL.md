@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: "提交代码时自动应用：确保提交信息符合 Conventional Commits 规范"
+description: "自动触发：当执行 git commit、提交代码、创建提交时，确保提交信息符合 Conventional Commits 规范"
 ---
 
 # Git 提交规范
