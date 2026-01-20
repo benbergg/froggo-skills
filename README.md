@@ -2,21 +2,42 @@
 
 开发人员工作流增强技能，用于 Claude Code。
 
+## 架构说明
+
+本插件包含两类组件：
+
+```
+froggo-skills/
+├── skills/          # 技能（自动或手动触发的工作流规范）
+│   ├── doc-reader/
+│   ├── doc-writer/
+│   ├── git-commit/
+│   ├── zentao-sync/
+│   ├── lib-docs/
+│   ├── code-search/
+│   └── session-context/
+└── commands/        # 命令（用户入口，调用对应 skill）
+    ├── read-doc.md   → doc-reader
+    ├── write-doc.md  → doc-writer
+    └── zentao-sync.md → zentao-sync
+```
+
+**Skills**：定义工作流规范，可自动或手动触发
+**Commands**：用户命令入口（`/xxx`），调用对应 skill 执行
+
 ## 技能列表
 
-| 技能 | 触发方式 | 说明 |
-|------|----------|------|
-| doc-writer | 写文档时自动触发 | 定义文档输出规范 |
-| doc-reader | 自动 + `/read-doc` | 知识库文档搜索读取 |
-| git-commit | 提交时自动触发 | Conventional Commits 规范 |
-| zentao-sync | `/zentao-sync` 手动触发 | 禅道任务同步到 Obsidian |
-| lib-docs | 查询库文档时自动触发 | 使用 Context7 获取最新文档 |
-| code-search | 搜索代码时自动触发 | 使用 Claude Context 语义搜索 |
-| session-context | 需要历史上下文时触发 | 搜索会话历史恢复上下文 |
+| 技能 | 触发方式 | 命令 | 说明 |
+|------|----------|------|------|
+| doc-reader | 自动 | `/read-doc` | 从知识库搜索读取文档 |
+| doc-writer | 自动 | `/write-doc` | 按规范输出文档到知识库 |
+| git-commit | 自动 | - | Conventional Commits 提交规范 |
+| zentao-sync | 手动 | `/zentao-sync` | 禅道任务同步到 Obsidian |
+| lib-docs | 自动 | - | 使用 Context7 获取库文档 |
+| code-search | 自动 | - | Claude Context 代码语义搜索 |
+| session-context | 手动/自动 | - | 搜索会话历史恢复上下文 |
 
 ### MCP 依赖
-
-新增的搜索技能依赖以下 MCP 服务：
 
 | MCP | 技能 | 说明 |
 |-----|------|------|

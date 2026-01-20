@@ -1,6 +1,6 @@
 ---
 name: code-search
-description: "自动触发：当需要在代码库中搜索功能实现、查找函数/类/模块、探索代码结构时，优先使用 Claude Context 语义搜索"
+description: "自动触发：在代码库中搜索功能实现或探索代码结构时，使用 Claude Context 语义搜索"
 ---
 
 # 代码语义搜索规范

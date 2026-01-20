@@ -1,6 +1,6 @@
 ---
 name: session-context
-description: "手动/自动触发：当需要恢复历史会话上下文（如重启后恢复调试现场）、查找之前讨论过的方案时，使用 Claude Context 搜索会话历史"
+description: "手动/自动触发：恢复历史会话上下文或查找之前讨论的方案时，使用 Claude Context 搜索会话历史"
 ---
 
 # 会话上下文恢复规范
