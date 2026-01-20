@@ -2,7 +2,7 @@
 name: zentao-sync
 description: "从禅道同步任务/Bug 创建 Obsidian 文档"
 arguments: "<任务ID>"
-skill: zentao-sync
+skill: zentao-syncer
 ---
 
 # /zentao-sync 命令

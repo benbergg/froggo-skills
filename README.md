@@ -12,14 +12,14 @@ froggo-skills/
 │   ├── doc-reader/
 │   ├── doc-writer/
 │   ├── git-commit/
-│   ├── zentao-sync/
+│   ├── zentao-syncer/
 │   ├── lib-docs/
 │   ├── code-search/
 │   └── session-context/
 └── commands/        # 命令（用户入口，调用对应 skill）
     ├── read-doc.md   → doc-reader
     ├── write-doc.md  → doc-writer
-    └── zentao-sync.md → zentao-sync
+    └── zentao-sync.md → zentao-syncer
 ```
 
 **Skills**：定义工作流规范，可自动或手动触发
@@ -32,7 +32,7 @@ froggo-skills/
 | doc-reader | 自动 | `/read-doc` | 从知识库搜索读取文档 |
 | doc-writer | 自动 | `/write-doc` | 按规范输出文档到知识库 |
 | git-commit | 自动 | - | Conventional Commits 提交规范 |
-| zentao-sync | 手动 | `/zentao-sync` | 禅道任务同步到 Obsidian |
+| zentao-syncer | 手动 | `/zentao-sync` | 禅道任务同步到 Obsidian |
 | lib-docs | 自动 | - | 使用 Context7 获取库文档 |
 | code-search | 自动 | - | Claude Context 代码语义搜索 |
 | session-context | 手动/自动 | - | 搜索会话历史恢复上下文 |

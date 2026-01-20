@@ -1,5 +1,5 @@
 ---
-name: zentao-sync
+name: zentao-syncer
 description: "手动触发：从禅道同步任务/Bug 创建 Obsidian 任务文档（命令：/zentao-sync）"
 ---
 
