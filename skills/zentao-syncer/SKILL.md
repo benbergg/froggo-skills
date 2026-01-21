@@ -85,6 +85,48 @@ digraph flow {
 | 未登录就抓取 | 先确认登录成功 |
 | 手动创建文档 | 使用本 skill 自动创建 |
 
+## Obsidian Markdown 规范
+
+创建任务文档时**必须**使用 Obsidian Flavored Markdown 语法。
+
+**任务文档推荐格式：**
+
+```markdown
+---
+created: 2025-01-18
+zentao_id: T1234
+status: 进行中
+tags:
+  - task
+  - project-name
+---
+
+# 任务标题
+
+## 任务信息
+
+> [!info] 基本信息
+> - **优先级**: P1
+> - **预计工时**: 8h
+> - **指派人**: xxx
+
+## 需求描述
+
+![[Related-Requirement#^requirement-id]]
+
+## 实现方案
+
+> [!tip] 技术要点
+> 关键实现说明...
+
+## 相关链接
+
+- [[Related-Design|设计文档]]
+- [[Related-Task|关联任务]]
+```
+
+**REQUIRED SUB-SKILL:** Use `obsidian:obsidian-markdown` for complete Obsidian syntax reference
+
 ## 依赖
 
 **REQUIRED SUB-SKILL:** Use `playwright-skill` for browser automation and Zentao login

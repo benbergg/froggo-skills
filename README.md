@@ -15,10 +15,7 @@ froggo-skills/
 │   ├── zentao-syncer/
 │   ├── lib-docs/
 │   ├── code-search/
-│   ├── session-context/
-│   └── skill-router/    # NEW: 智能 skill 路由
-├── hooks/           # Hooks（工具调用拦截）
-│   └── hooks.json       # NEW: 文档保存格式增强
+│   └── session-context/
 └── commands/        # 命令（用户入口，调用对应 skill）
     ├── read-doc.md   → doc-reader
     ├── write-doc.md  → doc-writer
@@ -39,7 +36,6 @@ froggo-skills/
 | lib-docs | 自动 | - | 使用 Context7 获取库文档 |
 | code-search | 自动 | - | Claude Context 代码语义搜索 |
 | session-context | 手动/自动 | - | 搜索会话历史恢复上下文 |
-| skill-router | 自动 | - | 智能匹配 skill，解决名称记忆问题 |
 
 ### MCP 依赖
 
@@ -122,13 +118,6 @@ export ZENTAO_PASSWORD="your_password"
 ```
 
 未配置时将打开浏览器，需手动登录。
-
-## Hooks
-
-本插件包含 PreToolUse hook，在文档保存时自动提醒使用 Obsidian Markdown 格式：
-
-- **触发条件**：Write 操作目标为 `.md` 文件或 Knowledge-Library 目录
-- **功能**：提醒使用 wikilinks `[[]]`、callouts `> [!note]`、frontmatter 等 Obsidian 特性
 
 ## 配置覆盖
 

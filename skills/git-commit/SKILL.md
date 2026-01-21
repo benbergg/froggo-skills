@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: "Use when committing code, running /commit, or generating commit messages"
+description: "Use when committing code changes - 提交代码、git commit、代码提交、生成commit message、写提交信息、提交更改"
 ---
 
 # Git 提交规范
