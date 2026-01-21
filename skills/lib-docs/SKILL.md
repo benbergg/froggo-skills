@@ -1,6 +1,6 @@
 ---
 name: lib-docs
-description: "Use when querying API usage, configurations, or best practices for libraries/frameworks, or when unsure about correct syntax"
+description: "Use when querying library/framework docs - API怎么用、这个库怎么用、配置怎么写、最佳实践、正确语法、Context7、React/Vue/Spring/Python等任何库的用法"
 ---
 
 # 库文档查询规范
