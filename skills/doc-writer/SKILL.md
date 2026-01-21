@@ -1,6 +1,6 @@
 ---
 name: doc-writer
-description: "Use when creating requirements, designs, tasks, plans, weekly reports, KPR, or technical notes"
+description: "Use when creating/saving/writing documents - 写文档、保存文档、创建文档、输出文档、需求文档、设计文档、任务文档、开发计划、周报、KPR、技术笔记、brainstorming output"
 ---
 
 # 文档写入规范
@@ -74,6 +74,29 @@ deployed: dev        # dev/testc/pre/pro/oly/pg/ysld
 | 缺少 frontmatter | 所有文档必须有完整 frontmatter |
 | 禅道 ID 格式错误 | 任务用 `T1234`，Bug 用 `B5678` |
 | 输出到错误目录 | 按类型输出到对应目录 |
+
+## Obsidian Markdown 规范
+
+创建文档时**必须**使用 Obsidian Flavored Markdown 语法，确保文档在 Obsidian 中正确渲染。
+
+**关键特性：**
+
+| 特性 | 语法 | 用途 |
+|------|------|------|
+| Wikilinks | `[[Note Name]]` | 内部链接 |
+| 嵌入 | `![[Note Name]]` | 嵌入其他笔记 |
+| Callouts | `> [!note]` | 提示框 |
+| 标签 | `#tag` 或 frontmatter | 分类标记 |
+| 高亮 | `==text==` | 重点标记 |
+
+**Callout 类型推荐：**
+- `> [!info]` - 信息说明
+- `> [!warning]` - 警告注意
+- `> [!tip]` - 提示建议
+- `> [!question]` - 问题疑问
+- `> [!example]` - 示例说明
+
+**REQUIRED SUB-SKILL:** Use `obsidian:obsidian-markdown` for complete Obsidian syntax reference
 
 ## 配置覆盖
 
