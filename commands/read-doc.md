@@ -1,6 +1,6 @@
 ---
 name: read-doc
-description: "从知识库搜索和读取文档"
+description: "Search and read documents from Knowledge Library with query filters"
 arguments: "[查询条件]"
 skill: doc-reader
 ---

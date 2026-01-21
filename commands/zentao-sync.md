@@ -1,6 +1,6 @@
 ---
 name: zentao-sync
-description: "从禅道同步任务/Bug 创建 Obsidian 文档"
+description: "Sync task or bug from Zentao to create Obsidian task document"
 arguments: "<任务ID>"
 skill: zentao-syncer
 ---
@@ -31,4 +31,4 @@ skill: zentao-syncer
 
 ---
 
-**执行**：调用 `zentao-sync` skill 处理
+**执行**：调用 `zentao-syncer` skill 处理

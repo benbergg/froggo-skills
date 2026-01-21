@@ -1,6 +1,6 @@
 ---
 name: write-doc
-description: "手动创建指定类型的文档"
+description: "Manually create a document of specified type (requirement, design, task, plan, weekly, kpr, tech)"
 arguments: "<类型> [名称]"
 skill: doc-writer
 ---

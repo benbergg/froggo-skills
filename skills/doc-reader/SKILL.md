@@ -1,86 +1,81 @@
 ---
 name: doc-reader
-description: "自动触发：查找需求、设计、任务、计划等文档时，从知识库搜索（命令：/read-doc）"
+description: "Use when searching for requirements, designs, tasks, plans, or documents in Knowledge Library"
 ---
 
 # 文档读取规范
 
-当用户需要查找和读取文档时，请遵循以下规范。
+## Overview
 
-## 搜索路径
+从知识库搜索和读取文档，支持按类型、项目、关键词、日期等多种条件查询。
 
-按优先级顺序搜索以下位置：
+## When to Use
+
+- 查找需求、设计、任务、计划等文档
+- 按项目或禅道 ID 查找相关文档
+- 搜索包含特定关键词的文档
+- 了解某个功能的完整上下文（批量读取）
+
+## Quick Reference
+
+**搜索路径（按优先级）：**
 
 1. `~/workspace/Knowledge-Library/` — 个人知识库（优先）
-2. 当前项目 `docs/` 目录 — 项目文档
-3. 当前项目根目录 — README 等
+2. 当前项目 `docs/` 目录
+3. 当前项目根目录
 
-## 搜索策略
+**查询语法：**
 
-支持以下查询方式：
+| 语法 | 示例 | 说明 |
+|------|------|------|
+| `type:<类型>` | `type:design` | 按文档类型 |
+| `project:<项目>` | `project:bytenew-llm` | 按项目筛选 |
+| `zentao:<ID>` | `zentao:T1234` | 按禅道关联 |
+| `status:<状态>` | `status:进行中` | 按状态筛选 |
+| `date:<日期>` | `date:2025-01` | 按创建日期 |
+| `<关键词>` | `登录功能` | 全文搜索 |
 
-| 查询方式 | 语法 | 示例 | 说明 |
-|----------|------|------|------|
-| 按类型 | `type:<类型>` | `type:design` | 搜索指定类型文档 |
-| 按项目 | `project:<项目名>` | `project:bytenew-llm` | 按 frontmatter 项目筛选 |
-| 按关键词 | `<关键词>` | `登录功能` | 全文搜索 |
-| 按日期 | `date:<日期>` | `date:2025-01` | 按创建日期筛选 |
-| 按禅道ID | `zentao:<ID>` | `zentao:T1234` | 按禅道任务关联查找 |
-| 按状态 | `status:<状态>` | `status:进行中` | 按文档状态筛选 |
+**类型可选值：**
 
-### 类型可选值
+| 类型 | 目录 |
+|------|------|
+| requirement | 01-Requirements/ |
+| task | 02-Tasks/ |
+| plan | 03-Plans/ |
+| design | 04-Designs/ |
+| weekly | 05-Reports/weekly/ |
+| kpr | 05-Reports/KPR/ |
+| tech | 07-Tech/ |
 
-| 类型值 | 对应目录 |
-|--------|----------|
-| `requirement` | `01-Requirements/` |
-| `task` | `02-Tasks/` |
-| `plan` | `03-Plans/` |
-| `design` | `04-Designs/` |
-| `weekly` | `05-Reports/weekly/` |
-| `kpr` | `05-Reports/KPR/` |
-| `tech` | `07-Tech/` |
+## 执行流程
+
+```dot
+digraph flow {
+    rankdir=LR;
+    node [shape=box];
+
+    query [label="解析查询条件"];
+    search [label="搜索文档"];
+    list [label="显示结果列表"];
+    read [label="读取选中文档"];
+
+    query -> search -> list -> read;
+}
+```
 
 ## 输出格式
 
-### 搜索结果列表
+搜索结果显示：文件路径、标题、创建日期、项目、状态，然后让用户选择要查看的文档。
 
-找到文档后，显示结果列表：
+## Common Mistakes
 
-```
-找到 3 个相关文档：
+| 错误 | 正确 |
+|------|------|
+| 只搜索当前项目 | 优先搜索 Knowledge-Library |
+| 忘记组合查询 | 支持多条件：`type:design project:xxx` |
+| 只读取单个文档 | 相关文档可批量读取了解上下文 |
 
-1. 04-Designs/20250118-T1234-用户积分系统.md
-   - 标题：用户积分系统 - 技术设计
-   - 创建：2025-01-18
-   - 项目：bytenew-llm
-   - 状态：进行中
-
-2. 03-Plans/20250118-T1234-用户积分系统.md
-   - 标题：用户积分系统 - 开发计划
-   - 创建：2025-01-18
-   - 项目：bytenew-llm
-   - 状态：已完成
-
-3. 01-Requirements/20250115-001-积分系统需求.md
-   - 标题：积分系统需求文档
-   - 创建：2025-01-15
-   - 项目：bytenew-llm
-   - 状态：已完成
-
-请选择要查看的文档（输入序号）：
-```
-
-### 读取文档
-
-用户选择后，读取并显示完整文档内容。
-
-### 批量读取
-
-支持一次读取多个相关文档，用于了解完整上下文。
-
-## 组合查询
-
-支持多条件组合：
+## 示例
 
 ```
 /read-doc type:design project:bytenew-llm

@@ -1,112 +1,87 @@
 ---
 name: session-context
-description: "手动/自动触发：恢复历史会话上下文或查找之前讨论的方案时，使用 Claude Context 搜索会话历史"
+description: "Use when recovering previous session context, finding past discussions, recalling design decisions, or user mentions 'we discussed before'"
 ---
 
 # 会话上下文恢复规范
 
-获取历史会话上下文时，使用 Claude Context 的会话搜索功能。
+## Overview
 
-## 触发场景
+使用 Claude Context 的会话搜索功能恢复历史上下文，帮助用户找回之前讨论过的方案、决策和代码。
 
-- 重启 Claude Code 后需要恢复之前的工作上下文
-- 调试问题时需要回顾之前的讨论
-- 查找之前讨论过的设计方案或决策
+## When to Use
+
+- 重启 Claude Code 后需要恢复工作上下文
 - 用户说 "之前我们讨论过..." 但当前会话没有记录
-- 需要了解某个问题的历史处理过程
+- 查找之前讨论过的设计方案或决策
+- 调试问题时需要回顾之前的讨论
+- 了解某个问题的历史处理过程
 
-## 执行流程
+## Quick Reference
 
-```
-需要历史会话上下文
-        ↓
-检查会话是否已索引
-    ↓           ↓
-  已索引      未索引
-    ↓           ↓
-search_sessions  index_sessions
-    ↓           ↓
-返回相关会话   索引完成后搜索
-        ↓
-提取关键信息恢复上下文
-```
+**工具速查：**
 
-## 搜索模式
-
-| 模式 | 说明 | 适用场景 |
+| 工具 | 用途 | 关键参数 |
 |------|------|----------|
-| vector | 语义相似度搜索（默认） | 模糊查找、概念搜索 |
-| text | 关键词文本搜索 | 精确查找特定内容 |
+| `index_sessions` | 索引会话历史 | scope, force |
+| `search_sessions` | 搜索会话 | query, mode, scope, limit |
+
+**搜索模式：**
+
+| mode | 说明 | 适用场景 |
+|------|------|----------|
+| vector | 语义相似度（默认） | 模糊查找、概念搜索 |
+| text | 关键词搜索 | 精确查找特定内容 |
 | both | 混合搜索 | 不确定时使用 |
 
-## 搜索范围
+**搜索范围：**
 
 | scope | 说明 |
 |-------|------|
 | current | 当前项目的会话（默认） |
 | all | 所有项目的会话 |
 
+## 执行流程
+
+```dot
+digraph flow {
+    rankdir=TB;
+    node [shape=box];
+
+    start [label="需要历史上下文"];
+    index [label="index_sessions\n(首次需要)"];
+    search [label="search_sessions\n(选择 mode/scope)"];
+    extract [label="提取关键信息\n恢复上下文"];
+
+    start -> index [label="首次使用"];
+    start -> search [label="已索引"];
+    index -> search;
+    search -> extract;
+}
+```
+
 ## 关键规则
 
 1. **主动提示** - 检测到可能需要历史上下文时提醒用户
 2. **scope 选择** - 默认 current 项目，跨项目用 all
-3. **隐私意识** - 仅搜索必要信息，不过度暴露历史
-4. **先索引再搜索** - 首次使用需要先索引会话
+3. **先索引再搜索** - 首次使用需要先索引会话
+4. **隐私意识** - 仅搜索必要信息，不过度暴露历史
 
-## 工具使用
+## Common Mistakes
 
-### index_sessions
-
-索引会话历史：
-
-```
-mcp__claude-context__index_sessions
-  - scope: "current" 或 "all"
-  - force: false（增量索引）或 true（重新索引）
-```
-
-### search_sessions
-
-搜索会话：
-
-```
-mcp__claude-context__search_sessions
-  - query: 搜索查询（字符串或数组）
-  - mode: "vector" | "text" | "both"
-  - scope: "current" | "all"
-  - limit: 结果数量（默认 10）
-```
+| 错误 | 正确 |
+|------|------|
+| 未索引就搜索 | 首次使用先 index_sessions |
+| 跨项目搜索用 current | 跨项目用 scope: "all" |
+| 只用 text 模式 | 概念性查找用 vector 模式 |
+| 返回太多结果 | 设置合理的 limit |
 
 ## 示例
 
-用户说："之前我们讨论过登录功能的实现方案，能帮我找一下吗？"
+用户："之前我们讨论过登录功能的实现方案，能帮我找一下吗？"
 
 ```
-1. 检查并索引会话
-   index_sessions(scope: "current")
-
-2. 语义搜索
-   search_sessions(
-     query: "登录功能 实现方案 讨论",
-     mode: "vector",
-     scope: "current"
-   )
-
+1. index_sessions(scope: "current")  // 首次需要
+2. search_sessions(query: "登录功能 实现方案", mode: "vector", scope: "current")
 3. 返回相关会话摘要，帮助用户恢复上下文
-```
-
-## 常见场景
-
-### 重启后恢复工作
-
-```
-用户：我刚重启了 Claude Code，之前在调试一个 bug
-操作：search_sessions(query: "调试 bug 错误", mode: "both")
-```
-
-### 查找历史决策
-
-```
-用户：为什么我们选择用 Redis 而不是 Memcached？
-操作：search_sessions(query: "Redis Memcached 选择 决策", mode: "vector")
 ```

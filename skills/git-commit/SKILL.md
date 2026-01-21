@@ -1,79 +1,92 @@
 ---
 name: git-commit
-description: "自动触发：执行 git commit 时，确保提交信息符合 Conventional Commits 规范"
+description: "Use when committing code, running /commit, or generating commit messages"
 ---
 
 # Git 提交规范
 
-当提交代码时，请遵循以下规范生成提交信息。
+## Overview
 
-## 格式
+所有代码提交必须遵循 Conventional Commits 格式并关联禅道任务号，确保变更历史可追溯、可检索。
 
+## When to Use
+
+- 执行 `git commit` 命令时
+- 执行 `/commit` 命令时
+- 代码变更后需要生成提交信息时
+
+## Quick Reference
+
+**格式：**
 ```
 <type>: <description> #<zentao_id>
 ```
 
-## Type 类型
+**Type 速查：**
 
-| Type | 说明 | 示例 |
-|------|------|------|
-| feat | 新功能 | `feat: 添加用户登录功能 #T1234` |
-| hotfix | 修复 bug | `hotfix: 修复登录验证失败 #B5678` |
-| docs | 文档变更 | `docs: 更新API接口文档 #0000` |
-| style | 代码格式（不影响功能） | `style: 格式化代码缩进 #0000` |
-| refactor | 重构（不新增功能、不修复bug） | `refactor: 重构用户认证模块 #T1234` |
-| perf | 性能优化 | `perf: 优化列表查询性能 #T1234` |
-| test | 测试相关 | `test: 添加登录单元测试 #T1234` |
-| chore | 构建/工具/依赖 | `chore: 更新依赖版本 #0000` |
-| revert | 回滚 | `revert: 回滚登录功能变更 #T1234` |
+| Type | 说明 | 禅道关联 |
+|------|------|----------|
+| feat | 新功能 | #T1234 |
+| hotfix | 修复 bug | #B5678 |
+| docs | 文档变更 | #0000 |
+| style | 代码格式 | #0000 |
+| refactor | 重构 | #T1234 |
+| perf | 性能优化 | #T1234 |
+| test | 测试相关 | #T1234 |
+| chore | 构建/工具/依赖 | #0000 |
+| revert | 回滚 | #T1234 |
+
+**禅道 ID 格式：**
+- 任务：`#T1234`
+- Bug：`#B5678`
+- 无关联：`#0000`
 
 ## 规则
 
-1. **type**：英文小写，从上表中选择
+1. **type**：英文小写，从速查表中选择
 2. **description**：中文描述，简洁说明变更内容
-3. **zentao_id**：禅道任务/Bug号
-   - 任务：`#T1234`
-   - Bug：`#B5678`
-   - 无关联：`#0000`
+3. **zentao_id**：必须包含，无关联时使用 `#0000`
 4. **长度**：整行不超过 72 字符
-5. **禁止联合签名**：不要添加 `Co-Authored-By` 签名
+5. **禁止联合签名**：不添加 `Co-Authored-By`
 
 ## 示例
 
-### 单行提交
-
+**单行提交：**
 ```
 feat: 添加用户积分系统 #T1234
 hotfix: 修复积分计算精度问题 #B5678
 docs: 更新积分API文档 #T1234
-refactor: 重构积分服务模块 #T1234
 chore: 升级Spring Boot版本 #0000
 ```
 
-### 多行提交（复杂变更）
-
+**多行提交（复杂变更）：**
 ```
 feat: 添加用户积分系统 #T1234
 
 - 新增积分表结构
 - 实现积分增减 API
 - 添加积分查询接口
-- 编写单元测试
 ```
 
-## 触发时机
+## Common Mistakes
 
-以下场景自动应用本规范：
+| 错误 | 正确 |
+|------|------|
+| `Feat: 添加功能` | `feat: 添加功能` (type 小写) |
+| `feat: add login` | `feat: 添加登录功能` (中文描述) |
+| `feat: 添加功能` | `feat: 添加功能 #T1234` (缺少禅道号) |
+| `fix: 修复bug` | `hotfix: 修复bug` (bug 修复用 hotfix) |
+| 超长描述导致换行 | 保持整行 ≤72 字符 |
 
-1. 用户请求提交代码时
-2. 执行 `/commit` 命令时
-3. 代码变更后询问是否提交时
+## 红旗清单
 
-## 提交前检查
+遇到以下想法时，**停止并遵循规范**：
 
-提交前确认：
-
-- [ ] type 选择正确
-- [ ] description 清晰描述了变更内容
-- [ ] zentao_id 正确关联（或使用 #0000）
-- [ ] 整行长度不超过 72 字符
+| 借口 | 正确做法 |
+|------|----------|
+| "这次改动太小不需要禅道号" | 使用 `#0000` |
+| "稍后补全 commit message" | 现在就写完整 |
+| "英文描述更专业" | 规范要求中文描述 |
+| "这个不算 bug 用 fix 就行" | bug 修复统一用 `hotfix` |
+| "加个 Co-Authored-By 没关系" | 禁止联合签名 |
+| "description 写长点更清楚" | 控制在 72 字符内，详情用多行格式 |
