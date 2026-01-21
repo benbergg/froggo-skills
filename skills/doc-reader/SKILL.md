@@ -1,6 +1,6 @@
 ---
 name: doc-reader
-description: "Use when searching for requirements, designs, tasks, plans, or documents in Knowledge Library"
+description: "Use when searching/reading/finding documents - 搜索文档、查找文档、读取文档、查看文档、找文档、看看之前的、Knowledge Library、需求、设计、任务、计划"
 ---
 
 # 文档读取规范
