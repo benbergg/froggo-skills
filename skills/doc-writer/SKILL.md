@@ -1,6 +1,6 @@
 ---
 name: doc-writer
-description: "Use when saving designs/plans/requirements/API docs to Knowledge Library - 保存设计、保存计划、保存需求、保存API文档、写设计文档、写计划、写需求文档、设计方案、实现计划、需求分析、技术方案、brainstorming output、周报、KPR"
+description: "Use when saving designs/plans/requirements/API docs to Knowledge Library - 保存到知识库、写入知识库、知识库、保存设计、保存计划、保存需求、保存API文档、写设计文档、写计划、写需求文档、设计方案、实现计划、需求分析、技术方案、brainstorming output、周报、KPR"
 ---
 
 # 文档写入规范
