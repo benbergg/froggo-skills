@@ -5,6 +5,21 @@ description: "Use when saving designs/plans/requirements/API docs to Knowledge L
 
 # 文档写入规范
 
+## 前置要求
+
+> [!warning] 必须先调用 obsidian-markdown skill
+> **在写文档前，必须先调用 `obsidian:obsidian-markdown` skill**，确保使用正确的 Obsidian Markdown 语法。
+
+**必须使用的 Obsidian 特性：**
+
+| 特性 | 语法 | 用途 |
+|------|------|------|
+| Wikilinks | `[[文档名]]` | 关联其他文档 |
+| Callouts | `> [!type]` | 突出重点信息 |
+| 嵌入 | `![[文档#章节]]` | 引用其他文档片段 |
+| Mermaid | ` ```mermaid ` | 流程图、架构图、序列图 |
+| 标签 | frontmatter `tags:` | 分类和检索 |
+
 ## Overview
 
 创建文档时自动输出到知识库的规范目录，使用统一的命名格式和 frontmatter 结构。
