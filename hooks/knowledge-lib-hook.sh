@@ -1,40 +1,30 @@
-#!/bin/bash
-# knowledge-lib-hook.sh
-# 知识库智能检测 Hook
-#
-# 功能：在 Write/Edit 操作时检测知识文档，建议使用 doc-writer 保存到知识库
+#!/usr/bin/env bash
+# knowledge-lib-hook.sh - 知识库智能检测 Hook
 # 触发：PreToolUse Hook, matcher: ^(Write|Edit)$
 
-set -e
+set -euo pipefail
 
-# ============================================================
 # 配置
-# ============================================================
 KNOWLEDGE_LIB="${KNOWLEDGE_LIB:-$HOME/workspace/Knowledge-Library}"
 KEYWORDS="design|plan|requirement|task|tech|weekly|kpr"
 
-# ============================================================
-# 获取输入
-# ============================================================
-file_path="${TOOL_INPUT_file_path:-}"
-content="${TOOL_INPUT_content:-}"
+# 从 stdin 读取 JSON（PreToolUse 事件必须通过 stdin 传递 tool_input）
+input_json=$(cat)
 
-# ============================================================
+# 检查 jq 是否可用
+if ! command -v jq &> /dev/null; then
+    exit 0  # 无 jq 则静默退出
+fi
+
+# 提取字段
+file_path=$(echo "$input_json" | jq -r '.tool_input.file_path // empty')
+
 # 前置检查
-# ============================================================
-
-# 空路径直接退出
 [[ -z "$file_path" ]] && exit 0
-
-# 已经是知识库路径，不重复提示
 [[ "$file_path" == *"Knowledge-Library"* ]] && exit 0
-
-# 非 .md 文件，不处理
 [[ "$file_path" != *.md ]] && exit 0
 
-# ============================================================
-# 文件名检测
-# ============================================================
+# 文件名匹配
 filename=$(basename "$file_path" | tr '[:upper:]' '[:lower:]')
 matched_type=""
 
@@ -42,70 +32,52 @@ if [[ "$filename" =~ ($KEYWORDS) ]]; then
     matched_type="${BASH_REMATCH[1]}"
 fi
 
-# ============================================================
-# 路径检测
-# ============================================================
-path_matched=false
+# 无匹配则退出
+[[ -z "$matched_type" ]] && exit 0
 
-# 检测是否写入 docs/ 或项目根目录的 .md 文件
-# 匹配: docs/xxx.md, doc/xxx.md, ./xxx.md, xxx.md (无子目录)
-if [[ "$file_path" =~ ^\.?/?(docs?/|[^/]+\.md$) ]]; then
-    path_matched=true
-fi
+# 路径映射
+case "$matched_type" in
+    design)      target_dir="04-Designs/" ;;
+    plan)        target_dir="03-Plans/" ;;
+    requirement) target_dir="01-Requirements/" ;;
+    task)        target_dir="02-Tasks/" ;;
+    tech)        target_dir="07-Tech/" ;;
+    weekly)      target_dir="05-Reports/weekly/" ;;
+    kpr)         target_dir="05-Reports/KPR/" ;;
+    *)           target_dir="" ;;
+esac
 
-# ============================================================
-# 内容检测 (frontmatter)
-# ============================================================
-content_matched=false
+# JSON 转义函数（参考 superpowers）
+escape_for_json() {
+    local input="$1"
+    local output=""
+    local i char
+    for (( i=0; i<${#input}; i++ )); do
+        char="${input:$i:1}"
+        case "$char" in
+            $'\\') output+='\\' ;;
+            '"') output+='\"' ;;
+            $'\n') output+='\n' ;;
+            $'\r') output+='\r' ;;
+            $'\t') output+='\t' ;;
+            *) output+="$char" ;;
+        esac
+    done
+    printf '%s' "$output"
+}
 
-if [[ -n "$content" ]]; then
-    # 检测是否以 --- 开头（frontmatter）
-    if [[ "$content" =~ ^---[[:space:]] ]]; then
-        # 检测是否包含知识库文档特征属性
-        if [[ "$content" =~ (created:|project:|status:) ]]; then
-            content_matched=true
-        fi
-    fi
-fi
+# 构建消息
+message="检测到知识文档 (${matched_type})，建议使用 doc-writer skill 保存到知识库：
+目标路径: ${KNOWLEDGE_LIB}/${target_dir}
+当前路径: ${file_path}
 
-# ============================================================
-# 综合判断
-# ============================================================
-should_suggest=false
+提示：请先调用 obsidian:obsidian-markdown skill 获取完整的 Obsidian Markdown 语法规范"
 
-# 优先级1：文件名匹配关键词
-if [[ -n "$matched_type" ]]; then
-    should_suggest=true
-# 优先级2：路径在 docs/ 且内容有 frontmatter
-elif [[ "$path_matched" == true && "$content_matched" == true ]]; then
-    should_suggest=true
-    matched_type="doc"
-fi
+escaped_message=$(escape_for_json "$message")
 
-# ============================================================
-# 输出建议
-# ============================================================
-if [[ "$should_suggest" == true ]]; then
-    # 路径映射：根据类型推荐知识库子目录
-    case "$matched_type" in
-        design)      target_dir="04-Designs/" ;;
-        plan)        target_dir="03-Plans/" ;;
-        requirement) target_dir="01-Requirements/" ;;
-        task)        target_dir="02-Tasks/" ;;
-        tech)        target_dir="07-Tech/" ;;
-        weekly)      target_dir="05-Reports/weekly/" ;;
-        kpr)         target_dir="05-Reports/KPR/" ;;
-        *)           target_dir="" ;;
-    esac
-
-    # 构建 feedback 消息
-    feedback="检测到知识文档 ($matched_type)，建议使用 doc-writer skill 保存到知识库："
-    feedback="$feedback\\n目标路径: $KNOWLEDGE_LIB/$target_dir"
-    feedback="$feedback\\n当前路径: $file_path"
-    feedback="$feedback\\n\\n提示：请先调用 obsidian:obsidian-markdown skill 获取完整的 Obsidian Markdown 语法规范"
-
-    # 输出 JSON 格式的 feedback
-    echo "{\"feedback\": \"$feedback\"}"
-fi
+# 输出 JSON
+cat <<EOF
+{"systemMessage": "${escaped_message}"}
+EOF
 
 exit 0
