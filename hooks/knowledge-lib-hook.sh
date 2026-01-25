@@ -14,10 +14,26 @@ KNOWLEDGE_LIB="${KNOWLEDGE_LIB:-$HOME/workspace/Knowledge-Library}"
 KEYWORDS="design|plan|requirement|task|tech|weekly|kpr"
 
 # ============================================================
-# 获取输入
+# 从 stdin 读取 JSON 输入（Claude Code 通过 stdin 传递参数）
 # ============================================================
-file_path="${TOOL_INPUT_file_path:-}"
-content="${TOOL_INPUT_content:-}"
+input_json=$(cat)
+
+# 使用 Python 解析 JSON（可靠处理特殊字符）
+read_json_field() {
+    local field="$1"
+    echo "$input_json" | python3 -c "
+import sys, json
+try:
+    d = json.loads(sys.stdin.read())
+    val = d.get('tool_input', {}).get('$field', '')
+    print(val if val else '')
+except:
+    print('')
+" 2>/dev/null || echo ""
+}
+
+file_path=$(read_json_field "file_path")
+content=$(read_json_field "content")
 
 # ============================================================
 # 前置检查
@@ -83,7 +99,7 @@ elif [[ "$path_matched" == true && "$content_matched" == true ]]; then
 fi
 
 # ============================================================
-# 输出建议
+# 输出建议（使用 systemMessage 格式）
 # ============================================================
 if [[ "$should_suggest" == true ]]; then
     # 路径映射：根据类型推荐知识库子目录
@@ -98,14 +114,14 @@ if [[ "$should_suggest" == true ]]; then
         *)           target_dir="" ;;
     esac
 
-    # 构建 feedback 消息
-    feedback="检测到知识文档 ($matched_type)，建议使用 doc-writer skill 保存到知识库："
-    feedback="$feedback\\n目标路径: $KNOWLEDGE_LIB/$target_dir"
-    feedback="$feedback\\n当前路径: $file_path"
-    feedback="$feedback\\n\\n提示：请先调用 obsidian:obsidian-markdown skill 获取完整的 Obsidian Markdown 语法规范"
+    # 构建 systemMessage（Claude Code 识别的格式）
+    message="检测到知识文档 ($matched_type)，建议使用 doc-writer skill 保存到知识库："
+    message="$message\\n目标路径: $KNOWLEDGE_LIB/$target_dir"
+    message="$message\\n当前路径: $file_path"
+    message="$message\\n\\n提示：请先调用 obsidian:obsidian-markdown skill 获取完整的 Obsidian Markdown 语法规范"
 
-    # 输出 JSON 格式的 feedback
-    echo "{\"feedback\": \"$feedback\"}"
+    # 输出 JSON 格式的 systemMessage
+    echo "{\"systemMessage\": \"$message\"}"
 fi
 
 exit 0
