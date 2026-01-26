@@ -49,6 +49,8 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 2. 遇到技术问题时，按需调用技术调研（见下方检查清单）
 3. 输出需求文档
 
+**完成动作：** 立即调用 `doc-writer` 保存需求文档到 `01-Requirements/`
+
 **产出物：** 需求文档 → `01-Requirements/yyyyMMdd-序号-{名称}.md`
 
 ### 阶段2：设计
@@ -59,6 +61,8 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 1. 基于需求进行设计
 2. 遇到技术问题时，按需调用技术调研
 3. 输出设计文档
+
+**完成动作：** 立即调用 `doc-writer` 保存设计文档到 `04-Designs/`
 
 **产出物：** 设计文档 → `04-Designs/yyyyMMdd-{禅道ID}-{名称}.md`
 
@@ -78,6 +82,8 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 **执行内容：**
 1. 基于设计文档创建开发计划
 2. 分解任务，明确步骤
+
+**完成动作：** 立即调用 `doc-writer` 保存计划文档到 `03-Plans/`
 
 **产出物：** 计划文档 → `03-Plans/yyyyMMdd-{禅道ID}-{名称}.md`
 
@@ -126,11 +132,11 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 **调用 Skill：** `doc-writer`
 
 **执行内容：**
-1. 确认所有产出物已保存
-2. 更新文档间的 wikilinks 关联
-3. 生成流程总结
+1. 更新所有文档的 `status` 为"已完成"
+2. 补充文档间的 wikilinks 双向关联
+3. 添加提交记录（commit hash）到相关文档
 
-**产出物：** 更新后的关联文档
+**产出物：** 更新后的关联文档（状态+关联+提交记录）
 
 ---
 
@@ -171,26 +177,33 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 
 ### 确认点1：需求分析 → 设计
 
-当需求文档完成后，询问用户：
+需求文档完成后：
+1. **先保存**：调用 `doc-writer` 保存需求文档到 `01-Requirements/`
+2. **再确认**：询问用户
+
 - header: "阶段确认"
-- question: "需求分析完成，是否已进行必要的技术调研？"
+- question: "需求文档已保存，是否进入设计阶段？"
 - options:
   - label: "是，继续设计"
-    description: "已完成调研，进入设计阶段"
+    description: "进入设计阶段"
   - label: "需要技术调研"
     description: "先调用 lib-docs/serena 进行调研"
   - label: "返回修改需求"
-    description: "继续完善需求分析"
+    description: "继续完善需求，稍后重新保存"
 
 ### 确认点2：设计 → 评审
 
+设计文档完成后：
+1. **先保存**：调用 `doc-writer` 保存设计文档到 `04-Designs/`
+2. **再确认**：询问用户
+
 - header: "阶段确认"
-- question: "设计文档已生成，确认保存到知识库？"
+- question: "设计文档已保存，是否进入评审阶段？"
 - options:
-  - label: "保存并继续"
-    description: "调用 doc-writer 保存，进入评审"
+  - label: "是，进入评审"
+    description: "进入设计评审阶段"
   - label: "返回修改设计"
-    description: "继续完善设计"
+    description: "继续完善设计，稍后重新保存"
 
 ### 确认点3：评审 → 计划
 
@@ -204,13 +217,17 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 
 ### 确认点4：计划 → 开发
 
+计划文档完成后：
+1. **先保存**：调用 `doc-writer` 保存计划文档到 `03-Plans/`
+2. **再确认**：询问用户
+
 - header: "阶段确认"
-- question: "开发计划已就绪，确认开始执行？"
+- question: "计划文档已保存，确认开始开发？"
 - options:
   - label: "开始开发"
     description: "调用 executing-plans 开始"
   - label: "返回修改计划"
-    description: "继续完善计划"
+    description: "继续完善计划，稍后重新保存"
 
 ### 确认点5：开发 → 测试
 
