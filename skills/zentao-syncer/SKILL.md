@@ -36,18 +36,49 @@ digraph flow {
     node [shape=box];
 
     parse [label="1. 解析 ID\nT1234→任务 / B5678→Bug"];
-    auth [label="2. 检查认证" shape=diamond];
-    auto [label="自动登录\n(playwright-skill)"];
-    manual [label="提示手动登录\n等待确认"];
-    fetch [label="3. 抓取任务详情"];
+    script [label="2. 执行内置脚本\nzentao-scraper.js"];
+    auth [label="需要登录?" shape=diamond];
+    manual [label="浏览器中手动登录\n脚本自动等待"];
+    fetch [label="3. 抓取任务详情\n输出 JSON"];
     create [label="4. 调用 doc-writer\n创建任务文档"];
 
-    parse -> auth;
-    auth -> auto [label="有环境变量"];
-    auth -> manual [label="无环境变量"];
-    auto -> fetch;
+    parse -> script;
+    script -> auth;
+    auth -> manual [label="是"];
+    auth -> fetch [label="否"];
     manual -> fetch;
     fetch -> create;
+}
+```
+
+## 脚本执行
+
+使用内置脚本自动抓取禅道页面，无需手动分析页面结构：
+
+```bash
+# 进入 playwright-skill 目录执行
+cd ~/.claude/plugins/cache/playwright-skill/playwright-skill/*/skills/playwright-skill
+
+# 通过环境变量传递禅道 ID
+ZENTAO_ID=T1234 node run.js ~/.claude/plugins/cache/froggo-skills/froggo-skills/*/skills/zentao-syncer/scripts/zentao-scraper.js
+```
+
+**脚本输出：**
+- JSON 数据：`/tmp/zentao-T1234.json`
+- 页面截图：`/tmp/zentao-T1234.png`（备用）
+
+**JSON 格式示例：**
+```json
+{
+  "id": "T42093",
+  "type": "task",
+  "title": "巨易erp商品数据源对接",
+  "priority": "P2",
+  "estimate": "24h",
+  "assignee": "青蛙",
+  "status": "未开始",
+  "description": "...",
+  "relatedStory": { "text": "需求标题", "href": "..." }
 }
 ```
 
@@ -62,19 +93,21 @@ digraph flow {
 
 ## 抓取字段
 
-标题、类型、优先级、预计工时、描述、指派人、所属项目、相关需求、关联Bug
+**任务 (Task)：**
+标题、优先级、预计工时、指派人、状态、开始日期、截止日期、所属执行、相关需求、描述
 
-**注意**：CSS 选择器需根据实际页面调整，首次使用先截图分析页面结构。
+**Bug：**
+标题、优先级、严重程度、指派人、状态、所属产品、所属模块、描述
 
 ## 错误处理
 
 | 场景 | 处理 |
 |------|------|
-| 环境变量未配置 | 提示手动登录 |
-| 登录失败 | 提示检查账号密码 |
-| 任务不存在 | 提示检查 ID |
-| 网络超时 | 提示检查网络 |
-| 页面结构变化 | 提示截图分析 |
+| 需要登录 | 脚本自动等待，在浏览器中手动登录 |
+| 登录超时 | 5 分钟内完成登录，超时需重新执行 |
+| 任务不存在 | 检查 ID 是否正确 |
+| 网络超时 | 检查网络连接 |
+| 抓取失败 | 查看错误截图 `/tmp/zentao-{ID}-error.png` |
 
 ## Common Mistakes
 
@@ -129,6 +162,6 @@ tags:
 
 ## 依赖
 
-**REQUIRED SUB-SKILL:** Use `playwright-skill` for browser automation and Zentao login
+**内置脚本：** `scripts/zentao-scraper.js` - 使用 playwright-skill 的 run.js 执行
 
 **REQUIRED SUB-SKILL:** Use `doc-writer` for document creation with task template
