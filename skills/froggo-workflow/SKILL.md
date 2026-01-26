@@ -119,11 +119,15 @@ description: "Use when starting development tasks - 开发任务、新功能、B
 
 ### 阶段8：提交
 
-**调用 Skill：** `git-commit`
+**调用 Skill：** `git-commit`（必须）
 
 **执行内容：**
-1. 按规范提交代码
-2. 格式：`<type>: <description> #<zentao_id>`
+1. **必须**调用 `git-commit` skill 提交代码
+2. 遵循 Conventional Commits 规范
+3. 格式：`<type>(<scope>): <description> #<zentao_id>`
+
+> [!warning] 禁止手动 git commit
+> 统一使用 `git-commit` skill，确保提交信息符合 Conventional Commits 规范
 
 **产出物：** Git Commit
 
@@ -322,6 +326,7 @@ related_plan: "[[20250126-0000-xxx计划]]"
 | 跳过用户确认直接进入下一阶段 | 必须通过 AskUserQuestion 确认后才能继续 |
 | 快速模式跳过技术调研 | 快速模式只跳过评审，不跳过调研 |
 | 需求不明确就开始设计 | 在需求分析阶段充分澄清，不确定时问用户 |
+| 手动执行 git commit | 必须使用 `git-commit` skill 确保规范 |
 
 ---
 
