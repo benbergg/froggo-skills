@@ -5,18 +5,34 @@
  * 示例: ZENTAO_ID=T42093 node run.js zentao-scraper.js
  *       ZENTAO_ID=B5678 node run.js zentao-scraper.js
  *
+ * 环境变量:
+ *   ZENTAO_ID       - 任务或Bug ID（必需）
+ *   ZENTAO_USER     - 禅道用户名（必需）
+ *   ZENTAO_PASSWORD - 禅道密码（必需）
+ *
  * 输出: JSON 格式的任务/Bug 详情
  */
 
 const { chromium } = require('playwright');
 
-// 禅道基础 URL
+// 禅道 URL 配置
 const ZENTAO_BASE = 'https://chandao.bytenew.com/zentao';
+const ZENTAO_LOGIN_URL = `${ZENTAO_BASE}/user-login`;
 
-// 从环境变量获取 ID（run.js 通过 require 执行，命令行参数不可用）
+// 从环境变量获取配置
 const zentaoId = process.env.ZENTAO_ID;
+const zentaoUser = process.env.ZENTAO_USER;
+const zentaoPassword = process.env.ZENTAO_PASSWORD;
+
+// 检查必需的环境变量
 if (!zentaoId) {
   console.error('错误: 请设置 ZENTAO_ID 环境变量，如 ZENTAO_ID=T42093');
+  process.exit(1);
+}
+
+if (!zentaoUser || !zentaoPassword) {
+  console.error('错误: 请设置 ZENTAO_USER 和 ZENTAO_PASSWORD 环境变量');
+  console.error('示例: ZENTAO_USER=your_username ZENTAO_PASSWORD=your_password ZENTAO_ID=T42093 node run.js zentao-scraper.js');
   process.exit(1);
 }
 
@@ -61,6 +77,60 @@ const SELECTORS = {
   }
 };
 
+/**
+ * 确保已登录禅道
+ * 先访问登录页，检测登录状态，未登录则自动登录
+ */
+async function ensureLogin(page) {
+  console.log('正在检查登录状态...');
+
+  // 访问登录页
+  await page.goto(ZENTAO_LOGIN_URL, { waitUntil: 'networkidle', timeout: 30000 });
+
+  // 检测是否在登录页（未登录状态）
+  const currentUrl = page.url();
+  const isLoginPage = currentUrl.includes('user-login');
+
+  if (!isLoginPage) {
+    console.log('已登录，跳过登录步骤');
+    return true;
+  }
+
+  console.log('未登录，正在自动登录...');
+
+  // 等待登录表单加载
+  await page.waitForSelector('input[name="account"]', { timeout: 10000 });
+
+  // 填入用户名和密码
+  await page.fill('input[name="account"]', zentaoUser);
+  await page.fill('input[name="password"]', zentaoPassword);
+
+  console.log(`使用账号 ${zentaoUser} 登录...`);
+
+  // 点击登录按钮
+  await page.click('button:has-text("登录")');
+
+  // 等待登录完成（URL 不再包含 user-login）
+  try {
+    await page.waitForURL(url => !url.includes('user-login'), { timeout: 15000 });
+    console.log('登录成功');
+    return true;
+  } catch (error) {
+    // 检查是否有错误提示
+    const errorMsg = await page.evaluate(() => {
+      const alert = document.querySelector('.alert-danger, .error, .tips-error');
+      return alert ? alert.textContent.trim() : null;
+    });
+
+    if (errorMsg) {
+      console.error(`登录失败: ${errorMsg}`);
+    } else {
+      console.error('登录失败: 超时或未知错误');
+    }
+    return false;
+  }
+}
+
 (async () => {
   console.log(`正在抓取禅道${type === 'task' ? '任务' : 'Bug'}: ${zentaoId}`);
   console.log(`URL: ${url}`);
@@ -77,34 +147,15 @@ const SELECTORS = {
   const page = await context.newPage();
 
   try {
-    // 访问页面
-    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
-
-    // 检查是否需要登录
-    const isLoginPage = await page.evaluate(() => {
-      return document.body.innerText.includes('登录') &&
-             (document.querySelector('input[name="account"]') !== null ||
-              document.querySelector('.login-form') !== null);
-    });
-
-    if (isLoginPage) {
-      console.log('\n========================================');
-      console.log('需要登录禅道，请在浏览器中完成登录...');
-      console.log('登录成功后脚本将自动继续');
-      console.log('========================================\n');
-
-      // 等待登录完成（检测页面变化）
-      await page.waitForFunction(() => {
-        return !document.body.innerText.includes('登录') ||
-               document.querySelector('#mainContent') !== null;
-      }, { timeout: 300000 }); // 5分钟超时
-
-      console.log('登录成功，正在加载页面...');
-      await page.waitForTimeout(2000);
-
-      // 重新访问目标页面
-      await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
+    // 先确保登录
+    const loginSuccess = await ensureLogin(page);
+    if (!loginSuccess) {
+      throw new Error('登录失败，请检查用户名和密码');
     }
+
+    // 访问目标页面
+    console.log(`正在访问: ${url}`);
+    await page.goto(url, { waitUntil: 'networkidle', timeout: 30000 });
 
     // 等待页面内容加载
     await page.waitForTimeout(1000);

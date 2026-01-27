@@ -36,17 +36,19 @@ digraph flow {
     node [shape=box];
 
     parse [label="1. 解析 ID\nT1234→任务 / B5678→Bug"];
-    script [label="2. 执行内置脚本\nzentao-scraper.js"];
-    auth [label="需要登录?" shape=diamond];
-    manual [label="浏览器中手动登录\n脚本自动等待"];
-    fetch [label="3. 抓取任务详情\n输出 JSON"];
-    create [label="4. 调用 doc-writer\n创建任务文档"];
+    checkEnv [label="2. 检查环境变量\nZENTAO_USER / ZENTAO_PASSWORD"];
+    login [label="3. 访问登录页\n自动填入凭据登录"];
+    checkStatus [label="已登录?" shape=diamond];
+    autoLogin [label="自动登录"];
+    fetch [label="4. 访问任务/Bug页\n抓取详情"];
+    create [label="5. 调用 doc-writer\n创建任务文档"];
 
-    parse -> script;
-    script -> auth;
-    auth -> manual [label="是"];
-    auth -> fetch [label="否"];
-    manual -> fetch;
+    parse -> checkEnv;
+    checkEnv -> login;
+    login -> checkStatus;
+    checkStatus -> fetch [label="是"];
+    checkStatus -> autoLogin [label="否"];
+    autoLogin -> fetch;
     fetch -> create;
 }
 ```
@@ -84,12 +86,19 @@ ZENTAO_ID=T1234 node run.js ~/.claude/plugins/cache/froggo-skills/froggo-skills/
 
 ## 认证配置
 
-| 环境变量 | 说明 |
-|----------|------|
-| `ZENTAO_USER` | 禅道用户名 |
-| `ZENTAO_PASSWORD` | 禅道密码 |
+| 环境变量 | 说明 | 必需 |
+|----------|------|------|
+| `ZENTAO_USER` | 禅道用户名 | ✅ |
+| `ZENTAO_PASSWORD` | 禅道密码 | ✅ |
 
-未配置时：打开浏览器 → 提示手动登录 → 等待用户确认
+**配置方式：**
+```bash
+# 在 shell 配置文件中设置（~/.zshrc 或 ~/.bashrc）
+export ZENTAO_USER="your_username"
+export ZENTAO_PASSWORD="your_password"
+```
+
+脚本会先访问登录页，自动填入凭据完成登录，无需手动干预。
 
 ## 抓取字段
 
@@ -103,8 +112,8 @@ ZENTAO_ID=T1234 node run.js ~/.claude/plugins/cache/froggo-skills/froggo-skills/
 
 | 场景 | 处理 |
 |------|------|
-| 需要登录 | 脚本自动等待，在浏览器中手动登录 |
-| 登录超时 | 5 分钟内完成登录，超时需重新执行 |
+| 环境变量未配置 | 提示设置 `ZENTAO_USER` 和 `ZENTAO_PASSWORD` |
+| 登录失败 | 检查用户名密码是否正确，查看错误提示 |
 | 任务不存在 | 检查 ID 是否正确 |
 | 网络超时 | 检查网络连接 |
 | 抓取失败 | 查看错误截图 `/tmp/zentao-{ID}-error.png` |
@@ -115,7 +124,7 @@ ZENTAO_ID=T1234 node run.js ~/.claude/plugins/cache/froggo-skills/froggo-skills/
 |------|------|
 | 输入 `1234` | 输入 `T1234`（需要 T/B 前缀） |
 | 输入 `t1234` | 输入 `T1234`（前缀大写） |
-| 未登录就抓取 | 先确认登录成功 |
+| 未配置环境变量 | 先设置 `ZENTAO_USER` 和 `ZENTAO_PASSWORD` |
 | 手动创建文档 | 使用本 skill 自动创建 |
 
 ## Obsidian Markdown 规范
