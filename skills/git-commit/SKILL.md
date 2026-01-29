@@ -104,7 +104,6 @@ feat: 添加用户积分系统 #T1234
 | superpowers:executing-plans | 执行计划时的提交操作 |
 | superpowers:subagent-driven-development | 子代理完成任务后的提交 |
 | superpowers:finishing-a-development-branch | 完成分支工作时的提交 |
-| froggo-skills:froggo-workflow | 开发流程中的任何提交 |
 
 **重要**：即使其他 skill 或计划文档中写了具体的 commit 命令格式，也必须使用本 skill 的规范覆盖，确保：
 - 使用中文描述

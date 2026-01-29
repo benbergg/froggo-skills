@@ -9,19 +9,16 @@
 ```
 froggo-skills/
 ├── skills/          # 技能（自动或手动触发的工作流规范）
-│   ├── froggo-workflow/  # 开发流程规范（主控）
 │   ├── doc-reader/
 │   ├── doc-writer/
 │   ├── git-commit/
 │   ├── zentao-syncer/
-│   ├── lib-docs/
-│   ├── code-search/
-│   └── session-context/
+│   └── requirement-gathering/
 └── commands/        # 命令（用户入口，调用对应 skill）
-    ├── froggo-workflow.md → froggo-workflow
     ├── read-doc.md   → doc-reader
     ├── write-doc.md  → doc-writer
-    └── zentao-sync.md → zentao-syncer
+    ├── zentao-sync.md → zentao-syncer
+    └── requirement-gathering.md → requirement-gathering
 ```
 
 **Skills**：定义工作流规范，可自动或手动触发
@@ -31,22 +28,11 @@ froggo-skills/
 
 | 技能 | 触发方式 | 命令 | 说明 |
 |------|----------|------|------|
-| **froggo-workflow** | **手动** | **`/froggo-workflow`** | **9阶段开发流程规范（主控）** |
 | doc-reader | 自动 | `/read-doc` | 从知识库搜索读取文档 |
 | doc-writer | 自动 | `/write-doc` | 按规范输出文档到知识库 |
 | git-commit | 自动 | - | Conventional Commits 提交规范 |
 | zentao-syncer | 手动 | `/zentao-sync` | 禅道任务同步到 Obsidian |
-| lib-docs | 自动 | - | 使用 Context7 获取库文档 |
-| code-search | 自动 | - | Claude Context 代码语义搜索 |
-| session-context | 手动/自动 | - | 搜索会话历史恢复上下文 |
-
-### MCP 依赖
-
-| MCP | 技能 | 说明 |
-|-----|------|------|
-| context7 | lib-docs, froggo-workflow | 获取库/框架官方文档 |
-| serena | froggo-workflow | 项目结构分析 |
-| claude-context | code-search, session-context | 代码语义搜索、会话历史搜索 |
+| requirement-gathering | 手动 | `/requirement-gathering` | 引导式需求梳理 |
 
 ## 安装
 
@@ -105,21 +91,15 @@ docs: 更新API文档 #0000
 
 Type 类型：`feat` | `hotfix` | `docs` | `style` | `refactor` | `perf` | `test` | `chore` | `revert`
 
-### 开发流程
+### 需求梳理
 
-启动完整开发流程：
+将模糊想法转化为结构化需求文档：
 
 ```bash
-/froggo-workflow           # 完整模式（9阶段）
-/froggo-workflow quick     # 快速模式（7阶段，跳过评审）
+/requirement-gathering     # 启动需求梳理流程
 ```
 
-流程阶段：需求分析 → 设计 → 评审 → 计划 → 开发 → 测试 → Review → 提交 → 归档
-
-特性：
-- 技术调研强制检查（context7/serena/doc-reader）
-- 每个阶段用户确认门禁
-- 产出物自动归档到知识库
+9阶段引导式流程：背景 → 目标 → 用户场景 → 功能范围 → 业务规则 → 数据契约 → 约束 → 成功标准 → 输出
 
 ### 禅道同步
 
