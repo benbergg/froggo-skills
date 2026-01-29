@@ -1,6 +1,6 @@
 ---
 name: git-commit
-description: "Use when committing code changes - 提交代码、git commit、代码提交、生成commit message、写提交信息、提交更改"
+description: "This skill should be used when committing code changes, executing commit steps in implementation plans, or when any workflow requires 'git commit'. 提交代码、git commit、代码提交、生成commit message、写提交信息、提交更改、执行计划中的commit步骤、实现完成后提交、开发流程提交"
 ---
 
 # Git 提交规范
@@ -14,6 +14,9 @@ description: "Use when committing code changes - 提交代码、git commit、代
 - 执行 `git commit` 命令时
 - 执行 `/commit` 命令时
 - 代码变更后需要生成提交信息时
+- **执行实现计划（implementation plan）中的 commit 步骤时**
+- **使用 superpowers:executing-plans 或 superpowers:subagent-driven-development 完成任务后提交时**
+- **任何开发工作流需要提交代码时**
 
 ## Quick Reference
 
@@ -90,3 +93,20 @@ feat: 添加用户积分系统 #T1234
 | "这个不算 bug 用 fix 就行" | bug 修复统一用 `hotfix` |
 | "加个 Co-Authored-By 没关系" | 禁止联合签名 |
 | "description 写长点更清楚" | 控制在 72 字符内，详情用多行格式 |
+
+## 与其他 Skill 协作
+
+当使用以下 skill 时，如遇到提交代码步骤，**必须使用本 skill 生成 commit message**：
+
+| Skill | 触发场景 |
+|-------|----------|
+| superpowers:writing-plans | 计划中包含的 commit 步骤 |
+| superpowers:executing-plans | 执行计划时的提交操作 |
+| superpowers:subagent-driven-development | 子代理完成任务后的提交 |
+| superpowers:finishing-a-development-branch | 完成分支工作时的提交 |
+| froggo-skills:froggo-workflow | 开发流程中的任何提交 |
+
+**重要**：即使其他 skill 或计划文档中写了具体的 commit 命令格式，也必须使用本 skill 的规范覆盖，确保：
+- 使用中文描述
+- 包含禅道任务号
+- 禁止 Co-Authored-By 签名
