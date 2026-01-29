@@ -1,15 +1,13 @@
 {
-  "description": "知识库智能检测 Hook",
+  "description": "知识库智能引导 Hook - 在用户提交 prompt 时检测意图，引导使用正确的 skill",
   "hooks": {
-    "PreToolUse": [
+    "UserPromptSubmit": [
       {
-        "matcher": "^(Write|Edit)$",
         "hooks": [
           {
             "type": "command",
-            "command": "bash ${CLAUDE_PLUGIN_ROOT}/hooks/knowledge-lib-hook.sh",
-            "timeout": 3000,
-            "continueOnError": true
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/hooks/knowledge-query-hook.py",
+            "timeout": 3000
           }
         ]
       }

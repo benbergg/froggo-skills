@@ -1,6 +1,6 @@
 ---
 name: doc-reader
-description: "Use when searching/reading/finding documents - 搜索文档、查找文档、读取文档、查看文档、找文档、看看之前的、Knowledge Library、知识库、需求、设计、任务、计划、Obsidian、wikilink、frontmatter、关联文档、上下文"
+description: "Use when searching/reading/finding documents - 搜索文档、查找文档、读取文档、查看文档、找文档、看看之前的、Knowledge Library、知识库、需求、设计、任务、计划、资料、技术笔记、周报、上次的、相关的、查一下、找一下、Obsidian、wikilink、frontmatter、关联文档、上下文、禅道"
 ---
 
 # 文档读取规范
