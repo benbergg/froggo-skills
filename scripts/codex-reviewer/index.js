@@ -46,14 +46,9 @@ Code to review:
 `;
 
 async function main() {
-  // 检查 API Key
-  if (!process.env.OPENAI_API_KEY) {
-    console.error(JSON.stringify({
-      error: true,
-      message: "OPENAI_API_KEY 环境变量未设置。请设置后重试。"
-    }));
-    process.exit(1);
-  }
+  // 注意：Codex SDK 支持多种认证方式：
+  // 1. ChatGPT 订阅用户：自动使用登录凭据，无需 API Key
+  // 2. API 用户：需要设置 OPENAI_API_KEY 环境变量
 
   // 读取 stdin（git diff 输出）
   const diff = await readStdin();
@@ -94,7 +89,7 @@ async function main() {
     console.error(JSON.stringify({
       error: true,
       message: error.message || "Codex API 调用失败",
-      hint: "请检查网络连接和 API Key 是否有效"
+      hint: "请确保已登录 Codex（codex login）或检查网络连接"
     }));
     process.exit(1);
   }

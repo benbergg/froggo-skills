@@ -44,7 +44,16 @@ description: >
 
 ## 前置条件
 
-确保已配置 `OPENAI_API_KEY` 环境变量：
+Codex SDK 支持多种认证方式：
+
+**方式 1：ChatGPT 订阅用户（推荐）**
+```bash
+# 首次使用需要登录
+codex login
+```
+登录后自动使用 ChatGPT 账户凭据，无需额外配置。
+
+**方式 2：API Key 用户**
 ```bash
 export OPENAI_API_KEY="sk-..."
 ```
@@ -90,8 +99,7 @@ export OPENAI_API_KEY="sk-..."
 ## 错误处理
 
 如果脚本返回 error: true，根据 message 提示用户：
-- "OPENAI_API_KEY 环境变量未设置" → 提示用户配置 API Key
-- "Codex API 调用失败" → 建议检查网络或稍后重试
+- "Codex API 调用失败" → 建议运行 `codex login` 登录或检查网络
 
 ## 使用示例
 
