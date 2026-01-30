@@ -29,6 +29,10 @@ description: >
 - **安全审计**：深入识别安全漏洞
 - **UI 代码**：一次成功率更高
 
+**必须显示提示：** 使用此 Skill 时，必须在开始时输出：
+> 🤖 **正在使用 Codex 进行深度代码审查...**
+> Codex 擅长：安全漏洞检测、Bug 识别、UI 代码审查
+
 ## When to Use
 
 **自动触发场景：**
@@ -95,6 +99,22 @@ export OPENAI_API_KEY="sk-..."
 ### 📊 审查摘要
 
 显示 summary 字段内容，以及各级别问题统计。
+
+## 与 superpowers:code-reviewer 兼容
+
+codex-reviewer 的输出格式与 superpowers:code-reviewer 兼容，可在 superpowers 工作流中替代使用：
+
+| codex-reviewer | superpowers:code-reviewer | 说明 |
+|----------------|---------------------------|------|
+| Critical | Critical | 必须修复 |
+| Warning | Important | 应该修复 |
+| Info | Minor | 建议改进 |
+| summary | Assessment | 总体评估 |
+
+**在 superpowers 工作流中使用：**
+- `requesting-code-review` 可调用 codex-reviewer 替代 code-reviewer
+- `subagent-driven-development` 每个 task 后可用 codex-reviewer 审查
+- `finishing-a-development-branch` 完成前可用 codex-reviewer 做安全扫描
 
 ## 错误处理
 
