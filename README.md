@@ -13,12 +13,16 @@ froggo-skills/
 │   ├── doc-writer/
 │   ├── git-commit/
 │   ├── zentao-syncer/
-│   └── requirement-gathering/
-└── commands/        # 命令（用户入口，调用对应 skill）
-    ├── read-doc.md   → doc-reader
-    ├── write-doc.md  → doc-writer
-    ├── zentao-sync.md → zentao-syncer
-    └── requirement-gathering.md → requirement-gathering
+│   ├── requirement-gathering/
+│   └── codex-reviewer/
+├── commands/        # 命令（用户入口，调用对应 skill）
+│   ├── read-doc.md   → doc-reader
+│   ├── write-doc.md  → doc-writer
+│   ├── zentao-sync.md → zentao-syncer
+│   ├── requirement-gathering.md → requirement-gathering
+│   └── codex-review.md → codex-reviewer
+└── scripts/         # 外部脚本（Node.js 等）
+    └── codex-reviewer/
 ```
 
 **Skills**：定义工作流规范，可自动或手动触发
@@ -33,6 +37,7 @@ froggo-skills/
 | git-commit | 自动 | - | Conventional Commits 提交规范 |
 | zentao-syncer | 手动 | `/zentao-sync` | 禅道任务同步到 Obsidian |
 | requirement-gathering | 手动 | `/requirement-gathering` | 引导式需求梳理 |
+| codex-reviewer | 自动/手动 | `/codex-review` | 使用 Codex 深度代码审查 |
 
 ## 安装
 
@@ -118,6 +123,26 @@ export ZENTAO_PASSWORD="your_password"
 ```
 
 未配置时将打开浏览器，需手动登录。
+
+### Codex 代码审查
+
+使用 OpenAI Codex SDK 进行深度代码审查，在安全漏洞检测方面有明确优势。
+
+```bash
+/codex-review              # 审查最近提交
+/codex-review --staged     # 审查暂存变更
+```
+
+**触发关键词**：codex 审查、深度审查、安全审计、交叉验证、第二意见
+
+**认证方式**：
+- ChatGPT 订阅用户：运行 `codex login` 登录即可
+- API 用户：设置 `OPENAI_API_KEY` 环境变量
+
+**与 superpowers 协作**：
+- 常规审查：使用 superpowers:code-reviewer（Claude）
+- 深度安全审计：使用 codex-reviewer（Codex）
+- 重要变更：两者都用，交叉验证
 
 ## 配置覆盖
 
