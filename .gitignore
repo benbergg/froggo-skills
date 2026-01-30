@@ -6,3 +6,4 @@
 .*
 !.claude-plugin/
 !.gitignore
+!.env.example

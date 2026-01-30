@@ -1,0 +1,16 @@
+{
+  "name": "codex-reviewer",
+  "version": "1.0.0",
+  "description": "Codex SDK code reviewer for Claude Code",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "review": "node index.js"
+  },
+  "dependencies": {
+    "@openai/codex-sdk": "^0.87.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
