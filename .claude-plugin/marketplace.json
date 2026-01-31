@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "个人工作流增强技能：文档管理、Git 提交规范、禅道同步、Codex 代码审查（含 Agent）等",
-    "version": "1.15.0"
+    "version": "1.16.0"
   },
   "plugins": [
     {
       "name": "froggo-skills",
       "source": "./",
       "description": "个人工作流增强技能：文档管理、Git 提交规范、禅道同步、Codex 代码审查（含 Agent）等",
-      "version": "1.15.0",
+      "version": "1.16.0",
       "author": {
         "name": "benbergg"
       },
