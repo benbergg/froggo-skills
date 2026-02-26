@@ -1,0 +1,5 @@
+# 仅跟踪 settings.json 和 CLAUDE.md
+*
+!.gitignore
+!settings.json
+!CLAUDE.md

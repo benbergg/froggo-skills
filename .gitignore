@@ -5,6 +5,7 @@
 .idea/
 .*
 !.claude-plugin/
+!.claude/
 !.gitignore
 !.env.example
 node_modules/
