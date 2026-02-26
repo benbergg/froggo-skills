@@ -1,18 +1,18 @@
 ---
 name: zentao-syncer
-description: "Use when syncing tasks or bugs from Zentao, running /zentao-sync, or importing Zentao items to Knowledge Library"
+description: "Use when syncing tasks or bugs from Zentao to Knowledge Library - 同步禅道、禅道任务、禅道Bug、zentao sync、T1234、B5678、同步任务、同步Bug"
 ---
 
 # 禅道任务同步
 
 ## Overview
 
-从禅道抓取任务/Bug 详情，自动创建符合规范的任务文档到知识库，确保开发任务可追溯。
+从禅道抓取任务/Bug 详情，通过 playwright-cli 浏览器自动化访问禅道页面，提取结构化数据，自动创建符合规范的任务文档到知识库。
 
 ## When to Use
 
-- 执行 `/zentao-sync T1234` 同步任务
-- 执行 `/zentao-sync B5678` 同步 Bug
+- 用户提到"同步禅道任务/Bug"
+- 用户给出禅道 ID（如 T1234、B5678）
 - 需要将禅道任务导入知识库开始开发时
 
 ## Quick Reference
@@ -36,69 +36,180 @@ digraph flow {
     node [shape=box];
 
     parse [label="1. 解析 ID\nT1234→任务 / B5678→Bug"];
-    checkEnv [label="2. 检查环境变量\nZENTAO_USER / ZENTAO_PASSWORD"];
-    login [label="3. 访问登录页\n自动填入凭据登录"];
-    checkStatus [label="已登录?" shape=diamond];
-    autoLogin [label="自动登录"];
-    fetch [label="4. 访问任务/Bug页\n抓取详情"];
-    create [label="5. 调用 doc-writer\n创建任务文档"];
+    open [label="2. playwright-cli open\n（持久化 profile）"];
+    goto [label="3. goto 目标页"];
+    check [label="已登录?" shape=diamond];
+    login [label="4. 自动登录\nfill 用户名密码\ncheck 保持登录\nclick 登录"];
+    extract [label="5. snapshot + eval\n提取结构化数据"];
+    branch [label="6. 生成 git 分支名"];
+    create [label="7. 调用 doc-writer\n创建任务文档"];
+    close [label="8. playwright-cli close"];
 
-    parse -> checkEnv;
-    checkEnv -> login;
-    login -> checkStatus;
-    checkStatus -> fetch [label="是"];
-    checkStatus -> autoLogin [label="否"];
-    autoLogin -> fetch;
-    fetch -> create;
+    parse -> open;
+    open -> goto;
+    goto -> check;
+    check -> extract [label="是"];
+    check -> login [label="否"];
+    login -> goto;
+    extract -> branch;
+    branch -> create;
+    create -> close;
 }
 ```
 
-## 脚本执行
+## playwright-cli 命令序列
 
-使用内置脚本自动抓取禅道页面，无需手动分析页面结构：
+### 第一步：打开浏览器并访问目标页
 
 ```bash
-# 进入 playwright-skill 目录执行
-cd ~/.claude/plugins/cache/playwright-skill/playwright-skill/*/skills/playwright-skill
+# 打开浏览器（持久化 profile，保持登录态）
+playwright-cli open
 
-# 通过环境变量传递禅道 ID
-ZENTAO_ID=T1234 node run.js ~/.claude/plugins/cache/froggo-skills/froggo-skills/*/skills/zentao-syncer/scripts/zentao-scraper.js
+# 导航到目标页
+playwright-cli goto https://chandao.bytenew.com/zentao/{type}-view-{id}.html
+
+# 获取快照检查状态
+playwright-cli snapshot
 ```
 
-**脚本输出：**
-- JSON 数据：`/tmp/zentao-T1234.json`
-- 页面截图：`/tmp/zentao-T1234.png`（备用）
+### 第二步：登录检测与处理
 
-**JSON 格式示例：**
-```json
-{
-  "id": "T42093",
-  "type": "task",
-  "title": "巨易erp商品数据源对接",
-  "priority": "P2",
-  "estimate": "24h",
-  "assignee": "青蛙",
-  "status": "未开始",
-  "description": "...",
-  "relatedStory": { "text": "需求标题", "href": "..." }
-}
+检查 snapshot 输出：
+- 若页面 URL 包含 `user-login` 或 title 包含 `用户登录` → 需要登录
+- 否则 → 已登录，跳到第三步
+
+**自动登录命令序列：**
+
+```bash
+# 前置条件：需要环境变量 ZENTAO_USER 和 ZENTAO_PASSWORD
+playwright-cli goto https://chandao.bytenew.com/zentao/user-login.html
+
+# 获取快照确认登录表单已加载
+playwright-cli snapshot
+
+# 填入凭据（ref 可能变化，根据 snapshot 确认）
+playwright-cli fill <用户名输入框ref> "$ZENTAO_USER"
+playwright-cli fill <密码输入框ref> "$ZENTAO_PASSWORD"
+
+# 勾选"保持登录"
+playwright-cli check <保持登录checkbox-ref>
+
+# 点击登录
+playwright-cli click <登录按钮ref>
+
+# 验证登录成功：检查 URL 不再包含 user-login
+playwright-cli snapshot
+```
+
+**登录表单已知结构（供参考，ref 每次会变）：**
+- 用户名输入框：`textbox` in row "用户名"
+- 密码输入框：`textbox` in row "密码"
+- 保持登录：`checkbox " 保持登录"`
+- 登录按钮：`button "登录"`
+
+### 第三步：提取数据
+
+禅道使用双层 iframe 结构，snapshot 自动穿透。根据 snapshot 中的 ref 识别字段位置。
+
+**Bug 页面关键字段位置（基于实际探索 Bug #49622）：**
+- 标题：header 区域，格式为 `generic: "{id}"` + `text: 标题内容`
+- 基本信息表格：`table` 内 `row "字段名 值"` 结构
+  - 所属产品、所属模块、Bug类型、严重程度、优先级、Bug状态、当前指派
+- 重现步骤：`generic: 重现步骤` 下的文本内容
+- 历史记录：`list` 内 `listitem` 序列
+
+**使用 run-code 提取数据（在正确的 iframe context 中）：**
+
+```bash
+playwright-cli run-code "async page => {
+  const frames = page.frames();
+  const detailFrame = frames.find(f => f.url().includes('{type}-view-'));
+  if (!detailFrame) { console.log('ERROR: detail frame not found'); return; }
+
+  const data = await detailFrame.evaluate(() => {
+    const getText = (label) => {
+      const row = [...document.querySelectorAll('tr')].find(r => {
+        const th = r.querySelector('th, td:first-child');
+        return th && th.textContent.trim().startsWith(label);
+      });
+      return row ? row.querySelector('td:last-child, td:nth-child(2)').textContent.trim() : '';
+    };
+
+    const title = document.querySelector('h2, .main-header h2')?.textContent?.trim() ||
+                  document.title.replace(/ - .*$/, '').trim();
+
+    return {
+      title,
+      product: getText('所属产品'),
+      module: getText('所属模块'),
+      bugType: getText('Bug类型'),
+      severity: getText('严重程度'),
+      priority: getText('优先级'),
+      status: getText('Bug状态') || getText('任务状态'),
+      assignee: getText('当前指派') || getText('指派给'),
+      estimate: getText('预计'),
+      startDate: getText('预计开始'),
+      deadline: getText('截止日期'),
+      execution: getText('所属执行'),
+      description: document.querySelector('.detail-content .article-content, .tab-content .article-content')?.textContent?.trim() || '',
+      createdBy: getText('由谁创建'),
+    };
+  });
+  console.log(JSON.stringify(data, null, 2));
+}"
+```
+
+### 第四步：生成 git 分支名
+
+根据类型和标题自动生成：
+
+| 禅道类型 | 分支格式 | 示例 |
+|----------|----------|------|
+| Bug (B) | `hotfix/B{id}-{简短描述}` | `hotfix/B49622-评价标签正负面显示错误` |
+| Task (T) | `feat/T{id}-{简短描述}` | `feat/T1234-商品数据源对接` |
+
+**简短描述规则：**
+- 去掉日期前缀（如 `【20260226】`）
+- 截取前 20 字符
+- 替换空格为 `-`
+
+### 第五步：调用 doc-writer 生成文档
+
+调用 `doc-writer` skill，文档 frontmatter 包含：
+
+```yaml
+created: {今日日期}
+updated: {今日日期}
+zentao_id: {B49622 或 T1234}
+zentao_url: https://chandao.bytenew.com/zentao/{type}-view-{id}.html
+git_branch: hotfix/B49622-评价标签正负面显示错误
+status: 进行中
+project: {从所属产品/执行推断}
+tags:
+  - task 或 bug
+  - {产品名}
+```
+
+### 第六步：关闭浏览器
+
+```bash
+playwright-cli close
 ```
 
 ## 认证配置
 
 | 环境变量 | 说明 | 必需 |
 |----------|------|------|
-| `ZENTAO_USER` | 禅道用户名 | ✅ |
-| `ZENTAO_PASSWORD` | 禅道密码 | ✅ |
+| `ZENTAO_USER` | 禅道用户名 | ✅（仅首次登录需要） |
+| `ZENTAO_PASSWORD` | 禅道密码 | ✅（仅首次登录需要） |
 
 **配置方式：**
 ```bash
-# 在 shell 配置文件中设置（~/.zshrc 或 ~/.bashrc）
 export ZENTAO_USER="your_username"
 export ZENTAO_PASSWORD="your_password"
 ```
 
-脚本会先访问登录页，自动填入凭据完成登录，无需手动干预。
+playwright-cli 默认使用持久化 profile，勾选"保持登录"后 cookie 长期有效，后续无需重复登录。
 
 ## 抓取字段
 
@@ -106,17 +217,18 @@ export ZENTAO_PASSWORD="your_password"
 标题、优先级、预计工时、指派人、状态、开始日期、截止日期、所属执行、相关需求、描述
 
 **Bug：**
-标题、优先级、严重程度、指派人、状态、所属产品、所属模块、描述
+标题、优先级、严重程度、指派人、状态、Bug类型、所属产品、所属模块、描述
 
 ## 错误处理
 
 | 场景 | 处理 |
 |------|------|
-| 环境变量未配置 | 提示设置 `ZENTAO_USER` 和 `ZENTAO_PASSWORD` |
-| 登录失败 | 检查用户名密码是否正确，查看错误提示 |
-| 任务不存在 | 检查 ID 是否正确 |
-| 网络超时 | 检查网络连接 |
-| 抓取失败 | 查看错误截图 `/tmp/zentao-{ID}-error.png` |
+| playwright-cli 未安装 | 提示 `npm install -g playwright-cli` 或使用 `npx playwright-cli` |
+| Chrome 占用冲突 | 使用 `playwright-cli open --browser=chromium` 回退 |
+| 登录失败 | 检测登录页错误提示，输出具体原因 |
+| 环境变量未配置且未登录 | 提示设置 `ZENTAO_USER` 和 `ZENTAO_PASSWORD` |
+| 任务/Bug 不存在 | 检测页面是否包含 404 或错误信息 |
+| 页面加载超时 | snapshot 重试一次，仍失败则截图 `playwright-cli screenshot` |
 
 ## Common Mistakes
 
@@ -124,53 +236,11 @@ export ZENTAO_PASSWORD="your_password"
 |------|------|
 | 输入 `1234` | 输入 `T1234`（需要 T/B 前缀） |
 | 输入 `t1234` | 输入 `T1234`（前缀大写） |
-| 未配置环境变量 | 先设置 `ZENTAO_USER` 和 `ZENTAO_PASSWORD` |
+| 使用 `--isolated` 模式 | 不加 `--isolated`，保持持久化 profile |
 | 手动创建文档 | 使用本 skill 自动创建 |
-
-## Obsidian Markdown 规范
-
-创建任务文档时**必须**使用 Obsidian Flavored Markdown 语法。
-
-**任务文档推荐格式：**
-
-```markdown
----
-created: 2025-01-18
-zentao_id: T1234
-status: 进行中
-tags:
-  - task
-  - project-name
----
-
-# 任务标题
-
-## 任务信息
-
-> [!info] 基本信息
-> - **优先级**: P1
-> - **预计工时**: 8h
-> - **指派人**: xxx
-
-## 需求描述
-
-![[Related-Requirement#^requirement-id]]
-
-## 实现方案
-
-> [!tip] 技术要点
-> 关键实现说明...
-
-## 相关链接
-
-- [[Related-Design|设计文档]]
-- [[Related-Task|关联任务]]
-```
-
-**REQUIRED SUB-SKILL:** Use `obsidian:obsidian-markdown` for complete Obsidian syntax reference
 
 ## 依赖
 
-**内置脚本：** `scripts/zentao-scraper.js` - 使用 playwright-skill 的 run.js 执行
-
 **REQUIRED SUB-SKILL:** Use `doc-writer` for document creation with task template
+**REQUIRED SUB-SKILL:** Use `obsidian:obsidian-markdown` for complete Obsidian syntax reference
+**REFERENCE:** `git-commit` skill 的分支命名规范
