@@ -1,0 +1,10 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(playwright-cli *)",
+      "Bash(npx playwright-cli *)",
+      "Bash(cat /tmp/claude/*)",
+      "Bash(cat .playwright-cli/*)"
+    ]
+  }
+}
