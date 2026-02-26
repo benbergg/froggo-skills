@@ -37,7 +37,7 @@ digraph flow {
 
     parse [label="1. 解析 ID\nT1234→任务 / B5678→Bug"];
     open [label="2. playwright-cli open\n（持久化 profile）"];
-    goto [label="3. goto 目标页"];
+    goto [label="3. open 目标页 URL"];
     check [label="已登录?" shape=diamond];
     login [label="4. 自动登录\nfill 用户名密码\ncheck 保持登录\nclick 登录"];
     extract [label="5. snapshot + eval\n提取结构化数据"];
@@ -62,11 +62,9 @@ digraph flow {
 ### 第一步：打开浏览器并访问目标页
 
 ```bash
-# 打开浏览器（持久化 profile，保持登录态）
-playwright-cli open
-
-# 导航到目标页
-playwright-cli goto https://chandao.bytenew.com/zentao/{type}-view-{id}.html
+# 打开浏览器并导航到目标页（持久化 profile，保持登录态）
+# 注意：playwright-cli 没有 goto 命令，用 open <url> 导航
+playwright-cli open https://chandao.bytenew.com/zentao/{type}-view-{id}.html
 
 # 获取快照检查状态
 playwright-cli snapshot
@@ -82,7 +80,7 @@ playwright-cli snapshot
 
 ```bash
 # 前置条件：需要环境变量 ZENTAO_USER 和 ZENTAO_PASSWORD
-playwright-cli goto https://chandao.bytenew.com/zentao/user-login.html
+playwright-cli open https://chandao.bytenew.com/zentao/user-login.html
 
 # 获取快照确认登录表单已加载
 playwright-cli snapshot
@@ -99,6 +97,9 @@ playwright-cli click <登录按钮ref>
 
 # 验证登录成功：检查 URL 不再包含 user-login
 playwright-cli snapshot
+
+# 登录成功后禅道可能跳转到其他页面，需重新导航到目标页
+playwright-cli open https://chandao.bytenew.com/zentao/{type}-view-{id}.html
 ```
 
 **登录表单已知结构（供参考，ref 每次会变）：**
@@ -120,25 +121,52 @@ playwright-cli snapshot
 
 **使用 run-code 提取数据（在正确的 iframe context 中）：**
 
-```bash
-playwright-cli run-code "async page => {
+将以下脚本保存为临时文件后通过 `playwright-cli run-code "$(cat /tmp/zentao-extract.js)"` 执行（避免引号转义问题）：
+
+```javascript
+// /tmp/zentao-extract.js
+async page => {
   const frames = page.frames();
-  const detailFrame = frames.find(f => f.url().includes('{type}-view-'));
-  if (!detailFrame) { console.log('ERROR: detail frame not found'); return; }
+  // 禅道详情页在 app-qa 或 app-my 等 iframe 中
+  const detailFrame = frames.find(f => f.name().startsWith('app-'));
+  if (!detailFrame) return 'ERROR: app iframe not found';
 
   const data = await detailFrame.evaluate(() => {
     const getText = (label) => {
-      const row = [...document.querySelectorAll('tr')].find(r => {
-        const th = r.querySelector('th, td:first-child');
-        return th && th.textContent.trim().startsWith(label);
-      });
-      return row ? row.querySelector('td:last-child, td:nth-child(2)').textContent.trim() : '';
+      for (const row of document.querySelectorAll('tr')) {
+        const th = row.querySelector('th, td:first-child');
+        if (th && th.textContent.trim().startsWith(label)) {
+          const cells = row.querySelectorAll('td');
+          const valueCell = cells.length > 1 ? cells[cells.length - 1] : cells[0];
+          if (valueCell) return valueCell.textContent.trim();
+        }
+      }
+      return '';
     };
 
-    const title = document.querySelector('h2, .main-header h2')?.textContent?.trim() ||
-                  document.title.replace(/ - .*$/, '').trim();
+    // 标题：从 document.title 提取最可靠
+    const pageTitle = document.title || '';
+    let title = pageTitle.replace(/^(BUG|任务) #\d+\s*/, '').replace(/ - .*$/, '').trim();
 
-    return {
+    // 描述/重现步骤
+    const descEl = document.querySelector('.detail-content .article-content');
+    let description = '';
+    if (descEl) {
+      const parts = [];
+      for (const child of descEl.childNodes) {
+        if (child.nodeType === 3) parts.push(child.textContent.trim());
+        else if (['P', 'DIV'].includes(child.tagName)) {
+          const t = child.textContent.trim();
+          if (t && t.length < 200) parts.push(t);
+        }
+      }
+      description = parts.filter(t => t).join('\n');
+    }
+
+    // 清理时间后缀
+    const clean = (s) => s.replace(/\s*于\s*\d{4}-\d{2}-\d{2}.*$/, '');
+
+    return JSON.stringify({
       title,
       product: getText('所属产品'),
       module: getText('所属模块'),
@@ -146,18 +174,23 @@ playwright-cli run-code "async page => {
       severity: getText('严重程度'),
       priority: getText('优先级'),
       status: getText('Bug状态') || getText('任务状态'),
-      assignee: getText('当前指派') || getText('指派给'),
+      assignee: clean(getText('当前指派') || getText('指派给')),
       estimate: getText('预计'),
       startDate: getText('预计开始'),
       deadline: getText('截止日期'),
       execution: getText('所属执行'),
-      description: document.querySelector('.detail-content .article-content, .tab-content .article-content')?.textContent?.trim() || '',
-      createdBy: getText('由谁创建'),
-    };
+      description,
+      createdBy: clean(getText('由谁创建')),
+    }, null, 2);
   });
-  console.log(JSON.stringify(data, null, 2));
-}"
+  return data;
+}
 ```
+
+**注意事项：**
+- iframe 通过 `f.name().startsWith('app-')` 定位（如 `app-qa`、`app-my`）
+- `run-code` 的返回值会显示在 Result 中，无需 `console.log`
+- 直接在命令行内写多行 JS 会有引号转义问题，推荐写入临时文件后 `$(cat file)` 执行
 
 ### 第四步：生成 git 分支名
 
