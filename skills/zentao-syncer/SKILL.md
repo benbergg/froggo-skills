@@ -149,18 +149,12 @@ async page => {
     let title = pageTitle.replace(/^(BUG|任务) #\d+\s*/, '').replace(/ - .*$/, '').trim();
 
     // 描述/重现步骤
-    const descEl = document.querySelector('.detail-content .article-content');
+    // 注意：禅道的描述区域 class 是 "detail-content article-content"（同一元素上的两个 class）
+    // 必须用 .detail-content.article-content（无空格），而非 .detail-content .article-content（后代选择器）
+    const descEl = document.querySelector('.detail-content.article-content');
     let description = '';
     if (descEl) {
-      const parts = [];
-      for (const child of descEl.childNodes) {
-        if (child.nodeType === 3) parts.push(child.textContent.trim());
-        else if (['P', 'DIV'].includes(child.tagName)) {
-          const t = child.textContent.trim();
-          if (t && t.length < 200) parts.push(t);
-        }
-      }
-      description = parts.filter(t => t).join('\n');
+      description = descEl.innerText.trim();
     }
 
     // 清理时间后缀
@@ -194,28 +188,31 @@ async page => {
 
 ### 第四步：生成 git 分支名
 
-根据类型和标题自动生成：
+根据类型和禅道 ID 自动生成，格式为 `{type}_{yyyyMMdd}_{zentaoId}`：
 
 | 禅道类型 | 分支格式 | 示例 |
 |----------|----------|------|
-| Bug (B) | `hotfix/B{id}-{简短描述}` | `hotfix/B49622-评价标签正负面显示错误` |
-| Task (T) | `feat/T{id}-{简短描述}` | `feat/T1234-商品数据源对接` |
+| Task (T) | `ft_{yyyyMMdd}_T{id}` | `ft_20260227_T42605` |
+| Bug (B) | `hotfix_{yyyyMMdd}_B{id}` | `hotfix_20260225_B49564` |
 
-**简短描述规则：**
-- 去掉日期前缀（如 `【20260226】`）
-- 截取前 20 字符
-- 替换空格为 `-`
+**命名规则：**
+- `yyyyMMdd` 为当天日期
+- 使用下划线 `_` 分隔，不使用 `/` 或 `-`
+- 不包含中文描述
 
-### 第五步：调用 doc-writer 生成文档
+### 第五步：创建任务文档
 
-调用 `doc-writer` skill，文档 frontmatter 包含：
+> **重要：** 不要使用 `obsidian-cli create --content "$(cat file)"` 方式创建文档，因为内容中的 `=`、括号等特殊字符会在 shell `$()` 展开时被截断。
+> 应直接使用 Write 工具写入 `~/workspace/Knowledge-Library/02-Tasks/yyyyMMdd-{ID}-{标题}.md` 文件。
+
+文档 frontmatter 包含：
 
 ```yaml
 created: {今日日期}
 updated: {今日日期}
 zentao_id: {B49622 或 T1234}
 zentao_url: https://chandao.bytenew.com/zentao/{type}-view-{id}.html
-git_branch: hotfix/B49622-评价标签正负面显示错误
+git_branch: hotfix_20260225_B49622
 status: 进行中
 project: {从所属产品/执行推断}
 tags:
@@ -271,6 +268,8 @@ playwright-cli 默认使用持久化 profile，勾选"保持登录"后 cookie �
 | 输入 `t1234` | 输入 `T1234`（前缀大写） |
 | 使用 `--isolated` 模式 | 不加 `--isolated`，保持持久化 profile |
 | 手动创建文档 | 使用本 skill 自动创建 |
+| 用 `.detail-content .article-content` 选择描述 | 用 `.detail-content.article-content`（无空格，同元素多class） |
+| 用 `obsidian-cli --content "$(cat file)"` 写文档 | 用 Write 工具直接写入文件（避免 shell 特殊字符截断） |
 
 ## 依赖
 
