@@ -84,30 +84,6 @@ skill: target-skill-name
 ```
 git-commit
 └── 独立，无外部依赖
-
-doc-writer
-└── 依赖 obsidian:obsidian-markdown
-
-doc-reader
-└── 独立，查询知识库目录
-
-zentao-syncer
-└── 依赖 MCP: playwright (浏览器自动化)
-
-requirement-gathering
-├── 调用 doc-writer (文档输出)
-└── 可选继续调用 superpowers:brainstorming (设计)
-```
-
-## 配置覆盖
-
-项目可在自己的 CLAUDE.md 中覆盖默认配置：
-
-```markdown
-## froggo-skills 配置
-
-- doc_root: /custom/path/to/docs
-- templates_dir: /custom/path/to/templates
 ```
 
 ## 版本管理

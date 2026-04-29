@@ -1,7 +1,7 @@
 {
   "name": "froggo-skills",
-  "version": "1.22.0",
-  "description": "个人工作流增强技能：Git 提交规范、禅道同步、黄金行情分析等",
+  "version": "1.24.0",
+  "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API 只读访问",
   "author": {
     "name": "benbergg"
   },
