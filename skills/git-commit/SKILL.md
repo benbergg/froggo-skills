@@ -7,7 +7,7 @@ description: "This skill should be used when committing code changes, executing 
 
 ## Overview
 
-所有代码提交必须遵循 Conventional Commits 格式并关联禅道任务号，确保变更历史可追溯、可检索。
+所有代码提交必须遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/) 国际标准，使用英文撰写，确保变更历史在国际化协作中清晰可读、可被工具解析。
 
 ## When to Use
 
@@ -20,66 +20,93 @@ description: "This skill should be used when committing code changes, executing 
 
 ## Quick Reference
 
-**格式：**
+**格式（Conventional Commits）：**
+
 ```
-<type>: <description> #<zentao_id>
+<type>[!]: <description>
+
+[optional body]
+
+[optional footer(s)]
 ```
 
-**Type 速查：**
+**Type 速查（国际标准）：**
 
-| Type | 说明 | 禅道关联 |
-|------|------|----------|
-| feat | 新功能 | #T1234 |
-| hotfix | 修复 bug | #B5678 |
-| docs | 文档变更 | #0000 |
-| style | 代码格式 | #0000 |
-| refactor | 重构 | #T1234 |
-| perf | 性能优化 | #T1234 |
-| test | 测试相关 | #T1234 |
-| chore | 构建/工具/依赖 | #0000 |
-| revert | 回滚 | #T1234 |
+| Type | 说明 |
+|------|------|
+| feat | A new feature |
+| fix | A bug fix |
+| docs | Documentation only changes |
+| style | Formatting, white-space, semicolons (no code change) |
+| refactor | Code change that neither fixes a bug nor adds a feature |
+| perf | Performance improvement |
+| test | Adding or correcting tests |
+| build | Build system or external dependency changes |
+| ci | CI configuration files and scripts |
+| chore | Other maintenance changes (tooling, repo housekeeping) |
+| revert | Reverts a previous commit |
 
-**禅道 ID 格式：**
-- 任务：`#T1234`
-- Bug：`#B5678`
-- 无关联：`#0000`
+**Breaking Change：**
+
+- 在 type 后追加 `!`：`feat!: drop Node 18 support`
+- 或在 footer 中添加 `BREAKING CHANGE: <说明>`
 
 ## 规则
 
 1. **type**：英文小写，从速查表中选择
-2. **description**：中文描述，简洁说明变更内容
-3. **zentao_id**：必须包含，无关联时使用 `#0000`
-4. **长度**：整行不超过 72 字符
-5. **禁止联合签名**：不添加 `Co-Authored-By`
+2. **description**：
+   - 英文撰写
+   - 祈使句、动词原形开头（add/fix/update/remove，不用 `added`/`adds`）
+   - 首字母小写
+   - 结尾不加句号
+3. **subject 长度**：首行 ≤ 72 字符
+4. **body**（可选）：与 subject 之间空一行；解释 *what* 与 *why*，不解释 *how*
+5. **footer**（可选）：用于 `BREAKING CHANGE:` 或关联 issue（如 `Closes #123`）
+6. **禁止联合签名**：不添加 `Co-Authored-By`、`Signed-off-by` 等署名
 
 ## 示例
 
 **单行提交：**
+
 ```
-feat: 添加用户积分系统 #T1234
-hotfix: 修复积分计算精度问题 #B5678
-docs: 更新积分API文档 #T1234
-chore: 升级Spring Boot版本 #0000
+feat: add user points system
+fix: correct points calculation precision
+docs: update points API reference
+chore: bump spring boot to 3.4.0
+refactor: extract checkout flow into service
+perf: cache product lookup results
+```
+
+**Breaking change：**
+
+```
+feat!: drop support for Node 18
+
+BREAKING CHANGE: Node 20+ is now required.
 ```
 
 **多行提交（复杂变更）：**
-```
-feat: 添加用户积分系统 #T1234
 
-- 新增积分表结构
-- 实现积分增减 API
-- 添加积分查询接口
+```
+feat: add user points system
+
+- Introduce points table schema
+- Implement increment/decrement APIs
+- Add query endpoint with pagination
+
+Closes #123
 ```
 
 ## Common Mistakes
 
 | 错误 | 正确 |
 |------|------|
-| `Feat: 添加功能` | `feat: 添加功能` (type 小写) |
-| `feat: add login` | `feat: 添加登录功能` (中文描述) |
-| `feat: 添加功能` | `feat: 添加功能 #T1234` (缺少禅道号) |
-| `fix: 修复bug` | `hotfix: 修复bug` (bug 修复用 hotfix) |
-| 超长描述导致换行 | 保持整行 ≤72 字符 |
+| `Feat: add feature` | `feat: add feature` (type 小写) |
+| `feat: 添加登录功能` | `feat: add login` (英文描述) |
+| `feat: Added login.` | `feat: add login` (祈使句、无句号、首字母小写) |
+| `hotfix: bug fix` | `fix: <description>` (用标准 `fix`) |
+| `feat: add login #T1234` | `feat: add login` (不再使用禅道号) |
+| 超长描述导致换行 | subject ≤ 72 字符，详情写到 body |
 
 ## 红旗清单
 
@@ -87,12 +114,12 @@ feat: 添加用户积分系统 #T1234
 
 | 借口 | 正确做法 |
 |------|----------|
-| "这次改动太小不需要禅道号" | 使用 `#0000` |
+| "中文描述更直观" | 强制英文描述 |
+| "用 `hotfix` 更醒目" | 标准命名只有 `fix` |
 | "稍后补全 commit message" | 现在就写完整 |
-| "英文描述更专业" | 规范要求中文描述 |
-| "这个不算 bug 用 fix 就行" | bug 修复统一用 `hotfix` |
-| "加个 Co-Authored-By 没关系" | 禁止联合签名 |
-| "description 写长点更清楚" | 控制在 72 字符内，详情用多行格式 |
+| "加个 Co-Authored-By 没关系" | 禁止联合署名 |
+| "description 写长点更清楚" | subject ≤ 72 字符，详情用 body |
+| "过去式更自然" | Conventional Commits 要求祈使句 |
 
 ## 与其他 Skill 协作
 
@@ -106,6 +133,8 @@ feat: 添加用户积分系统 #T1234
 | superpowers:finishing-a-development-branch | 完成分支工作时的提交 |
 
 **重要**：即使其他 skill 或计划文档中写了具体的 commit 命令格式，也必须使用本 skill 的规范覆盖，确保：
-- 使用中文描述
-- 包含禅道任务号
+
+- 使用英文描述（祈使句、首字母小写、无句号）
+- 遵循 Conventional Commits 标准 type
+- 不使用禅道号或其他内部任务号
 - 禁止 Co-Authored-By 签名
