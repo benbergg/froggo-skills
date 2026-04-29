@@ -13,12 +13,12 @@ description: "Zentao RESTful API v1: query users, products, projects, executions
 触发关键词：禅道、zentao API、查任务、查 Bug、查需求、查产品、查项目、查迭代、本周完成的任务、本周解决的 Bug、待跟进 Bug、下周待开展任务、**创建任务**、**创建子任务**。
 
 **支持的写入操作**：
-- ✅ 创建 task（`zentao_create_task`）
-- ✅ 创建子任务（`zentao_create_subtask`，自动两步流程）
+- Task：创建 / 创建子任务 / 修改 / 开始 / 暂停 / 继续 / 完成 / 关闭 / 添加工时日志
+- Bug：创建 / 修改 / 确认 / 关闭 / 激活 / 解决（**Bug 备注通过这些 action 端点的 `comment` 字段附加**）
 
 **不支持**：
-- ❌ DELETE（任何形式的单/批量删除，设计层面禁止）
-- ❌ Bug 加备注（v1/v2 RESTful API 均不暴露此端点，详见 `references/known-issues.md`）
+- ❌ DELETE（任何形式的单 / 批量删除，设计层面禁止；lib 无任何 `*delete*` 函数，bats 测试锁定）
+- ❌ Bug 单独加备注（v1/v2 RESTful API 无独立端点，曲线方案见 `references/known-issues.md`）
 - ❌ 网页 UI 操作 / HTML 抓取（已废弃）
 
 ## 环境变量（必读）
@@ -62,16 +62,40 @@ compute_week_range                      # 导出 WK_START / WK_END / NEXT_S / NE
 | `get_user_cached` | `get_user_cached` → stdout: user JSON | 24h TTL 文件缓存 |
 | `compute_week_range` | `compute_week_range` → exports vars | 周一 00:00 ~ 下周一 00:00 UTC（与 weekly_report 口径一致） |
 
-**写（仅任务相关）：**
+**写 — 通用：**
 
 | 函数 | 签名 | 说明 |
 |------|------|------|
-| `zentao_post` | `zentao_post <ep> <body_json>` → stdout: body | 通用 POST，401 自动重取 |
-| `zentao_put` | `zentao_put <ep> <body_json>` → stdout: body | 通用 PUT，401 自动重取 |
-| `zentao_create_task` | `zentao_create_task <eid> <body_json>` → stdout: created task | body 必含 `name` + `estStarted` + `deadline` |
-| `zentao_create_subtask` | `zentao_create_subtask <eid> <parent_id> <body_json>` → stdout: linked task | 两步：POST 创建 + PUT 设 parent；POST body 中的 `parent` 字段会被自动剥除 |
+| `zentao_post` | `<ep> <body_json>` → body | 通用 POST，401 自动重取 |
+| `zentao_put` | `<ep> <body_json>` → body | 通用 PUT，401 自动重取 |
 
-**无 DELETE 函数**：本 lib 不提供任何 `zentao_delete*` 或 DELETE 等价物。这是设计护栏，bats 测试 `lib does NOT define any DELETE helper` 锁定此约束。
+**写 — Task 生命周期（v1 §2.13）：**
+
+| 函数 | 端点 | body 必填（文档） | 备注 |
+|------|------|----------------|------|
+| `zentao_create_task <eid> <body>` | `POST /executions/{eid}/tasks` | name, estStarted, deadline | parent 字段在 POST 被忽略 |
+| `zentao_create_subtask <eid> <pid> <body>` | POST + PUT | 同上 | 自动两步流程：先创建后设 parent |
+| `zentao_update_task <id> [body]` | `PUT /tasks/{id}` | — | 修改 module/story/name/type/assignedTo/pri/estimate/estStarted/deadline |
+| `zentao_start_task <id> [body]` | `POST /tasks/{id}/start` | left | wait → doing |
+| `zentao_pause_task <id> [body]` | `POST /tasks/{id}/pause` | — | doing → pause；body 可含 comment |
+| `zentao_resume_task <id> [body]` | `POST /tasks/{id}/restart` | left（**实测还要 consumed**） | pause → doing；端点是 `/restart` 不是 `/resume` |
+| `zentao_finish_task <id> [body]` | `POST /tasks/{id}/finish` | currentConsumed, finishedDate | → done |
+| `zentao_close_task <id> [body]` | `POST /tasks/{id}/close` | — | done → closed |
+| `zentao_create_task_log <id> <body>` | `POST /tasks/{id}/estimate` | date[], work[], consumed[], left[]（并行数组） | 添加工时日志 |
+| `zentao_get_task_logs <id>` | `GET /tasks/{id}/estimate` | — | 取工时日志 |
+
+**写 — Bug 生命周期（v1 §2.14）：**
+
+| 函数 | 端点 | body 必填 | 备注 |
+|------|------|---------|------|
+| `zentao_create_bug <pid> <body>` | `POST /products/{pid}/bugs` | title, severity, pri, type | type ∈ codeerror/config/install/security/performance/standard/automation/designdefect/others |
+| `zentao_update_bug <id> [body]` | `PUT /bugs/{id}` | — | 修改 15 字段 |
+| `zentao_confirm_bug <id> [body]` | `POST /bugs/{id}/confirm` | — | body 可含 comment |
+| `zentao_close_bug <id> [body]` | `POST /bugs/{id}/close` | — | body 可含 comment |
+| `zentao_activate_bug <id> [body]` | `POST /bugs/{id}/active` | — | 端点是 `/active` 不是 `/activate`；body 可含 comment |
+| `zentao_resolve_bug <id> <body>` | `POST /bugs/{id}/resolve` | resolution | resolution ∈ bydesign/duplicate/external/fixed/notrepro/postponed/willnotfix/tostory；body 可含 comment |
+
+**无 DELETE 函数**：本 lib 不提供任何 `zentao_delete*` / `zentao_remove*` 函数。bats 测试 `no DELETE helper` 多处断言锁定此约束。
 
 ### 创建子任务示例
 

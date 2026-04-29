@@ -85,14 +85,33 @@
 | 通用 POST | `zentao_post <endpoint> <body_json>` | 401 自动重取 + 控制字符 sanitize |
 | 通用 PUT | `zentao_put <endpoint> <body_json>` | 同上 |
 
-**真实 POST/PUT 端点**：
+### Task 生命周期端点（v1 §2.13）
 
-| 操作 | 端点 |
-|------|------|
-| 创建 task（顶层） | `POST /executions/{eid}/tasks` |
-| 修改 task（设 parent / 改字段） | `PUT /tasks/{id}` |
-| 创建 Bug | `POST /products/{pid}/bugs`（v1 §2.14.2，本 skill 未实现） |
-| 修改 Bug | `PUT /bugs/{id}`（v1 §2.14.4，本 skill 未实现） |
+| 操作 | 端点 | lib 函数 |
+|------|------|---------|
+| 创建（顶层） | `POST /executions/{eid}/tasks` | `zentao_create_task` |
+| 创建子任务 | POST + PUT 两步 | `zentao_create_subtask` |
+| 修改 | `PUT /tasks/{id}` | `zentao_update_task` |
+| 开始 | `POST /tasks/{id}/start` | `zentao_start_task` |
+| 暂停 | `POST /tasks/{id}/pause` | `zentao_pause_task` |
+| 继续 | `POST /tasks/{id}/restart` ⚠️ 不是 /resume | `zentao_resume_task` |
+| 完成 | `POST /tasks/{id}/finish` | `zentao_finish_task` |
+| 关闭 | `POST /tasks/{id}/close` | `zentao_close_task` |
+| 添加工时日志 | `POST /tasks/{id}/estimate` | `zentao_create_task_log` |
+| 取工时日志 | `GET /tasks/{id}/estimate` | `zentao_get_task_logs` |
+| ❌ 删除 | DELETE — 不暴露 | — |
+
+### Bug 生命周期端点（v1 §2.14）
+
+| 操作 | 端点 | lib 函数 |
+|------|------|---------|
+| 创建 | `POST /products/{pid}/bugs` | `zentao_create_bug` |
+| 修改 | `PUT /bugs/{id}` | `zentao_update_bug` |
+| 确认 | `POST /bugs/{id}/confirm` | `zentao_confirm_bug` |
+| 关闭 | `POST /bugs/{id}/close` | `zentao_close_bug` |
+| 激活 | `POST /bugs/{id}/active` ⚠️ 不是 /activate | `zentao_activate_bug` |
+| 解决 | `POST /bugs/{id}/resolve` | `zentao_resolve_bug` |
+| ❌ 删除 | DELETE — 不暴露 | — |
 
 ## 通用查询参数（实测白名单）
 

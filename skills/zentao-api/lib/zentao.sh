@@ -248,6 +248,148 @@ zentao_create_subtask() {
   zentao_put "/tasks/${new_id}" "$(jq -cn --argjson p "$parent" '{parent:$p}')"
 }
 
+# --- shared validators for the action wrappers below ---
+
+_zentao_id_required() {
+  case "${1:-}" in
+    '') echo "FATAL: numeric id required" >&2; return 2 ;;
+    *[!0-9]*) echo "FATAL: id must be numeric: '$1'" >&2; return 2 ;;
+  esac
+}
+
+_zentao_body_required() {
+  if [ -z "${1:-}" ]; then
+    echo "FATAL: body_json required" >&2
+    return 2
+  fi
+  if ! printf '%s' "$1" | jq -e . >/dev/null 2>&1; then
+    echo "FATAL: body is not valid JSON" >&2
+    return 2
+  fi
+}
+
+# ===== Task write endpoints (Zentao v1 §2.13, no DELETE) =====
+# Per zentao docs each call's required body fields:
+#   start   : left
+#   resume  : left
+#   finish  : currentConsumed, finishedDate
+#   pause/close: none
+#   estimate(log): date[], work[], consumed[], left[]   (all arrays, parallel)
+# Lib only validates id + JSON-validity; field-level validation is left to the
+# server so we don't drift from upstream as the schema evolves.
+
+zentao_update_task() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_put "/tasks/$id" "$body"
+}
+
+zentao_start_task() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/tasks/$id/start" "$body"
+}
+
+zentao_pause_task() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/tasks/$id/pause" "$body"
+}
+
+# Continue/resume task. Endpoint name is "/restart" per docs §2.13.8.
+zentao_resume_task() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/tasks/$id/restart" "$body"
+}
+
+zentao_finish_task() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/tasks/$id/finish" "$body"
+}
+
+zentao_close_task() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/tasks/$id/close" "$body"
+}
+
+# Add task effort log. Body is parallel arrays: date[], work[], consumed[], left[].
+# Endpoint /tasks/{id}/estimate per §2.13.11.
+zentao_create_task_log() {
+  local id="$1" body="$2"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/tasks/$id/estimate" "$body"
+}
+
+# Get task effort log list. §2.13.12 (GET /tasks/{id}/estimate).
+zentao_get_task_logs() {
+  local id="$1"
+  _zentao_id_required "$id" || return 2
+  zentao_call "/tasks/$id/estimate"
+}
+
+# ===== Bug write endpoints (Zentao v1 §2.14, no DELETE) =====
+# Per zentao docs:
+#   create  : POST /products/{pid}/bugs    body must include title,severity,pri,type
+#   update  : PUT  /bugs/{id}              no required field at API level
+#   confirm : POST /bugs/{id}/confirm      all optional (incl. comment)
+#   close   : POST /bugs/{id}/close        all optional
+#   activate: POST /bugs/{id}/active       all optional   (note: /active not /activate)
+#   resolve : POST /bugs/{id}/resolve      resolution required
+
+zentao_create_bug() {
+  local product_id="$1" body="$2"
+  _zentao_id_required "$product_id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/products/$product_id/bugs" "$body"
+}
+
+zentao_update_bug() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_put "/bugs/$id" "$body"
+}
+
+zentao_confirm_bug() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/bugs/$id/confirm" "$body"
+}
+
+zentao_close_bug() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/bugs/$id/close" "$body"
+}
+
+# Activate (reopen) a bug. Endpoint is /active (not /activate) per §2.14.8.
+zentao_activate_bug() {
+  local id="$1" body="${2:-}"; [ -z "$body" ] && body="{}"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/bugs/$id/active" "$body"
+}
+
+# Resolve a bug. Body must include resolution per §2.14.9; lib does not enforce.
+zentao_resolve_bug() {
+  local id="$1" body="$2"
+  _zentao_id_required "$id" || return 2
+  _zentao_body_required "$body" || return 2
+  zentao_post "/bugs/$id/resolve" "$body"
+}
+
 # Paginate over a list endpoint with limit=500. Emits each page's raw body
 # concatenated with newlines. Caller is expected to pipe through `jq -s`.
 # Safety valve: hard cap at 20 pages (10000 items) to avoid runaway loops on
