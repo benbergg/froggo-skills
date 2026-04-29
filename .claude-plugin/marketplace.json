@@ -5,15 +5,15 @@
     "email": "nicofroggo@gmai.com"
   },
   "metadata": {
-    "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API 只读访问",
-    "version": "1.24.0"
+    "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + 创建任务）",
+    "version": "1.25.0"
   },
   "plugins": [
     {
       "name": "froggo-skills",
       "source": "./",
-      "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API 只读访问",
-      "version": "1.24.0",
+      "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + 创建任务）",
+      "version": "1.25.0",
       "author": {
         "name": "benbergg"
       },

@@ -134,6 +134,120 @@ _zentao_curl_get() {
     | LC_ALL=C tr -d '\001-\010\013\014\016-\037'
 }
 
+_zentao_curl_write() {
+  # $1=method (POST|PUT)  $2=url  $3=token  $4=body
+  curl -s --noproxy '*' --max-time 20 -X "$1" "$2" \
+    -H "Token: $3" -H "Content-Type: application/json" \
+    -d "$4" \
+    | LC_ALL=C tr -d '\001-\010\013\014\016-\037'
+}
+
+_zentao_write() {
+  # Shared body of zentao_post / zentao_put.
+  # $1=method  $2=endpoint  $3=body_json
+  _zentao_require_env || return $?
+  local method="$1" ep="$2" body="$3"
+  case "$method" in POST|PUT) ;; *)
+    printf 'FATAL: unsupported method: %s\n' "$method" >&2; return 2 ;;
+  esac
+
+  local cache; cache=$(zentao_cache_dir)
+  local token_file="$cache/token.json"
+  local token=""
+  if [ -f "$token_file" ]; then
+    token=$(jq -r '.token // empty' "$token_file" 2>/dev/null)
+  fi
+  if [ -z "$token" ]; then
+    token=$(acquire_token) || return $?
+  fi
+
+  local url="${ZENTAO_BASE_URL}${ep}"
+  local resp
+  resp=$(_zentao_curl_write "$method" "$url" "$token" "$body") || true
+
+  if printf '%s' "$resp" | grep -qi '"error":"[Uu]nauthorized"'; then
+    token=$(acquire_token) || return $?
+    resp=$(_zentao_curl_write "$method" "$url" "$token" "$body") || true
+  fi
+
+  printf '%s\n' "$resp"
+}
+
+# POST <endpoint> <body_json>. Auto-acquires token; on 401 retries exactly once.
+zentao_post() { _zentao_write POST "$1" "$2"; }
+
+# PUT <endpoint> <body_json>. Auto-acquires token; on 401 retries exactly once.
+zentao_put()  { _zentao_write PUT  "$1" "$2"; }
+
+# Create a task in the given execution.
+#   $1: execution_id (required, numeric)
+#   $2: body_json    (required, valid JSON; must include name + estStarted +
+#                     deadline at minimum per Zentao's validation)
+# Returns the created task JSON on stdout; non-zero on validation/HTTP error.
+zentao_create_task() {
+  local eid="$1" body="$2"
+  if [ -z "$eid" ]; then
+    echo "FATAL: zentao_create_task: execution_id required" >&2
+    return 2
+  fi
+  if [ -z "$body" ]; then
+    echo "FATAL: zentao_create_task: body_json required" >&2
+    return 2
+  fi
+  if ! printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    echo "FATAL: zentao_create_task: body is not valid JSON" >&2
+    return 2
+  fi
+  zentao_post "/executions/${eid}/tasks" "$body"
+}
+
+# Create a sub-task and link it to a parent task. Two-step flow because the
+# Zentao v1 API silently ignores `parent` on POST; the parent association
+# only takes effect through a follow-up PUT.
+#   $1: execution_id  (required, numeric)
+#   $2: parent_task_id (required, numeric)
+#   $3: body_json     (required; any `parent` key in it is stripped before POST
+#                      to avoid confusion — the canonical parent is $2)
+# Returns the final task JSON (after PUT) on stdout.
+zentao_create_subtask() {
+  local eid="$1" parent="$2" body="$3"
+  if [ -z "$eid" ]; then
+    echo "FATAL: zentao_create_subtask: execution_id required" >&2
+    return 2
+  fi
+  if [ -z "$parent" ]; then
+    echo "FATAL: zentao_create_subtask: parent_task_id required" >&2
+    return 2
+  fi
+  case "$parent" in
+    ''|*[!0-9]*) echo "FATAL: zentao_create_subtask: parent_task_id must be numeric" >&2; return 2 ;;
+  esac
+  if [ -z "$body" ] || ! printf '%s' "$body" | jq -e . >/dev/null 2>&1; then
+    echo "FATAL: zentao_create_subtask: body must be valid JSON" >&2
+    return 2
+  fi
+
+  # Strip any caller-supplied `parent` from POST body (POST ignores it; we set
+  # it explicitly via PUT below to make intent unambiguous).
+  local post_body
+  post_body=$(printf '%s' "$body" | jq -c 'del(.parent)')
+
+  local created
+  created=$(zentao_post "/executions/${eid}/tasks" "$post_body") || return $?
+  if printf '%s' "$created" | grep -qi '"error"'; then
+    printf 'FATAL: subtask POST failed: %s\n' "$created" >&2
+    return 1
+  fi
+  local new_id
+  new_id=$(printf '%s' "$created" | jq -r '.id // empty' 2>/dev/null)
+  if [ -z "$new_id" ]; then
+    printf 'FATAL: subtask POST returned no id: %s\n' "$created" >&2
+    return 1
+  fi
+
+  zentao_put "/tasks/${new_id}" "$(jq -cn --argjson p "$parent" '{parent:$p}')"
+}
+
 # Paginate over a list endpoint with limit=500. Emits each page's raw body
 # concatenated with newlines. Caller is expected to pipe through `jq -s`.
 # Safety valve: hard cap at 20 pages (10000 items) to avoid runaway loops on

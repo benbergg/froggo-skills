@@ -74,6 +74,26 @@
 | 任务详情 | `zentao_call /tasks/{id}` |
 | Bug 详情 | `zentao_call /bugs/{id}` |
 
+## 写入端点（创建 / 修改）
+
+⚠️ **写入仅限创建任务相关**。单个 / 批量删除一律不暴露（lib 不提供 `zentao_delete*` 函数）。Bug 加备注 v1/v2 均不支持，详见 `known-issues.md`。
+
+| 用途 | 调用 | 备注 |
+|------|------|------|
+| 创建顶层 task | `zentao_create_task <eid> <body_json>` | body 必含 `name` + `estStarted` + `deadline`；`parent` 字段会被 API 忽略（必须 0） |
+| 创建子任务 | `zentao_create_subtask <eid> <parent_id> <body_json>` | 两步：先 POST 创建，再 PUT 设 `parent` |
+| 通用 POST | `zentao_post <endpoint> <body_json>` | 401 自动重取 + 控制字符 sanitize |
+| 通用 PUT | `zentao_put <endpoint> <body_json>` | 同上 |
+
+**真实 POST/PUT 端点**：
+
+| 操作 | 端点 |
+|------|------|
+| 创建 task（顶层） | `POST /executions/{eid}/tasks` |
+| 修改 task（设 parent / 改字段） | `PUT /tasks/{id}` |
+| 创建 Bug | `POST /products/{pid}/bugs`（v1 §2.14.2，本 skill 未实现） |
+| 修改 Bug | `PUT /bugs/{id}`（v1 §2.14.4，本 skill 未实现） |
+
 ## 通用查询参数（实测白名单）
 
 | 参数 | 在哪些接口生效 |
