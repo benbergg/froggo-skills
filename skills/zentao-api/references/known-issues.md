@@ -92,3 +92,26 @@ zentao_resume_task 43909 '{"left":1,"consumed":2,"comment":"continue"}'
 ## "由我关闭"视图陷阱（旧 zentao_browser 时代）
 
 旧 skill 通过抓 `my-contribute-task.html` 的"由我关闭"视图，会拉到全量历史，需要二次筛。API 时代直接按 `finishedDate ∈ 本周` 在客户端筛，**没有此陷阱**。
+
+## 11. 官方文档 vs 生产实例差异汇总表
+
+> **必读** — 通用 LLM 训练语料只见过禅道官方文档(664/665),会按文档写出错误的 URL/方法/字段。
+>
+> **证据来源说明**:
+> - `已实测 ✓` — 本文件其他章节已明确记录的实测偏差
+> - `lib 推断` — V2 `lib/zentao.sh` 这么用,但未直接抓包验证。需 Phase 5 verify.md 确认
+> - `待 V3 验证` — 偏差猜测,Phase 5 必须实测后回填
+
+| 操作 | 官方文档 (664/665) | 实际行为 | 证据来源 |
+|------|-------------------|----------|---------|
+| 获取 Token | `GET /token` | `POST /tokens`(body:`{account,password}`) | **已实测 ✓** |
+| 创建任务 | `POST /tasks` | `POST /executions/{eid}/tasks` | **已实测 ✓** |
+| 任务-继续 | `PUT /tasks/{id}/continue` | `POST /tasks/{id}/restart`(实测还要 `consumed`) | **已实测 ✓** |
+| 任务日志 | `POST/GET /tasks/{id}/logs` | `POST/GET /tasks/{id}/estimate` | **已实测 ✓** |
+| 激活 Bug | `PUT /bugs/{id}/activate` | `POST /bugs/{id}/active` | **已实测 ✓** |
+| 任务 start/pause/finish/close 方法 | 文档标 PUT | V2 lib 用 POST | `lib 推断` → 待 V3 verify 确认 |
+| Bug confirm/close/resolve 方法 | 文档标 PUT | V2 lib 用 POST | `lib 推断` → 待 V3 verify 确认 |
+| 用例端点路径 | `/cases` | V2 endpoints.md 写 `/products/{id}/testcases` | `lib 推断` → 待 V3 verify 确认 |
+| 测试单端点路径 | `/testsuites` | V2 endpoints.md 写 `/products/{id}/testtasks` | `lib 推断` → 待 V3 verify 确认 |
+
+> **Phase 5 强制要求**:`verify.md` L5 必须对每条 `lib 推断` 行抓包(`curl -v`)确认实际请求/响应,把结果回填本表,把列名改回"实测"+真实日期。

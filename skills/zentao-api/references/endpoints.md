@@ -1,132 +1,275 @@
-# 禅道 API 端点目录
+# 禅道 v1 API 端点目录
 
-> 本文件按需载入。先看 `SKILL.md` 主文件再读这里。
+> 按需载入。先看 [`SKILL.md`](../SKILL.md) 主文件,再读这里。涉及反直觉行为/偏差请同时参考 [`known-issues.md`](known-issues.md)。
 
-## 调用依赖图
+## 0. 全 v1 入口图
 
 ```
-入口（无前置 ID）：
-  /user      /users     /programs    /products    /projects    /executions
+入口（无前置 ID,可直接调）:
+  /user  /users  /departments  /programs  /products  /projects
+  /executions  /productplans  /testtasks  /feedbacks  /tickets
 
-二级（需要上层 ID）：
+二级（需要上层 ID）:
   program → /programs/{id}/{products|projects}
-  product → /products/{id}/{plans|stories|bugs|projects|testcases|testtasks}
-  project → /projects/{id}/{stories|bugs|executions|builds}
-  exec    → /executions/{id}/{stories|tasks|bugs|builds}        ★ tasks 唯一来源
-
-详情：
-  /programs/{id}  /products/{id}  /projects/{id}  /executions/{id}
-  /users/{id}  /stories/{id}  /tasks/{id}  /bugs/{id}
+  product → /products/{id}/{stories|bugs|plans|releases|cases}
+  project → /projects/{id}/{stories|bugs|executions|builds|releases|testtasks}
+  exec    → /executions/{id}/{stories|tasks|bugs|builds}    ★ tasks 唯一来源
+  plan    → /productplans/{id}/{stories|bugs}
 ```
 
-⚠️ 残废端点（API 存在但不可用）：
-- 顶层 `GET /tasks` — `limit`/`page` 失效，永远只返 1 条 → **禁用**，必须走 `/executions/{id}/tasks`
-- `GET /products/{id}/bugs?status=...` — `status` 参数破坏查询（任何值都返 0）→ **不要传 status**
+⚠️ 残废端点(API 存在但不可用):
+- 顶层 `GET /tasks` — `limit`/`page` 失效,永远只返 1 条 → **禁用**,必须走 `/executions/{id}/tasks`
+- `GET /products/{id}/bugs?status=...` — `status` 参数破坏查询(任何值都返 0)→ **不要传 status**
 
-## "已知什么" → "调什么"
+## 1. "已知什么 → 调什么"查找表
 
 | 已知 | 想要 | 调用 |
 |------|------|------|
-| 什么都不知道 | "我的"数据 | `/user` 拿 view 范围 |
+| 什么都不知道 | 我的数据 | `/user` 拿 view 范围 |
 | 什么都不知道 | 大盘 | `/products` / `/projects` / `/executions` |
-| productId | 需求/Bug/计划/项目/用例/测试单 | `/products/{id}/{stories\|bugs\|plans\|projects\|testcases\|testtasks}` |
-| projectId | 需求/Bug/迭代/版本 | `/projects/{id}/{stories\|bugs\|executions\|builds}` |
+| productId | 需求/Bug/计划/项目/用例/发布 | `/products/{id}/{stories\|bugs\|plans\|projects\|cases\|releases}` |
+| projectId | 需求/Bug/迭代/版本/发布/测试单 | `/projects/{id}/{stories\|bugs\|executions\|builds\|releases\|testtasks}` |
 | executionId | 任务/需求/Bug/版本 | `/executions/{id}/{tasks\|stories\|bugs\|builds}` |
 | programId | 产品/项目 | `/programs/{id}/{products\|projects}` |
-| taskId/bugId/storyId/userId | 详情 | 对应详情端点 |
+| productplanId | 该计划下需求/Bug | `/productplans/{id}/{stories\|bugs}` |
+| taskId/bugId/storyId/userId/buildId | 详情 | 对应详情端点 |
 
-## 用户
+## 2. 端点目录(按官方 17 章节)
 
-| 用途 | 调用 |
-|------|------|
-| 我的 profile + view（含可见 sprints/products/projects/programs ID 列表） | `zentao_call /user`（**单数**） |
-| 用户列表 | `zentao_call /users` |
-| 用户详情 | `zentao_call /users/{id}` |
+### 2.1 用户(高频)
 
-## 产品
+| 方法 | 路径 | 上层依赖 | 响应 list key | 备注 |
+|------|------|---------|--------------|------|
+| GET | `/user` | (顶层) | 单 obj | `profile.view` 含 `.sprints` `.products` `.projects` `.programs` ID 列表 |
+| GET | `/users` | (顶层) | `.users` | 用户列表 |
+| GET | `/users/{id}` | userId | 单 obj | 用户详情 |
+| POST | `/users` | (顶层) | 单 obj | 创建用户(低频写入) |
+| PUT | `/users/{id}` | userId | (无 list) | 修改用户(低频写入) |
+| ❌ DELETE | `/users/{id}` | — | — | **本 skill 不暴露,设计层面禁止** |
 
-| 用途 | 调用 |
-|------|------|
-| 列表 / 详情 | `zentao_call /products` / `zentao_call /products/{id}` |
-| 产品计划 | `zentao_call /products/{id}/plans` |
-| 产品需求 | `zentao_call /products/{id}/stories` |
-| 产品 Bug | `zentao_call /products/{id}/bugs`（**不要带 status**） |
-| 产品参与的项目 | `zentao_call /products/{id}/projects` |
-| 用例 / 测试单 | `zentao_call /products/{id}/{testcases\|testtasks}` |
+### 2.2 部门(低频)
 
-## 项目集 / 项目 / 执行
-
-| 用途 | 调用 |
-|------|------|
-| 项目集列表 / 详情 | `zentao_call /programs` / `zentao_call /programs/{id}` |
-| 项目集子集 | `zentao_call /programs/{id}/{products\|projects}` |
-| 项目列表 / 详情 | `zentao_call /projects` / `zentao_call /projects/{id}` |
-| 项目子集 | `zentao_call /projects/{id}/{stories\|bugs\|executions\|builds}` |
-| 执行（**支持 status=doing**） | `zentao_call "/executions?status=doing&limit=500"` |
-| 执行详情 | `zentao_call /executions/{id}` |
-| 执行子集 ★ tasks 必经路径 | `zentao_call /executions/{id}/{stories\|tasks\|bugs\|builds}` |
-
-## 详情
-
-| 用途 | 调用 |
-|------|------|
-| 需求详情 | `zentao_call /stories/{id}` |
-| 任务详情 | `zentao_call /tasks/{id}` |
-| Bug 详情 | `zentao_call /bugs/{id}` |
-
-## 写入端点（创建 / 修改）
-
-⚠️ **写入仅限创建任务相关**。单个 / 批量删除一律不暴露（lib 不提供 `zentao_delete*` 函数）。Bug 加备注 v1/v2 均不支持，详见 `known-issues.md`。
-
-| 用途 | 调用 | 备注 |
+| 方法 | 路径 | 备注 |
 |------|------|------|
-| 创建顶层 task | `zentao_create_task <eid> <body_json>` | body 必含 `name` + `estStarted` + `deadline`；`parent` 字段会被 API 忽略（必须 0） |
-| 创建子任务 | `zentao_create_subtask <eid> <parent_id> <body_json>` | 两步：先 POST 创建，再 PUT 设 `parent` |
-| 通用 POST | `zentao_post <endpoint> <body_json>` | 401 自动重取 + 控制字符 sanitize |
-| 通用 PUT | `zentao_put <endpoint> <body_json>` | 同上 |
+| GET | `/departments` | 部门列表;字段细节见 https://www.zentao.net/book/api/665.html §2.3 |
+| GET | `/departments/{id}` | 部门详情 |
 
-### Task 生命周期端点（v1 §2.13）
+### 2.3 项目集(低频)
 
-| 操作 | 端点 | lib 函数 |
-|------|------|---------|
-| 创建（顶层） | `POST /executions/{eid}/tasks` | `zentao_create_task` |
-| 创建子任务 | POST + PUT 两步 | `zentao_create_subtask` |
-| 修改 | `PUT /tasks/{id}` | `zentao_update_task` |
-| 开始 | `POST /tasks/{id}/start` | `zentao_start_task` |
-| 暂停 | `POST /tasks/{id}/pause` | `zentao_pause_task` |
-| 继续 | `POST /tasks/{id}/restart` ⚠️ 不是 /resume | `zentao_resume_task` |
-| 完成 | `POST /tasks/{id}/finish` | `zentao_finish_task` |
-| 关闭 | `POST /tasks/{id}/close` | `zentao_close_task` |
-| 添加工时日志 | `POST /tasks/{id}/estimate` | `zentao_create_task_log` |
-| 取工时日志 | `GET /tasks/{id}/estimate` | `zentao_get_task_logs` |
-| ❌ 删除 | DELETE — 不暴露 | — |
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/programs` | 项目集列表 |
+| GET | `/programs/{id}` | 项目集详情 |
+| GET | `/programs/{id}/products` | 项目集下产品列表 |
+| GET | `/programs/{id}/projects` | 项目集下项目列表 |
+| POST | `/programs` | 创建项目集(低频) |
+| PUT | `/programs/{id}` | 修改项目集(低频) |
+| ❌ DELETE | `/programs/{id}` | **不暴露** |
 
-### Bug 生命周期端点（v1 §2.14）
+字段细节见 https://www.zentao.net/book/api/665.html §2.5。
 
-| 操作 | 端点 | lib 函数 |
-|------|------|---------|
-| 创建 | `POST /products/{pid}/bugs` | `zentao_create_bug` |
-| 修改 | `PUT /bugs/{id}` | `zentao_update_bug` |
-| 确认 | `POST /bugs/{id}/confirm` | `zentao_confirm_bug` |
-| 关闭 | `POST /bugs/{id}/close` | `zentao_close_bug` |
-| 激活 | `POST /bugs/{id}/active` ⚠️ 不是 /activate | `zentao_activate_bug` |
-| 解决 | `POST /bugs/{id}/resolve` | `zentao_resolve_bug` |
-| ❌ 删除 | DELETE — 不暴露 | — |
+### 2.4 产品(高频)
 
-## 通用查询参数（实测白名单）
+| 方法 | 路径 | 上层依赖 | 响应 list key | 备注 |
+|------|------|---------|--------------|------|
+| GET | `/products` | (顶层) | `.products` | 产品列表 |
+| GET | `/products/{id}` | productId | 单 obj | 产品详情 |
+| POST | `/products` | (顶层) | 单 obj | 创建产品;必填:`name`、`code`、`line`(产品线)、`type` |
+| PUT | `/products/{id}` | productId | 单 obj | 编辑产品 |
+| ❌ DELETE | `/products/{id}` | — | — | **不暴露** |
+
+### 2.5 产品计划(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/productplans` | 全部计划列表 |
+| GET | `/productplans/{id}` | 计划详情 |
+| POST | `/productplans` | 创建计划 |
+| PUT | `/productplans/{id}` | 修改计划 |
+| POST | `/productplans/{id}/stories` | 关联需求(link) |
+| POST | `/productplans/{id}/bugs` | 关联 Bug(link) |
+| ❌ DELETE | `/productplans/{id}` | **不暴露** |
+| ❌ DELETE | `/productplans/{id}/stories` | unlink 操作,**不暴露** |
+| ❌ DELETE | `/productplans/{id}/bugs` | unlink 操作,**不暴露** |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.7。
+
+### 2.6 发布(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/products/{id}/releases` | 产品发布列表 |
+| GET | `/projects/{id}/releases` | 项目发布列表 |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.8。
+
+### 2.7 需求(高频)
+
+| 方法 | 路径 | 上层依赖 | 响应 list key | 备注 |
+|------|------|---------|--------------|------|
+| GET | `/products/{id}/stories` | productId | `.stories` | 产品需求列表 |
+| GET | `/projects/{id}/stories` | projectId | `.stories` | 项目需求列表 |
+| GET | `/executions/{id}/stories` | execId | `.stories` | 执行需求列表 |
+| GET | `/stories/{id}` | storyId | 单 obj | 需求详情 |
+| POST | `/stories` | (顶层) | 单 obj | 创建需求;必填:`product`、`title` |
+| PUT | `/stories/{id}/change` | storyId | 单 obj | 变更需求(必填:`spec` `verify`) |
+| PUT | `/stories/{id}` | storyId | 单 obj | 修改需求其他字段(PATCH 语义) |
+| PUT | `/stories/{id}/close` | storyId | 单 obj | 关闭需求;必填 `reason` ∈ `done` / `cancel` / `bydesign` / `duplicate` / `postponed` / `willnotdo`(具体枚举以官方 729.html 为准,实施时 WebFetch 确认) |
+| ❌ DELETE | `/stories/{id}` | — | — | **不暴露** |
+
+> ⚠️ 端点路径 `/change` 是变更专用(改 spec/verify),`/{id}` PUT 是其他字段批量改 — 两者语义不同,见 https://www.zentao.net/book/api/665.html §2.9。
+
+### 2.8 项目(高频)
+
+| 方法 | 路径 | 上层依赖 | 响应 list key | 备注 |
+|------|------|---------|--------------|------|
+| GET | `/projects` | (顶层) | `.projects` | 项目列表 |
+| GET | `/projects/{id}` | projectId | 单 obj | 项目详情 |
+| POST | `/projects` | (顶层) | 单 obj | 创建项目;必填:`name`、`code`、`type`(execution/sprint/...)、`begin`、`end` |
+| PUT | `/projects/{id}` | projectId | 单 obj | 修改项目 |
+| ❌ DELETE | `/projects/{id}` | — | — | **不暴露** |
+
+### 2.9 版本(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/projects/{id}/builds` | 项目版本列表 |
+| GET | `/executions/{id}/builds` | 执行版本列表 |
+| GET | `/builds/{id}` | 版本详情 |
+| POST | `/builds` | 创建版本 |
+| PUT | `/builds/{id}` | 修改版本 |
+| ❌ DELETE | `/builds/{id}` | **不暴露** |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.11。
+
+### 2.10 执行(高频)
+
+| 方法 | 路径 | 上层依赖 | 响应 list key | 备注 |
+|------|------|---------|--------------|------|
+| GET | `/executions` | (顶层) | `.executions` | **支持 `?status=doing`**(几乎是唯一可信的服务端筛选参数) |
+| GET | `/projects/{id}/executions` | projectId | `.executions` | 项目下执行列表 |
+| GET | `/executions/{id}` | execId | 单 obj | 执行详情 |
+| POST | `/executions` | (顶层) | 单 obj | 创建执行 |
+| PUT | `/executions/{id}` | execId | 单 obj | 修改执行 |
+| ❌ DELETE | `/executions/{id}` | — | — | **不暴露** |
+
+### 2.11 任务(高频,**生产实例端点偏差强调**)
+
+| 方法 | 路径 | 上层依赖 | 响应 list key | 必填 body | 备注 |
+|------|------|---------|--------------|----------|------|
+| GET | `/executions/{id}/tasks` | execId | `.tasks` | — | **唯一可用的任务列表端点** |
+| GET | `/tasks/{id}` | taskId | 单 obj | — | 任务详情(含 `.parent` 字段) |
+| ❌ GET | `/tasks` | — | — | — | 顶层 `/tasks` 残废,limit 失效永远返 1 条 → **禁用** |
+| POST | `/executions/{eid}/tasks` | execId | 新建 obj | `name` + `estStarted` + `deadline` | 创建任务;⚠ 官方文档说 `POST /tasks` 但**生产实例必须 `/executions/{eid}/tasks`**,且 `parent` 字段 POST 时被忽略 |
+| PUT | `/tasks/{id}` | taskId | (无 list) | — | 修改 module/story/name/type/assignedTo/pri/estimate/estStarted/deadline |
+| POST | `/tasks/{id}/start` | taskId | — | `left` | wait → doing;⚠ 官方文档标 PUT,V2 lib 用 POST(待 V3 verify L5 确认) |
+| POST | `/tasks/{id}/pause` | taskId | — | — | doing → pause;body 可含 `comment` |
+| POST | `/tasks/{id}/restart` | taskId | — | `left`(实测还要 `consumed`) | pause → doing;⚠ 端点是 `/restart` 不是官方文档的 `/continue`(已实测确认,见 known-issues §"resume_task 实测必填 consumed") |
+| POST | `/tasks/{id}/finish` | taskId | — | `currentConsumed`、`finishedDate` | → done |
+| POST | `/tasks/{id}/close` | taskId | — | — | done → closed;body 可含 `comment` |
+| POST | `/tasks/{id}/estimate` | taskId | — | `date[]` `work[]` `consumed[]` `left[]`(并行数组) | 添加工时日志;⚠ 端点是 `/estimate` 不是官方文档的 `/logs`(已实测) |
+| GET | `/tasks/{id}/estimate` | taskId | (工时数组) | — | 取工时日志 |
+| ❌ DELETE | `/tasks/{id}` | — | — | — | **不暴露** |
+
+> 子任务创建必须**两步**:
+> 1. `POST /executions/{eid}/tasks` 创建顶层任务(`parent` 字段被忽略)
+> 2. `PUT /tasks/{newId}` body `{"parent": <parentId>}` 设父子关系
+>
+> 详见 known-issues §"创建子任务必须两步:POST + PUT"。
+
+### 2.12 Bug(高频,**type/severity/pri/resolution 枚举完整**)
+
+| 方法 | 路径 | 上层依赖 | 响应 list key | 必填 body | 备注 |
+|------|------|---------|--------------|----------|------|
+| GET | `/products/{id}/bugs` | productId | `.bugs` | — | 产品 Bug 列表;⚠ **不要传 `?status=`**(破坏查询返回 total=0) |
+| GET | `/bugs/{id}` | bugId | 单 obj | — | Bug 详情 |
+| ❌ GET | `/bugs` | — | — | — | 顶层 `/bugs` 报 "Need product id.",必须按产品查 |
+| POST | `/products/{pid}/bugs` | productId | 新建 obj | `title`、`severity`、`pri`、`type` | 创建 Bug;⚠ 官方文档说 `POST /bugs` 但**生产实例必须 `/products/{pid}/bugs`** |
+| PUT | `/bugs/{id}` | bugId | (无 list) | — | 修改 15 个字段 |
+| POST | `/bugs/{id}/confirm` | bugId | — | — | body 可含 `comment`;⚠ 官方文档标 PUT,V2 lib 用 POST(待 V3 verify L5 确认) |
+| POST | `/bugs/{id}/close` | bugId | — | — | body 可含 `comment` |
+| POST | `/bugs/{id}/active` | bugId | — | — | ⚠ 端点是 `/active` 不是官方文档的 `/activate`(已实测) |
+| POST | `/bugs/{id}/resolve` | bugId | — | `resolution` | body 可含 `comment` |
+| ❌ DELETE | `/bugs/{id}` | — | — | — | **不暴露** |
+
+**枚举值**:
+
+- `type`(创建必填):`codeerror` / `config` / `install` / `security` / `performance` / `standard` / `automation` / `designdefect` / `others`
+- `resolution`(resolve 必填):`bydesign` / `duplicate` / `external` / `fixed` / `notrepro` / `postponed` / `willnotfix` / `tostory`
+- `severity` / `pri`:V2 文档未明确列;按禅道社区版默认是 1-4 整数枚举(1=严重,4=最低)。具体以官方 https://www.zentao.net/book/api/722.html(创建 Bug)为准。
+- `status`(只读):`active` / `resolved` / `closed`
+
+> Bug "加备注"无独立端点;v1/v2 都没有。借 `confirm` / `close` / `active` / `resolve` 4 个 action 的 `comment` 字段附加。详见 known-issues §"Bug 加备注:无独立端点,须借 action 端点附带"。
+
+### 2.13 用例(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/products/{id}/testcases` | 产品用例列表(⚠ 官方文档写 `/cases`,V2 endpoints 写 `/testcases`,**待 V3 verify L5 确认实际路径**) |
+| GET | `/testcases/{id}` | 用例详情 |
+| POST | `/testcases` | 创建用例 |
+| PUT | `/testcases/{id}` | 修改用例 |
+| POST | `/testcases/{id}/execute` | 执行用例 |
+| ❌ DELETE | `/testcases/{id}` | **不暴露** |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.15。
+
+### 2.14 测试单(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/testtasks` | 测试单列表(⚠ 官方文档写 `/testsuites`,V2 endpoints 写 `/testtasks`,**待 V3 verify L5 确认实际路径**) |
+| GET | `/projects/{id}/testtasks` | 项目下测试单 |
+| GET | `/testtasks/{id}` | 测试单详情 |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.16。
+
+### 2.15 反馈(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/feedbacks` | 反馈列表 |
+| GET | `/feedbacks/{id}` | 反馈详情 |
+| POST | `/feedbacks` | 创建反馈 |
+| PUT | `/feedbacks/{id}` | 修改反馈 |
+| POST | `/feedbacks/{id}/assign` | 指派反馈 |
+| PUT | `/feedbacks/{id}/close` | 关闭反馈 |
+| ❌ DELETE | `/feedbacks/{id}` | **不暴露** |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.17。
+
+### 2.16 工单(低频)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| GET | `/tickets` | 工单列表 |
+| GET | `/tickets/{id}` | 工单详情 |
+| POST | `/tickets` | 创建工单 |
+| PUT | `/tickets/{id}` | 修改工单 |
+| ❌ DELETE | `/tickets/{id}` | **不暴露** |
+
+字段细节见 https://www.zentao.net/book/api/665.html §2.18。
+
+### 2.17 Token(认证)
+
+| 方法 | 路径 | 备注 |
+|------|------|------|
+| POST | `/tokens` | 取 Token;body `{account, password}`;⚠ 官方文档写 `GET /token`,**生产实例是 `POST /tokens`**(已实测,见 known-issues) |
+
+调用方式见 [`auth-and-curl.md`](auth-and-curl.md) S2 `zt_acquire_token`。
+
+## 3. 通用查询参数白名单(实测)
 
 | 参数 | 在哪些接口生效 |
 |------|----------------|
-| `limit` / `page` | 所有列表型端点 ✓；**唯独 `/tasks` 顶层失效** ✗ |
-| `?status=` | `/executions` ✓；`/products/{id}/bugs` ✗（破坏查询） |
-| `?assignedTo=` `?openedBy=` `?resolvedBy=` 等 | ✗ 大部分被忽略，统一改 jq 客户端筛 |
+| `limit` / `page` | 所有列表型端点 ✓;**唯独 `/tasks` 顶层失效** ✗ |
+| `?status=` | `/executions` ✓;`/products/{id}/bugs` ✗(破坏查询) |
+| `?assignedTo=` `?openedBy=` `?resolvedBy=` 等 | ✗ 大部分被忽略,统一改 jq 客户端筛(见 [`patterns.md`](patterns.md) P4) |
 
-## 高频调用链
+## 4. 高频调用链(简化,详细模板见 patterns.md)
 
 | 业务场景 | 调用链 |
 |----------|--------|
-| 本周我完成的任务 | `/user` → `view.sprints ∩ /executions?status=doing` → 遍历 `/executions/{sid}/tasks` → jq 筛 `finishedBy=me` |
-| 本周我解决的 Bug | `/user` → 遍历 `view.products` → `/products/{pid}/bugs` → jq 筛 `resolvedBy=me` |
-| 下周待开展任务 | 同"本周任务"，jq 筛 `assignedTo=me` & `deadline ∈ 下周` & `status ∈ {wait,doing}` |
-| 待跟进 Bug | 同"本周 Bug"，jq 筛 `assignedTo=me` & `status="active"` |
-| 任务 + 父任务 | `/tasks/{tid}` → `.parent` → `/tasks/{parent}` |
+| 跨执行聚合任务(任意筛选) | `/user` → `view.sprints ∩ /executions?status=doing` → 遍历 `/executions/{sid}/tasks` → jq 筛(见 patterns.md P1) |
+| 跨产品聚合 Bug/Story | `/user` → 遍历 `view.products` → `/products/{pid}/{bugs\|stories}` → jq 筛(见 patterns.md P2) |
+| 父子任务还原 | `/tasks/{tid}` → `.parent` → `/tasks/{parent}`(见 patterns.md P3) |
