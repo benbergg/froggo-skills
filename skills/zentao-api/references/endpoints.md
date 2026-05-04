@@ -160,13 +160,13 @@
 | GET | `/executions/{id}/tasks` | execId | `.tasks` | — | **唯一可用的任务列表端点** |
 | GET | `/tasks/{id}` | taskId | 单 obj | — | 任务详情(含 `.parent` 字段) |
 | ❌ GET | `/tasks` | — | — | — | 顶层 `/tasks` 残废,limit 失效永远返 1 条 → **禁用** |
-| POST | `/executions/{eid}/tasks` | execId | 新建 obj | `name` + `estStarted` + `deadline` | 创建任务;⚠ 官方文档说 `POST /tasks` 但**生产实例必须 `/executions/{eid}/tasks`**,且 `parent` 字段 POST 时被忽略 |
+| POST | `/executions/{eid}/tasks` | execId | 新建 obj | `name` + `assignedTo` + `estStarted` + `deadline` | 创建任务;⚠ 官方文档说 `POST /tasks` 但**生产实例必须 `/executions/{eid}/tasks`**;`parent` 字段 POST 时被忽略;`assignedTo` 漏掉报 `『指派给』不能为空` |
 | PUT | `/tasks/{id}` | taskId | (无 list) | — | 修改 module/story/name/type/assignedTo/pri/estimate/estStarted/deadline |
-| POST | `/tasks/{id}/start` | taskId | — | `left` | wait → doing;⚠ 官方文档标 PUT,V2 lib 用 POST(待 V3 verify L5 确认) |
-| POST | `/tasks/{id}/pause` | taskId | — | — | doing → pause;body 可含 `comment` |
+| POST | `/tasks/{id}/start` | taskId | — | `left` | wait → doing;⚠ 官方文档标 PUT,但 **PUT 返 200 + Content-Length: 0 静默 no-op**(V3 实测,见 known-issues §11)。**必须 POST** |
+| POST | `/tasks/{id}/pause` | taskId | — | — | doing → pause;body 可含 `comment`;⚠ 同 start,PUT 静默 no-op |
 | POST | `/tasks/{id}/restart` | taskId | — | `left`(实测还要 `consumed`) | pause → doing;⚠ 端点是 `/restart` 不是官方文档的 `/continue`(已实测确认,见 known-issues §"resume_task 实测必填 consumed") |
-| POST | `/tasks/{id}/finish` | taskId | — | `currentConsumed`、`finishedDate` | → done |
-| POST | `/tasks/{id}/close` | taskId | — | — | done → closed;body 可含 `comment` |
+| POST | `/tasks/{id}/finish` | taskId | — | `currentConsumed`、`finishedDate` | → done;⚠ 同 start,PUT 静默 no-op |
+| POST | `/tasks/{id}/close` | taskId | — | — | done → closed;body 可含 `comment`;⚠ 同 start,PUT 静默 no-op;⚠ **副作用:`assignedTo` 被清成 `null`**(`finishedBy`/`closedBy` 保留),客户端按 assignedTo 筛会漏 closed 任务 |
 | POST | `/tasks/{id}/estimate` | taskId | — | `date[]` `work[]` `consumed[]` `left[]`(并行数组) | 添加工时日志;⚠ 端点是 `/estimate` 不是官方文档的 `/logs`(已实测) |
 | GET | `/tasks/{id}/estimate` | taskId | (工时数组) | — | 取工时日志 |
 | ❌ DELETE | `/tasks/{id}` | — | — | — | **不暴露** |
@@ -184,12 +184,12 @@
 | GET | `/products/{id}/bugs` | productId | `.bugs` | — | 产品 Bug 列表;⚠ **不要传 `?status=`**(破坏查询返回 total=0) |
 | GET | `/bugs/{id}` | bugId | 单 obj | — | Bug 详情 |
 | ❌ GET | `/bugs` | — | — | — | 顶层 `/bugs` 报 "Need product id.",必须按产品查 |
-| POST | `/products/{pid}/bugs` | productId | 新建 obj | `title`、`severity`、`pri`、`type` | 创建 Bug;⚠ 官方文档说 `POST /bugs` 但**生产实例必须 `/products/{pid}/bugs`** |
+| POST | `/products/{pid}/bugs` | productId | 新建 obj | `title`、`severity`、`pri`、`type` | 创建 Bug;⚠ 官方文档说 `POST /bugs` 但**生产实例必须 `/products/{pid}/bugs`**;⚠ V3 实测时传入 `assignedTo` 跑通(类比创建任务的强约束),omit 未单独验证,稳妥起见传入 |
 | PUT | `/bugs/{id}` | bugId | (无 list) | — | 修改 15 个字段 |
-| POST | `/bugs/{id}/confirm` | bugId | — | — | body 可含 `comment`;⚠ 官方文档标 PUT,V2 lib 用 POST(待 V3 verify L5 确认) |
-| POST | `/bugs/{id}/close` | bugId | — | — | body 可含 `comment` |
-| POST | `/bugs/{id}/active` | bugId | — | — | ⚠ 端点是 `/active` 不是官方文档的 `/activate`(已实测) |
-| POST | `/bugs/{id}/resolve` | bugId | — | `resolution` | body 可含 `comment` |
+| POST | `/bugs/{id}/confirm` | bugId | — | — | body 可含 `comment`;⚠ 官方文档标 PUT,**PUT 返 200 静默 no-op**(V3 实测,见 known-issues §11)。**必须 POST** |
+| POST | `/bugs/{id}/close` | bugId | — | — | body 可含 `comment`;⚠ 同 confirm,PUT 静默 no-op |
+| POST | `/bugs/{id}/active` | bugId | — | — | ⚠ 端点是 `/active` 不是官方文档的 `/activate`(已实测);⚠ 同 confirm,PUT 静默 no-op |
+| POST | `/bugs/{id}/resolve` | bugId | — | `resolution` | body 可含 `comment`;⚠ 同 confirm,PUT 静默 no-op |
 | ❌ DELETE | `/bugs/{id}` | — | — | — | **不暴露** |
 
 **枚举值**:
@@ -205,7 +205,7 @@
 
 | 方法 | 路径 | 备注 |
 |------|------|------|
-| GET | `/products/{id}/testcases` | 产品用例列表(⚠ 官方文档写 `/cases`,V2 endpoints 写 `/testcases`,**待 V3 verify L5 确认实际路径**) |
+| GET | `/products/{id}/testcases` | 产品用例列表;⚠ 官方文档写 `/cases`,**生产实例 V3 实测必须 `/testcases`**(`/cases` 返 `{"error":"not found"}`,见 known-issues §11) |
 | GET | `/testcases/{id}` | 用例详情 |
 | POST | `/testcases` | 创建用例 |
 | PUT | `/testcases/{id}` | 修改用例 |
@@ -218,7 +218,7 @@
 
 | 方法 | 路径 | 备注 |
 |------|------|------|
-| GET | `/testtasks` | 测试单列表(⚠ 官方文档写 `/testsuites`,V2 endpoints 写 `/testtasks`,**待 V3 verify L5 确认实际路径**) |
+| GET | `/testtasks` | 测试单列表;⚠ 官方文档写 `/testsuites`,**生产实例 V3 实测必须 `/testtasks`**(`/testsuites` 顶层报 `Need product id.`,要走 `/products/{id}/testsuites`,见 known-issues §11) |
 | GET | `/projects/{id}/testtasks` | 项目下测试单 |
 | GET | `/testtasks/{id}` | 测试单详情 |
 

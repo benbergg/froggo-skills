@@ -41,15 +41,21 @@ PROD_ID=$(zt_get '/products?limit=1' | jq -r '.products[0].id')
 PROJ_ID=$(zt_get '/projects?limit=1' | jq -r '.projects[0].id')
 EXEC_ID=$(zt_get '/executions?status=doing&limit=1' | jq -r '.executions[0].id')
 
-for ep in \
-  "/products/$PROD_ID/{plans,stories,bugs,projects,releases}" \
-  "/projects/$PROJ_ID/{stories,bugs,executions,builds,releases,testtasks}" \
-  "/executions/$EXEC_ID/{tasks,stories,bugs,builds}" \
-; do eval echo "$ep"; done | tr ',' '\n' | tr -d '{}' \
-  | while read -r e; do
-      zt_get "${e}?limit=1" | jq -e '. | type' >/dev/null \
-        && echo "✓ $e" || echo "✗ $e"
-    done
+# 注:不用 brace 展开 + tr ','(展开后是空格分隔,tr 无逗号可切)
+{
+  for sub in plans stories bugs projects releases; do echo "/products/$PROD_ID/$sub"; done
+  for sub in stories bugs executions builds releases testtasks; do echo "/projects/$PROJ_ID/$sub"; done
+  for sub in tasks stories bugs builds; do echo "/executions/$EXEC_ID/$sub"; done
+} | while read -r e; do
+  resp=$(zt_get "${e}?limit=1")
+  if [ -z "$resp" ]; then
+    echo "⚠ $e (empty body)"
+  elif printf '%s' "$resp" | jq -e '. | type' >/dev/null 2>&1; then
+    echo "✓ $e"
+  else
+    echo "✗ $e"
+  fi
+done
 ```
 
 ## L3 — 详情端点
@@ -178,6 +184,69 @@ zt_get '/testtasks?limit=1' | head -c 200; echo
 echo "--- /testsuites ---"
 zt_get '/testsuites?limit=1' | head -c 200; echo
 ```
+
+## L6 — patterns.md 数据流烟测
+
+> 验 P1/P2/P3 能跑通(返回合法 JSON 数组),不判内容。需 L0–L2 全通过。
+> P4 是纯 jq 模板,无 HTTP 调用,不入烟测。
+
+### L6.1 P1 跨执行聚合任务
+
+```bash
+ME=$(zt_get /user | jq -r .profile.account)
+SPRINT_VIEW=$(zt_get /user | jq -r '.profile.view.sprints' | tr ',' '\n' | sort -u)
+DOING=$(zt_get '/executions?status=doing&limit=500' | jq -r '.executions[].id' | sort -u)
+MY_DOING=$(comm -12 <(echo "$SPRINT_VIEW") <(echo "$DOING"))
+
+if [ -z "$MY_DOING" ]; then
+  echo "⚠ P1 跳过: $ME 与 doing 执行无交集"
+else
+  RESULT=$(while IFS= read -r sid; do zt_paginate "/executions/$sid/tasks"; done <<< "$MY_DOING" \
+    | jq -s --arg me "$ME" '[.[].tasks[]? | select(.assignedTo.account == $me or .finishedBy.account == $me)]')
+  echo "$RESULT" | jq -e 'type == "array"' >/dev/null \
+    && echo "✓ P1 OK ($(echo "$RESULT" | jq length) 条)" \
+    || echo "✗ P1 失败"
+fi
+```
+
+### L6.2 P2 跨产品聚合 Bug
+
+```bash
+ME=$(zt_get /user | jq -r .profile.account)
+PRODUCT_VIEW=$(zt_get /user | jq -r '.profile.view.products' | tr ',' '\n' | sort -u)
+
+if [ -z "$PRODUCT_VIEW" ]; then
+  echo "⚠ P2 跳过: $ME 无可见 product"
+else
+  RESULT=$(while IFS= read -r pid; do zt_paginate "/products/$pid/bugs"; done <<< "$PRODUCT_VIEW" \
+    | jq -s --arg me "$ME" '[.[] | .bugs[]? | select(.assignedTo.account == $me or .resolvedBy.account == $me)]')
+  echo "$RESULT" | jq -e 'type == "array"' >/dev/null \
+    && echo "✓ P2 OK ($(echo "$RESULT" | jq length) 条)" \
+    || echo "✗ P2 失败"
+fi
+```
+
+### L6.3 P3 父子关系还原
+
+注:`.parent > 0` 才是真子任务。`-1` 是 sentinel"我是父"(详见 known-issues §11.1)。
+单页足够烟测,避开 paginate 流式 jq 风险。
+
+```bash
+EXEC_ID=$(zt_get '/executions?status=doing&limit=1' | jq -r '.executions[0].id')
+CHILD_TID=$(zt_get "/executions/$EXEC_ID/tasks?limit=500" \
+  | jq -r '.tasks[]? | select(.parent > 0) | .id' | head -1)
+
+if [ -z "$CHILD_TID" ]; then
+  echo "⚠ P3 跳过: exec $EXEC_ID 首页无子任务"
+else
+  PARENT_ID=$(zt_get "/tasks/$CHILD_TID" | jq -r .parent)
+  zt_get "/tasks/$PARENT_ID" | jq -e .id >/dev/null \
+    && echo "✓ P3 OK (子 $CHILD_TID → 父 $PARENT_ID)" \
+    || echo "✗ P3 失败"
+fi
+```
+
+判定:三条都打 `✓` 或 `⚠ 跳过`(无数据可测,非失败)即通过;出现 `✗` 即失败,需要查 jq 表达式或上游 L1/L2 是否实际通了。
 
 ## 失败排查
 
