@@ -38,8 +38,23 @@ aliases:
 
 ### 1. 本周完成的任务
 
-- 【T编号】主任务名/子任务名
+- 【T{父ID 或 自身ID}】{父任务名}/{子任务名} 【{中文状态}】
+- 【T{自身ID}】{任务名} 【{中文状态}】 ← 无父子关系时
 - ...
+
+**格式约定**:
+- 行尾必须带状态后缀 `【...】`,zentao status → 中文映射:
+  | zentao | 中文 |
+  |---|---|
+  | done | 已完成 |
+  | closed | 已关闭(或已发布,取决于业务习惯) |
+  | doing | 进行中 |
+  | wait | 未开始 |
+  | pause | 暂停 |
+  | cancel | 已取消 |
+- **父子去重**:如果父任务和子任务都在 R1 里,只展示子任务行(子任务行已带"父名/子名"上下文,父行单独列冗余)。data-collection.md R1 jq 末尾已做去重,渲染层直接消费 /tmp/wk-R1.json 即可。
+- 子任务名包含父名时(如 `后端:618大促VOC评价优化`/父=`618大促VOC评价优化`),建议手动剪掉冗余:`618大促VOC评价优化/后端`。zentao 命名习惯不一,固化逻辑暂未实现,LLM 渲染时检查并清理。
+- **不再分"已完成 / 推进中"两个子段**,状态在行末统一显示。
 
 完成情况说明:
 (参考"叙述风格"章节;**业务归纳,不出现 T 编号**)
@@ -56,7 +71,9 @@ aliases:
 - B{id} {改写后的可读中文标题}
 - ...
 
-**本周关键数据:完成任务 ${count_R1} 个,已解决 Bug ${count_R2} 个,待跟进 ${count_R3} 个。**
+**本周关键数据:完成任务 ${count_done} 个,推进任务 ${count_progress} 个,已解决 Bug ${count_R2} 个,待跟进 ${count_R3} 个。**
+
+> 计数:`count_done = jq '[.[]|select(.wk_role=="完成")]|length' /tmp/wk-R1.json`,`count_progress = jq '[.[]|select(.wk_role=="进行")]|length' /tmp/wk-R1.json`。R1 已去重(父任务被 jq 过滤),展示行数 = R1 length。
 
 **Bug 分析(按根因分布):**
 
@@ -119,7 +136,8 @@ aliases:
 |---|---|
 | `${WK_NUM}` | Setup 阶段计算 |
 | `${WK_START_DATE}` / `${WK_END_DATE}` | `WK_START` / `WK_END` 取前 10 字符 |
-| `${count_R1}` / `${count_R2}` / `${count_R3}` | `jq 'length' /tmp/wk-RX.json` |
+| `${count_done}` / `${count_progress}` | `jq '[.[]|select(.wk_role=="完成"\|"进行")]|length' /tmp/wk-R1.json` 拆分(完成 vs 进行) |
+| `${count_R1}` / `${count_R2}` / `${count_R3}` | `jq 'length' /tmp/wk-RX.json` (R1 已去重父任务) |
 | `${NEXT_LABEL}` | 例 `W19`(=WK_NUM 周数 + 1) |
 | `${NEXT_S_DATE}` / `${NEXT_E_DATE}` | `NEXT_S` / `NEXT_E` 取前 10 字符 |
 | `${GEN_TIME}` | `TZ=Asia/Shanghai date "+%Y-%m-%d %H:%M"` |

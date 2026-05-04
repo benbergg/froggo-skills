@@ -60,8 +60,21 @@ R1=$(while IFS= read -r sid; do
     | unique_by(.id)')
 
 echo "$R1" > /tmp/wk-R1.json
+
+# ⚠ 父任务去重:如果 R1 里某 task 是父(其 id 出现在其他 task.parent 中),
+# 移除该父任务条目 — 子任务展示时已带"父名/子名"前缀,父行单独列重复。
+jq '
+  . as $all
+  | ([$all[].parent // 0] | map(select(. > 0)) | unique) as $referenced_parents
+  | map(select((.id | IN($referenced_parents[])) | not))
+' /tmp/wk-R1.json > /tmp/wk-R1.json.tmp && mv /tmp/wk-R1.json.tmp /tmp/wk-R1.json
+
 echo "[R1] 共 $(jq 'length' /tmp/wk-R1.json) 条 (完成: $(jq '[.[]|select(.wk_role=="完成")]|length' /tmp/wk-R1.json) 进行: $(jq '[.[]|select(.wk_role=="进行")]|length' /tmp/wk-R1.json))" >&2
 ```
+
+> 父任务去重必须在数据层做(而不是渲染层),否则:
+> - eval 检查 `n_tasks ≥ n_r1`(周报实际行数 ≥ R1 length) 会因父任务被渲染层去掉而 fail
+> - 关键数据行的 task 总数也跟实际不一致
 
 ## R2 — 本周解决的 Bug(必须加 `?status=all`)
 
