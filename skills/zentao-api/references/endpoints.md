@@ -19,7 +19,11 @@
 
 ⚠️ 残废端点(API 存在但不可用):
 - 顶层 `GET /tasks` — `limit`/`page` 失效,永远只返 1 条 → **禁用**,必须走 `/executions/{id}/tasks`
-- `GET /products/{id}/bugs?status=...` — `status` 参数破坏查询(任何值都返 0)→ **不要传 status**
+- `GET /products/{id}/bugs?status=resolved`/`closed`/其他单值 — 破坏查询(返 0)→ **唯一接受的值是 `?status=all`**(用于解锁默认隐式过滤的 closed bug)
+
+⚠️ 隐式过滤陷阱(端点工作但默认漏数据,详见 known-issues §11.2/§11.3):
+- `GET /executions/{id}/tasks` — 子任务藏在父对象的 `.children[]` 子数组,jq 必须递归
+- `GET /products/{id}/bugs` — 默认过滤 `status != closed`,历史 closed bug 全漏,要加 `?status=all`
 
 ## 1. "已知什么 → 调什么"查找表
 
@@ -157,7 +161,7 @@
 
 | 方法 | 路径 | 上层依赖 | 响应 list key | 必填 body | 备注 |
 |------|------|---------|--------------|----------|------|
-| GET | `/executions/{id}/tasks` | execId | `.tasks` | — | **唯一可用的任务列表端点** |
+| GET | `/executions/{id}/tasks` | execId | `.tasks` | — | **唯一可用的任务列表端点**;⚠ **子任务藏在父对象 `.children[]` 子数组,jq 必须递归 `[.tasks[]?]+[.tasks[]?.children[]?]`**(详见 known-issues §11.2) |
 | GET | `/tasks/{id}` | taskId | 单 obj | — | 任务详情(含 `.parent` 字段) |
 | ❌ GET | `/tasks` | — | — | — | 顶层 `/tasks` 残废,limit 失效永远返 1 条 → **禁用** |
 | POST | `/executions/{eid}/tasks` | execId | 新建 obj | `name` + `assignedTo` + `estStarted` + `deadline` | 创建任务;⚠ 官方文档说 `POST /tasks` 但**生产实例必须 `/executions/{eid}/tasks`**;`parent` 字段 POST 时被忽略;`assignedTo` 漏掉报 `『指派给』不能为空` |
@@ -181,7 +185,7 @@
 
 | 方法 | 路径 | 上层依赖 | 响应 list key | 必填 body | 备注 |
 |------|------|---------|--------------|----------|------|
-| GET | `/products/{id}/bugs` | productId | `.bugs` | — | 产品 Bug 列表;⚠ **不要传 `?status=`**(破坏查询返回 total=0) |
+| GET | `/products/{id}/bugs` | productId | `.bugs` | — | 产品 Bug 列表;⚠ **默认隐式过滤 `status != closed`,要拉历史 closed bug 必须加 `?status=all`**(实测 product 95 default total=34 → `?status=all` total=1115);单值 `?status=resolved` 等返 0(详见 known-issues §11.3) |
 | GET | `/bugs/{id}` | bugId | 单 obj | — | Bug 详情 |
 | ❌ GET | `/bugs` | — | — | — | 顶层 `/bugs` 报 "Need product id.",必须按产品查 |
 | POST | `/products/{pid}/bugs` | productId | 新建 obj | `title`、`severity`、`pri`、`type` | 创建 Bug;⚠ 官方文档说 `POST /bugs` 但**生产实例必须 `/products/{pid}/bugs`**;⚠ V3 实测时传入 `assignedTo` 跑通(类比创建任务的强约束),omit 未单独验证,稳妥起见传入 |
@@ -263,7 +267,7 @@
 | 参数 | 在哪些接口生效 |
 |------|----------------|
 | `limit` / `page` | 所有列表型端点 ✓;**唯独 `/tasks` 顶层失效** ✗ |
-| `?status=` | `/executions` ✓;`/products/{id}/bugs` ✗(破坏查询) |
+| `?status=` | `/executions` ✓(支持 doing/closed/all 等);`/products/{id}/bugs` **只接受 `all`**(其他值破坏查询返 0,默认值过滤 closed,见 known-issues §11.3) |
 | `?assignedTo=` `?openedBy=` `?resolvedBy=` 等 | ✗ 大部分被忽略,统一改 jq 客户端筛(见 [`patterns.md`](patterns.md) P4) |
 
 ## 4. 高频调用链(简化,详细模板见 patterns.md)

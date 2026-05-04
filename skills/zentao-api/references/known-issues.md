@@ -7,8 +7,10 @@
 | 现象 | 真相 / 处理 |
 |------|------------|
 | `GET /tasks?limit=500` 只返回 1 条 | 顶层 `/tasks` 的 `limit`/`page` 失效，**禁用**；改走 `/executions/{id}/tasks`。`zt_paginate` 内置安全阀（`p>20` 退出），但仍不应在顶层 `/tasks` 上用。 |
-| `GET /products/{id}/bugs?status=resolved` 返回空 | 该参数破坏查询（任何值都返 total=0），**禁用**；用 jq 客户端筛。 |
-| `?assignedTo=qingwa` 没效果 | API 几乎所有过滤参数都被忽略，统一改 jq 筛。 |
+| `GET /executions/{id}/tasks` 拉不到子任务 | **list 端点默认只展开父任务+顶层任务,子任务藏在父对象 `.children[]` 子数组**(详见 §11.2)。jq 必须递归 `[.tasks[]?]+[.tasks[]?.children[]?]`;漏 children 等于漏 60%+ 真实任务。 |
+| `GET /products/{id}/bugs` 拉不到历史 closed bug | **默认隐式过滤 `status != closed`**(详见 §11.3),total 只反映"活跃" bug。需要历史:加 `?status=all`(实测 total 从 34 → 1115)。 |
+| `GET /products/{id}/bugs?status=resolved` 返回空 | 单值 status 参数(resolved/closed/...)破坏查询(返 total=0)。**唯一可用值是 `?status=all`**,其他不要传。 |
+| `?assignedTo=qingwa` 没效果 | API 几乎所有过滤参数都被忽略,统一改 jq 筛。 |
 | `POST /tokens` 报"登录失败" | 检查请求体字段：API 要 **`account`**（不是 `username`）。`zt_acquire_token` 已正确处理。 |
 | 想拿"我的信息" | `GET /user`（**单数**），返回 profile + view 范围。`/users/me` 也存在但建议用 `/user`。 |
 | 顶层 `/bugs` 报 "Need product id." | API 不支持，必须按产品查 `/products/{id}/bugs`。 |
@@ -20,7 +22,7 @@
 | 参数 | 在哪些接口生效 |
 |------|----------------|
 | `limit` / `page` | 所有列表型端点 ✓；**唯独 `/tasks` 顶层失效** ✗ |
-| `?status=` | `/executions` ✓；`/products/{id}/bugs` ✗（破坏） |
+| `?status=` | `/executions` ✓(支持 doing/closed/all 等);`/products/{id}/bugs` **只接受 `all`**(其他值返空,默认值过滤 closed) |
 
 ## 服务端筛选不可信
 
@@ -121,6 +123,86 @@ zt_write PUT "/tasks/$NEW_ID" "$(jq -cn --argjson p "$PARENT_ID" '{parent:$p}')"
 | 用例端点路径 | `/cases` | `/products/{id}/testcases` 返 JSON ✓;`/products/{id}/cases` 返 `{"error":"not found"}` | **已实测 ✓ 2026-05-04** L5.3 |
 | 测试单端点路径 | `/testsuites` | `/testtasks` 顶层可用 ✓;`/testsuites` 顶层报 `Need product id.`,需走 `/products/{id}/testsuites` | **已实测 ✓ 2026-05-04** L5.4 |
 | 任务 close 副作用 | 文档未提 | **`assignedTo` 被清成 `null`**,`finishedBy`/`closedBy` 保留。基于 assignedTo 的客户端筛会漏 closed 任务 → 必须 OR `finishedBy.account` | **已实测 ✓ 2026-05-04** L5.1 cleanup 后查 detail 验证 |
+
+## 11.2 list 端点子任务藏在 `.children[]`(高频陷阱)
+
+**实测 2026-05-04** — `GET /executions/{eid}/tasks` 默认页(无论传 `limit=20/100/500/默认`)只返回**父任务 + 顶层任务**,子任务嵌在父对象的 `.children[]` 子数组里。漏 children 等于漏 60%+ 的真实任务。
+
+**症状**:
+
+- 用 `jq '.tasks[]'` 拉到的数量远少于 `.total`(执行 2028 实测 total=1567,page1 limit=500 实际 162 条 — 但全是父+顶层,真实 task 总数 ≥ 1567)
+- detail 端点 `/tasks/{id}` 显示某 task 的 `execution=2028`,但 list 端点用 `.tasks[]?` 拉不到它
+
+**根因**:list endpoint 的输出结构是嵌套的:
+
+```jsonc
+{
+  "total": 1567,
+  "tasks": [
+    { "id": 43911, "name": "...", "parent": -1,        // 父任务
+      "children": [                                       // ← 子任务在这里!
+        { "id": 43912, "parent": 43911, "finishedBy": "qingwa", ... },
+        { "id": 43913, "parent": 43911, ... }
+      ]
+    },
+    { "id": 43928, "name": "...", "parent": 0 },          // 顶层任务
+    ...
+  ]
+}
+```
+
+**修复**:jq 必须递归 children:
+
+```bash
+# 错(漏 60%+ 真实任务):
+jq '[.tasks[]?]'
+
+# 对(扁平化所有 task,顶层 + 子任务):
+jq '[.tasks[]?] + [.tasks[]?.children[]?]'
+```
+
+**子任务字段差异**:`.children[]` 元素带完整 task 字段(含 finishedBy/finishedDate),但格式跟父任务不同:
+
+| 字段 | 父任务(顶层 list 元素) | 子任务(`.children[]` 元素) |
+|---|---|---|
+| `assignedTo` | `{account, realname, ...}` object | `"qingwa"` 字符串 |
+| `finishedBy` | object | string |
+| `finishedDate` | `"2026-04-30T20:47:09Z"` ISO8601 | `"2026-04-30 20:47:09"` 空格分隔 |
+
+**统一兼容写法**:
+
+```jq
+def u(f): (if (f|type) == "object" then (f.account // "") else (f // "") end);
+def dt(s): if (s|tostring) == "" or (s|tostring) == null then "" else (s|tostring|.[0:10]) end;
+```
+
+P1 已用此写法。客户端筛 `.assignedTo.account == $me` 在 children 上必失败。
+
+## 11.3 `/products/{pid}/bugs` 默认过滤 `status != closed`
+
+**实测 2026-05-04** — 默认 `GET /products/{pid}/bugs` 只返回 status ∈ {active, resolved, confirmed} 的"活跃" bug,**已 closed 历史 bug 全部不返回**。
+
+**实测对比**(product 95):
+
+| 调用 | total | 实际拉到 | 含历史 closed bug? |
+|---|---|---|---|
+| `/products/95/bugs`(默认 limit=20) | 34 | 20 | ✗(全活跃) |
+| `/products/95/bugs?limit=500` | **34** | 34 | ✗(全活跃) |
+| `/products/95/bugs?status=all&limit=500` | **1115** | 500 | ✓(含历史 closed) |
+
+**修复**:Bug 时间窗筛选(尤其是 resolvedDate / closedDate 在历史周)**必须加 `?status=all`**:
+
+```bash
+# 错(漏所有历史已关闭 bug,只能拉到本周新 resolved 还没 closed 的):
+zt_paginate "/products/$pid/bugs"
+
+# 对(覆盖历史):
+zt_paginate "/products/$pid/bugs?status=all"
+```
+
+**不要传其他 status 单值**:`?status=resolved` `?status=closed` 都返 total=0(参数破坏查询)。**唯一接受的值是 `all`**。
+
+P2、weekly-report data-collection.md R2 已修。
 
 ## 11.1 bytenew.com 实例特定行为(2026-05-04 实测)
 
