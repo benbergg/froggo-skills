@@ -21,7 +21,7 @@ SPRINT_VIEW=$(echo "$USER" | jq -r '.profile.view.sprints' | tr ',' '\n' | sort 
 DOING=$(zt_get "/executions?status=doing&limit=500" | jq -r '.executions[].id' | sort -u)
 MY_DOING=$(comm -12 <(echo "$SPRINT_VIEW") <(echo "$DOING"))
 
-for sid in $MY_DOING; do zt_paginate "/executions/$sid/tasks"; done \
+while IFS= read -r sid; do zt_paginate "/executions/$sid/tasks"; done <<< "$MY_DOING" \
   | jq -s --arg me "$ME" --arg s "$START" --arg e "$END" '
     [.[].tasks[]?
      | select($me == "" or .assignedTo.account == $me or .finishedBy.account == $me)
@@ -49,7 +49,7 @@ START="${1:-}"; END="${2:-}"; KIND="${3:-bugs}"   # bugs 或 stories
 USER=$(zt_get /user)
 PRODUCT_VIEW=$(echo "$USER" | jq -r '.profile.view.products' | tr ',' '\n' | sort -u)
 
-for pid in $PRODUCT_VIEW; do zt_paginate "/products/$pid/$KIND"; done \
+while IFS= read -r pid; do zt_paginate "/products/$pid/$KIND"; done <<< "$PRODUCT_VIEW" \
   | jq -s --arg me "$ME" --arg s "$START" --arg e "$END" --arg k "$KIND" '
     [.[] | .[$k][]?
      | select($me == "" or .assignedTo.account == $me or .resolvedBy.account == $me)
@@ -66,12 +66,20 @@ for pid in $PRODUCT_VIEW; do zt_paginate "/products/$pid/$KIND"; done \
 
 抽象:拿到子记录后回查父记录。适用于任意带 `.parent` 字段的实体(task / story 等)。
 
+`.parent` sentinel(实测):`0` 无父子关系;`-1` 自己是父(有子任务);`正整数 N` 自己是子,父 ID = N。所以"找父"必须用 `> 0` 筛,`!= 0` 会把 -1(父自身)误判为子。
+
 ```bash
 TID="$1"   # 任务 / 需求 ID
 parent_id=$(zt_get "/tasks/$TID" | jq -r .parent)
-if [ "$parent_id" != "0" ] && [ "$parent_id" != "null" ]; then
+if [ "$parent_id" -gt 0 ] 2>/dev/null; then
   zt_get "/tasks/$parent_id" | jq '{id, name}'
 fi
+```
+
+附:在一批 task list 里挑出"子任务"(用于 P1/P2 拼接):
+
+```bash
+jq '.tasks[]? | select(.parent > 0)'
 ```
 
 ## P4 — 客户端 jq 筛选模板

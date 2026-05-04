@@ -51,18 +51,20 @@ zt_write PUT  '/tasks/43906' '{"parent":43901}'   # 创建子任务的第二步
 
 ## 写入端点字段速查
 
+> ⚠ **task / bug action 方法硬约束**:**全部用 POST**(start/pause/finish/close/restart/estimate, confirm/close/active/resolve)。文档标 PUT,但 V3 实测 PUT 返 200 + Content-Length: 0 后状态不变(静默 no-op,无错误信号 → 数据零变更)。详见 known-issues §11。
+
 | 操作 | 端点 | 必填 body 字段 | 备注 |
 |------|------|--------------|------|
-| 创建任务 | `POST /executions/{eid}/tasks` | name, estStarted, deadline | parent 字段被忽略 |
+| 创建任务 | `POST /executions/{eid}/tasks` | name, **assignedTo**, estStarted, deadline | parent 字段被忽略;`assignedTo` 漏掉报 `『指派给』不能为空` |
 | 创建子任务 | 上 + `PUT /tasks/{newId}` body `{parent}` | 同上 + 第二步 parent | 必须两步 |
 | 修改任务 | `PUT /tasks/{id}` | — | 修改 module/story/name/type/assignedTo/pri/estimate/estStarted/deadline |
 | 开始任务 | `POST /tasks/{id}/start` | left | wait → doing |
 | 暂停任务 | `POST /tasks/{id}/pause` | — | doing → pause;body 可含 comment |
 | 继续任务 | `POST /tasks/{id}/restart` | left + (实测) consumed | pause → doing;⚠ 端点是 /restart 不是 /continue |
 | 完成任务 | `POST /tasks/{id}/finish` | currentConsumed, finishedDate | → done |
-| 关闭任务 | `POST /tasks/{id}/close` | — | done → closed |
+| 关闭任务 | `POST /tasks/{id}/close` | — | done → closed;⚠ **副作用:`assignedTo` 被清成 null** |
 | 添加工时日志 | `POST /tasks/{id}/estimate` | date[], work[], consumed[], left[] (并行数组) | ⚠ 端点是 /estimate 不是 /logs |
-| 创建 Bug | `POST /products/{pid}/bugs` | title, severity, pri, type | type ∈ codeerror/config/install/security/performance/standard/automation/designdefect/others |
+| 创建 Bug | `POST /products/{pid}/bugs` | title, severity, pri, type | V3 实测时传入 `assignedTo` 跑通(类比创建任务,omit 未单独验证);type ∈ codeerror/config/install/security/performance/standard/automation/designdefect/others |
 | 修改 Bug | `PUT /bugs/{id}` | — | 修改 15 字段 |
 | 确认 Bug | `POST /bugs/{id}/confirm` | — | body 可含 comment |
 | 关闭 Bug | `POST /bugs/{id}/close` | — | body 可含 comment |
@@ -86,6 +88,6 @@ zt_write PUT  '/tasks/43906' '{"parent":43901}'   # 创建子任务的第二步
 
 - **禁止 DELETE**:本 skill 不暴露任何 DELETE 端点。设计层面禁止单 / 批量删除。
 - **必加 `--noproxy '*'`**:本机代理(Clash/Surge)兜底返回 HTTP 400,所有 curl 都要 `--noproxy '*'`(snippet 已默认)。
-- **必 sanitize**:`tr -d '\000-\010\013\014\016-\037'`(删 NUL + 控制字符,**保留** `\t \n \r`),否则严格 JSON 解析失败 + NUL 截断 bash 命令替换。snippet 已默认。
+- **必 sanitize**:`tr -d '\000-\037'`(删 NUL + 全部 C0 控制字符 0-31),否则严格 JSON 解析失败 + NUL 截断 bash 命令替换。snippet 已默认。代价:多行 string 字段内部 `\n` 被吃掉,只读消费场景可接受。详见 `known-issues.md` §11。
 - **token 不入日志**:`token.json` 文件权限 600;`$cache` 目录 700。snippet 已默认。
 - **顶层 `/tasks` 禁用**:`limit/page` 失效,必走 `/executions/{id}/tasks`。

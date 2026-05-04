@@ -24,6 +24,7 @@
 
 ```bash
 zt_init() {
+  setopt local_options typeset_silent 2>/dev/null   # zsh 默认 UNSET,导致 `local var; var=$(cmd)` 回显 var=value 到 stdout 污染输出
   local missing=()
   [ -z "${ZENTAO_BASE_URL:-}" ] && missing+=("ZENTAO_BASE_URL")
   [ -z "${ZENTAO_ACCOUNT:-}"  ] && missing+=("ZENTAO_ACCOUNT")
@@ -42,6 +43,7 @@ zt_init() {
 
 ```bash
 zt_acquire_token() {
+  setopt local_options typeset_silent 2>/dev/null
   zt_init || return $?
   local body resp token
   body=$(jq -cn --arg a "$ZENTAO_ACCOUNT" --arg p "$ZENTAO_PASSWORD" \
@@ -63,13 +65,14 @@ zt_acquire_token() {
 
 ## S3: zt_get — GET 包装(sanitize + 401 重取)
 
-Sanitize 步骤 `LC_ALL=C tr -d '\000-\010\013\014\016-\037'` 关键:
-1. 部分端点(如 `/executions/{id}/tasks`)在字符串字段嵌入未转义控制字符 `\x01-\x1f`,jq 严格 parse 会整体失败
+Sanitize 步骤 `LC_ALL=C tr -d '\000-\037'` 关键:
+1. 多个端点(实测 `/programs`、部分 `/executions/{id}/tasks`)在字符串字段值里嵌**未转义**的 `\x01-\x1f`(JSON 规范要求 string 内 0-31 必须 escape),jq 严格 parse 会整体失败
 2. NUL 字节会让 bash `$(...)` 截断,响应被静默截短
-3. 保留合法 JSON 空白 `\t \n \r`(`\011 \012 \015`),否则会破坏字符串字段中的合法换行
+3. **strip 全部 C0(0-31)而非保留 `\t\n\r`** — 早期版本曾试图保留这三个作为合法 JSON inter-token 空白,但实测 Zentao 把它们当 in-string 内容嵌入,保留即破解析。代价:多行 description 字段内部 `\n` 会被吃掉(只读 API 消费场景可接受)。详见 `known-issues.md` §11
 
 ```bash
 zt_get() {
+  setopt local_options typeset_silent 2>/dev/null
   zt_init || return $?
   local ep="$1"
   local f="$ZT_CACHE/token.json"
@@ -82,13 +85,13 @@ zt_get() {
   local resp
   resp=$(curl -s --noproxy '*' --max-time 20 -X GET "$url" \
     -H "Token: $token" -H "Content-Type: application/json" \
-    | LC_ALL=C tr -d '\000-\010\013\014\016-\037') || true
+    | LC_ALL=C tr -d '\000-\037') || true
 
   if printf '%s' "$resp" | grep -qi '"error":"[Uu]nauthorized"'; then
     token=$(zt_acquire_token) || return 1
     resp=$(curl -s --noproxy '*' --max-time 20 -X GET "$url" \
       -H "Token: $token" -H "Content-Type: application/json" \
-      | LC_ALL=C tr -d '\000-\010\013\014\016-\037') || true
+      | LC_ALL=C tr -d '\000-\037') || true
   fi
   printf '%s\n' "$resp"
 }
@@ -103,6 +106,7 @@ zt_get() {
 
 ```bash
 zt_write() {
+  setopt local_options typeset_silent 2>/dev/null
   zt_init || return $?
   local method="$1" ep="$2" body="$3"
   case "$method" in POST|PUT) ;; *)
@@ -118,13 +122,13 @@ zt_write() {
   local resp
   resp=$(curl -s --noproxy '*' --max-time 20 -X "$method" "$url" \
     -H "Token: $token" -H "Content-Type: application/json" \
-    -d "$body" | LC_ALL=C tr -d '\000-\010\013\014\016-\037') || true
+    -d "$body" | LC_ALL=C tr -d '\000-\037') || true
 
   if printf '%s' "$resp" | grep -qi '"error":"[Uu]nauthorized"'; then
     token=$(zt_acquire_token) || return 1
     resp=$(curl -s --noproxy '*' --max-time 20 -X "$method" "$url" \
       -H "Token: $token" -H "Content-Type: application/json" \
-      -d "$body" | LC_ALL=C tr -d '\000-\010\013\014\016-\037') || true
+      -d "$body" | LC_ALL=C tr -d '\000-\037') || true
   fi
   printf '%s\n' "$resp"
 }
@@ -136,6 +140,7 @@ zt_write() {
 
 ```bash
 zt_paginate() {
+  setopt local_options typeset_silent 2>/dev/null
   local ep="$1"
   local p=1 limit=500
   while :; do
@@ -175,6 +180,7 @@ _zt_ep2dow() { TZ=UTC date -j -f "%s" "$1" +%u 2>/dev/null \
               || TZ=UTC date -d "@$1" +%u; }
 
 zt_week_range() {
+  setopt local_options typeset_silent 2>/dev/null
   local now_iso="${NOW_OVERRIDE:-$(TZ=UTC date "+%Y-%m-%dT%H:%M:%SZ")}"
   local now_ep dow day_ep mon_ep
   now_ep=$(_zt_iso2ep "$now_iso")
