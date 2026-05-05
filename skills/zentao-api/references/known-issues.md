@@ -17,12 +17,9 @@
 | 调用返回 HTML / `<html>...` | 网络劫持或本地代理兜底。所有 curl 加 `--noproxy '*'`（lib 已默认）。 |
 | Token 失效 | `zt_get` / `zt_write` 自动重取 + 重试 1 次。手动重置：`rm $ZT_CACHE/token.json`。 |
 
-## 实测白名单
+## 实测白名单（详见 endpoints.md §3 通用查询参数白名单）
 
-| 参数 | 在哪些接口生效 |
-|------|----------------|
-| `limit` / `page` | 所有列表型端点 ✓；**唯独 `/tasks` 顶层失效** ✗ |
-| `?status=` | `/executions` ✓(支持 doing/closed/all 等);`/products/{id}/bugs` **只接受 `all`**(其他值返空,默认值过滤 closed) |
+具体参数白名单已迁移到 `endpoints.md §3 通用查询参数白名单`，本文件不再重复。
 
 ## 服务端筛选不可信
 

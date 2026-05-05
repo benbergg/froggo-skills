@@ -25,7 +25,7 @@ froggo-skills/
 | 技能 | 触发方式 | 命令 | 说明 |
 |------|----------|------|------|
 | git-commit | 自动 | - | Conventional Commits 提交规范 |
-| zentao-api | 自动 | - | 禅道 RESTful API v1 只读查询（任务/Bug/需求等） |
+| zentao-api | 自动 | - | 禅道 RESTful API v1 读+受控写（任务/Bug/需求等，无 DELETE） |
 
 ## 安装
 
@@ -78,13 +78,6 @@ export ZENTAO_PASSWORD="your_password"
 ```
 
 详细使用见 [skills/zentao-api/SKILL.md](skills/zentao-api/SKILL.md)。
-
-## 测试
-
-```bash
-brew install bats-core         # 仅首次
-bats tests/zentao-api/         # 单元测试（mock curl，无网络）
-```
 
 ## License
 
