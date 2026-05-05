@@ -172,7 +172,10 @@ echo "written: $OUTPUT_FILE"
 
 if [ "$MODE" = "cron" ] || [ -d "$KNOWLEDGE_LIB/.git" ]; then
   cd "$KNOWLEDGE_LIB"
-  git add "$(realpath --relative-to="$KNOWLEDGE_LIB" "$OUTPUT_FILE")"
+  if [[ "$OUTPUT_FILE" == "$KNOWLEDGE_LIB"/* ]]; then
+    git_relative_path="${OUTPUT_FILE#$KNOWLEDGE_LIB/}"
+    git add "$git_relative_path"
+  fi
   git commit -m "docs(daily): ${TODAY}" || echo "nothing to commit"
   if ! git push 2>&1 | tee /tmp/daily-push.log; then
     git pull --rebase && git push || {
