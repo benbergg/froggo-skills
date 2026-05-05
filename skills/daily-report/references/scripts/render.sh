@@ -88,10 +88,12 @@ _render_bug_row() {
   today_event=$(echo "$bug" | jq -r '.today_event // ""')
 
   case "$status" in
-    active)   status_label="🆕 active" ;;
-    resolved) status_label="🔄 resolved 待验" ;;
-    closed)   status_label="❌ closed" ;;
-    *)        status_label="$status" ;;
+    active)    status_label="🆕 active" ;;
+    confirmed) status_label="🔍 confirmed" ;;
+    resolved)  status_label="🔄 resolved 待验" ;;
+    closed)    status_label="❌ closed" ;;
+    postponed) status_label="⏭️ postponed" ;;
+    *)         status_label="❓ $status" ;;
   esac
 
   today_cell="${today_event:+✅ ${today_event}}"

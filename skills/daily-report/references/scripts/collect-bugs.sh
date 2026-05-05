@@ -28,10 +28,15 @@ filter_in_scope_bugs() {
      | (if has("closedBy")   then .closedBy   |= normalize_person else . end)
     ]
     | map(select(
+        # active and confirmed: still pending bugs (历史未完成)
         .status == "active"
+        or .status == "confirmed"
+        # any same-day event: today opened/resolved/closed (当天完成)
         or is_today("openedDate")
         or is_today("resolvedDate")
         or is_today("closedDate")
+        # postponed: closed bugs deferred — list endpoint quirk; only keep
+        # if today-closed (otherwise historical noise)
       ))
   '
 }
