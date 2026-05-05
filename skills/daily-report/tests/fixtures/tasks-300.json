@@ -1,0 +1,11 @@
+[
+  {"id": 8000, "name": "设计方案",   "type": "design",  "status": "done",  "assignedTo": "lily",   "story": 1234, "parent": 0, "deadline": "2026-05-03", "estimate": 4,  "consumed": 4, "left": 0, "finishedDate": "2026-05-03", "closedDate": null},
+  {"id": 8001, "name": "接口实现",   "type": "devel",   "status": "doing", "assignedTo": "qingwa", "story": 1234, "parent": 0, "deadline": "2026-05-04", "estimate": 16, "consumed": 8, "left": 4, "finishedDate": null,         "closedDate": null},
+  {"id": 8002, "name": "用例编写",   "type": "test",    "status": "wait",  "assignedTo": "zhao",   "story": 1234, "parent": 0, "deadline": "2026-05-08", "estimate": 8,  "consumed": 0, "left": 8, "finishedDate": null,         "closedDate": null},
+  {"id": 8003, "name": "编码",       "type": "devel",   "status": "done",  "assignedTo": "zhang",  "story": 1230, "parent": 0, "deadline": "2026-05-04", "estimate": 8,  "consumed": 8, "left": 0, "finishedDate": "2026-05-05", "closedDate": null},
+  {"id": 8004, "name": "验证",       "type": "test",    "status": "doing", "assignedTo": "sun",    "story": 1230, "parent": 0, "deadline": "2026-05-07", "estimate": 4,  "consumed": 1, "left": 3, "finishedDate": null,         "closedDate": null},
+  {"id": 8005, "name": "未知类型",   "type": "weird",   "status": "wait",  "assignedTo": "liu",    "story": 1235, "parent": 0, "deadline": "2026-05-10", "estimate": 4,  "consumed": 0, "left": 4, "finishedDate": null,         "closedDate": null},
+  {"id": 8006, "name": "study",      "type": "study",   "status": "done",  "assignedTo": "lily",   "story": 1200, "parent": 0, "deadline": "2026-04-28", "estimate": 2,  "consumed": 2, "left": 0, "finishedDate": "2026-04-28", "closedDate": null},
+  {"id": 8007, "name": "talk",       "type": "talk",    "status": "done",  "assignedTo": "wang",   "story": 1200, "parent": 0, "deadline": "2026-04-29", "estimate": 1,  "consumed": 1, "left": 0, "finishedDate": "2026-04-29", "closedDate": null},
+  {"id": 9999, "name": "无关任务",   "type": "devel",   "status": "doing", "assignedTo": "qingwa", "story": 0,    "parent": 0, "deadline": "2026-05-15", "estimate": 4,  "consumed": 0, "left": 4, "finishedDate": null,         "closedDate": null}
+]
