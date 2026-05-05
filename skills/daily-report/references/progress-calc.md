@@ -14,11 +14,11 @@ implemented in `scripts/progress.sh`.
 **Formula:**
 
 ```
-value = floor( ∑consumed / (∑consumed + ∑left) × 100 )
+value = round( ∑consumed / (∑consumed + ∑left) × 100 )
 source = "hours"
 ```
 
-**Example:** consumed=8, left=4 → 8 / (8+4) × 100 = 67%
+**Example:** consumed=8, left=4 → 8 / 12 × 100 = 66.67 → round → 67%
 
 See fixture: `tests/fixtures/progress-hours.json`
 
@@ -31,7 +31,7 @@ See fixture: `tests/fixtures/progress-hours.json`
 **Formula:**
 
 ```
-value = floor( done_count / total_count × 100 )
+value = round( done_count / total_count × 100 )
 source = "count"
 ```
 
