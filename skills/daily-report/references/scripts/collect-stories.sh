@@ -11,6 +11,7 @@
 # Output: JSON object with keys: in_progress, today_done, unassigned, idle
 #   today_done  - closedDate or finishedDate >= today_start
 #   early_done  - already closed/released before today (excluded from output)
+#   draft       - status=draft (excluded from output; not yet reviewed)
 #   unassigned  - stage=wait AND assignedTo is empty/null
 #   idle        - stage=wait AND assignedTo is non-empty
 #   in_progress - all other active stories
@@ -27,6 +28,8 @@ classify_stories() {
        . + {bucket: "today_done"}
      elif (.status == "closed" or .stage == "closed" or .stage == "released") then
        . + {bucket: "early_done"}
+     elif (.status == "draft") then
+       . + {bucket: "draft"}
      elif (.stage == "wait") then
        if (.assignedTo == null or .assignedTo == "") then
          . + {bucket: "unassigned"}
@@ -36,7 +39,7 @@ classify_stories() {
      else
        . + {bucket: "in_progress"}
      end]
-    | map(select(.bucket != "early_done"))
+    | map(select(.bucket != "early_done" and .bucket != "draft"))
     | {
         in_progress: map(select(.bucket == "in_progress")),
         today_done:  map(select(.bucket == "today_done")),

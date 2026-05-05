@@ -14,6 +14,7 @@ task_type_label() {
     request) echo "📌 需求" ;;
     affair)  echo "📝 事务" ;;
     others)  echo "🔧 其他" ;;
+    normal)  echo "📋 普通" ;;
     *)       echo "❓ $1" ;;
   esac
 }
