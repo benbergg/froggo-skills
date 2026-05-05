@@ -5,7 +5,9 @@ set -euo pipefail
 
 DAILY_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCRIPTS="$DAILY_DIR/scripts"
-ZT_FUNCTIONS="$DAILY_DIR/../../zentao-api/scripts/zt-functions.sh"
+# zt-functions.sh path. Test suites can override to inject a mock layer
+# (e.g. tests/e2e-mocks/zt-functions.sh) without needing real Zentao credentials.
+ZT_FUNCTIONS="${ZT_FUNCTIONS_OVERRIDE:-$DAILY_DIR/../../zentao-api/scripts/zt-functions.sh}"
 
 # Step 0: Source zentao-api toolkit (provides zt_init/zt_get/zt_paginate/etc.)
 if [ -f "$ZT_FUNCTIONS" ]; then
