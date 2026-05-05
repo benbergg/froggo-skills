@@ -21,21 +21,21 @@ export KNOWLEDGE_LIB="${KNOWLEDGE_LIB:-$HOME/Knowledge-Library}"
 which curl jq >/dev/null && echo "✓ curl/jq OK"
 ```
 
-## 1. eval zentao-api 6 snippet
+## 1. source zentao-api 函数库
 
-把 `../../zentao-api/references/auth-and-curl.md` 中所有 ```bash 块复制到当前 shell。或一行 sed 抽取(危险,谨慎):
+V4 后函数已抽到 `scripts/zt-functions.sh`，**直接 source 即可**（不再需要从 markdown 抽 bash 块）：
 
 ```bash
-# 谨慎用法:抽出所有 bash 块拼接 eval(信任源文件)
 ZENTAO_SKILL_DIR=/Users/lg/workspace/froggo-skills/skills/zentao-api
-SNIPPETS=$(awk '/^```bash$/{flag=1;next} /^```$/{flag=0} flag' \
-  "$ZENTAO_SKILL_DIR/references/auth-and-curl.md")
-eval "$SNIPPETS"
+# shellcheck source=/dev/null
+source "$ZENTAO_SKILL_DIR/scripts/zt-functions.sh"
 
 # 校验
 type zt_init zt_acquire_token zt_get zt_paginate zt_write zt_week_range >/dev/null \
-  && echo "✓ 6 snippet 已加载"
+  && echo "✓ 6 函数已加载"
 ```
+
+> 历史方式（V3 及更早，从 auth-and-curl.md 抽 bash 块）已废弃；如需 quickstart 文档详见 `$ZENTAO_SKILL_DIR/references/quickstart.md`。
 
 ## 2. Setup
 
@@ -146,7 +146,7 @@ jq -r '.[:3] | .[] | "B\(.id) status=\(.status) assignedTo=\(.assignedTo) title=
 |---|---|---|
 | `zt_acquire_token` 报 FATAL | 密码错/账号锁 | 改 `~/.zentao.env`,重 source |
 | HTTP 400 / 不返 JSON | 本机代理拦截 | snippet 已带 `--noproxy '*'`,确认未被覆盖 |
-| `/programs` jq parse error | Zentao 字段嵌 0x01-0x1f | `zt_get` 已 strip,不应再现;若有,看 known-issues §11 |
+| `/programs` jq parse error | Zentao 字段嵌 0x01-0x1f | `zt_get` 已 strip,不应再现;若有,看 troubleshooting §11 |
 | R1 总是 0 但你确实完成了任务 | `view.sprints` 不含完成任务的执行 | 该执行非 doing 状态,或不在你 view 里;手工补 SID |
 | `zt_week_range` 报 date 错 | 系统 date 既非 BSD 也非 GNU(罕见) | 检查 `which date`,可能装的是 busybox |
 | jq parse `.parent: -1` 当成子任务 | 误用 `!= 0` | 改用 `> 0`(P3 sentinel) |

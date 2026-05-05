@@ -4,7 +4,7 @@
 > 输出:5 个 jq array(R1-R5),每个独立可重跑、独立可校验。
 > 全文遵守 [`zentao-api/references/patterns.md`](../../zentao-api/references/patterns.md) 三个 pattern:P1 跨执行任务、P2 跨产品 Bug/Story、P3 父子还原。
 >
-> ⚠️ **两个关键 list 端点陷阱(2026-05-04 实测,zentao-api/known-issues.md §11.2 / §11.3)**:
+> ⚠️ **两个关键 list 端点陷阱(2026-05-04 实测,zentao-api/troubleshooting.md §11.2 / §11.3)**:
 > 1. `/executions/{id}/tasks` 子任务藏在父对象的 `.children[]` 子数组 — jq 必须递归扁平化,否则漏 60%+ 真实任务。
 > 2. `/products/{id}/bugs` 默认隐式过滤 `status != closed` — 要拉历史已关闭 bug 必须加 `?status=all`(R2 必须;R3 不需要)。
 
@@ -164,7 +164,7 @@ parents_of /tmp/wk-R1.json > /tmp/wk-R5-R1-parents.json
 parents_of /tmp/wk-R4.json > /tmp/wk-R5-R4-parents.json
 ```
 
-> 关键:用 `> 0` 而非 `!= 0`。`.parent == -1` 是"自己是父"的 sentinel,不要回查(详见 zentao-api/known-issues.md §11.1)。
+> 关键:用 `> 0` 而非 `!= 0`。`.parent == -1` 是"自己是父"的 sentinel,不要回查(详见 zentao-api/troubleshooting.md §11.1)。
 
 ## 装配:任务格式化
 

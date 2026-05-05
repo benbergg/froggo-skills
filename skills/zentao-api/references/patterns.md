@@ -1,12 +1,12 @@
 # Patterns — 禅道 API 通用聚合模式
 
-> 所有 pattern 假设已 `eval` `auth-and-curl.md` 的全部 snippet。
+> 所有 pattern 假设已 `eval` `quickstart.md` 的全部 snippet。
 > `$ME` 取自 `$ZENTAO_ME` 或 `zt_get /user | jq -r .profile.account`。
 > `$START / $END` 是 ISO8601 字符串(`2026-05-03T00:00:00Z`)或 `YYYY-MM-DD`,留空则跳过时间过滤。
 >
 > **去任务化硬约束**:本文件全文不出现 `WK_` `WEEK` `本周` `周报` `下周` 等字样。`zt_week_range` 仅作为可选辅助。
 
-## P1 — 跨执行聚合任务
+## P1 — Cross-Execution Task Aggregation
 
 抽象:在某用户可见的 doing 执行集合中,按字段筛选任务。
 
@@ -50,7 +50,7 @@ done <<< "$MY_DOING" \
 
 (为什么必须递归 `.children[]`:`/executions/{eid}/tasks` 默认只展开父任务和顶层任务,子任务嵌在父对象的 `.children[]` 字段里。实测 2028 执行 page1 顶层 34 条 + 递归 children 共 100 条,真实业务子任务 100% 在 children 里被找到。漏掉 children 等于漏掉 60%+ 的真实任务。)
 
-## P2 — 跨产品聚合 Bug/Story
+## P2 — Cross-Product Bug/Story Aggregation
 
 抽象:在某用户可见的 product 集合中,按字段筛选 Bug 或 Story。
 
@@ -89,7 +89,7 @@ done <<< "$PRODUCT_VIEW" \
 
 > jq 语法注意:`.[$k]` 是动态 key 取值,必须先 `.[]` 解开 jq -s 的外层数组,再 `.[$k][]?` 取动态 key 的内嵌数组(`?` 防御空值)。**不要写成 `.[][$k][]?`**(jq 解析失败)。
 
-## P3 — 父子关系还原
+## P3 — Parent-Child Restoration
 
 抽象:拿到子记录后回查父记录。适用于任意带 `.parent` 字段的实体(task / story 等)。
 
@@ -109,7 +109,7 @@ fi
 jq '.tasks[]? | select(.parent > 0)'
 ```
 
-## P4 — 客户端 jq 筛选模板
+## P4 — Client-Side jq Filter Template
 
 抽象:服务端 `?assignedTo=` 等参数被忽略,统一在 jq 端筛。本 pattern 只有 jq 模板,无 HTTP 调用 — 与 P1/P2 拼接使用。
 

@@ -1,17 +1,17 @@
 # Verify — 禅道 API 连通性自检
 
-> 任意环境(新部署、换实例、密码变更)的快速自检。完全不依赖 lib,直接复用 `auth-and-curl.md` 的 snippet。
+> 任意环境(新部署、换实例、密码变更)的快速自检。完全不依赖 lib,直接复用 `quickstart.md` 的 snippet。
 >
 > 不进 CI(需真实凭据)。
 
-## 准备
+## Setup
 
 ```bash
 export ZENTAO_BASE_URL="https://chandao.bytenew.com/zentao/api.php/v1"
 export ZENTAO_ACCOUNT="..."
 export ZENTAO_PASSWORD="..."
 
-# 复制 auth-and-curl.md 的 6 段 snippet 到当前 shell 后:
+# 复制 quickstart.md 的 6 段 snippet 到当前 shell 后:
 zt_init && echo "✓ env"
 ```
 
@@ -22,7 +22,7 @@ zt_acquire_token >/dev/null && echo "✓ token"
 zt_get /user | jq -e '.profile.account' >/dev/null && echo "✓ /user"
 ```
 
-## L1 — 11 个入口端点
+## L1 — Entry Endpoints
 
 ```bash
 for ep in '/users?limit=1' '/departments?limit=1' '/programs?limit=1' \
@@ -34,7 +34,7 @@ for ep in '/users?limit=1' '/departments?limit=1' '/programs?limit=1' \
 done
 ```
 
-## L2 — 二级端点(基于 L1 拿到的 ID)
+## L2 — Secondary Endpoints
 
 ```bash
 PROD_ID=$(zt_get '/products?limit=1' | jq -r '.products[0].id')
@@ -58,7 +58,7 @@ EXEC_ID=$(zt_get '/executions?status=doing&limit=1' | jq -r '.executions[0].id')
 done
 ```
 
-## L3 — 详情端点
+## L3 — Detail Endpoints
 
 ```bash
 TASK_ID=$(zt_get "/executions/$EXEC_ID/tasks?limit=1" | jq -r '.tasks[0].id // empty')
@@ -70,7 +70,7 @@ STORY_ID=$(zt_get "/products/$PROD_ID/stories?limit=1" | jq -r '.stories[0].id /
 [ -n "$STORY_ID" ] && zt_get "/stories/$STORY_ID" | jq -e .id >/dev/null && echo "✓ story $STORY_ID"
 ```
 
-## L4 — 残废端点回归
+## L4 — Broken-Endpoint Regression
 
 ```bash
 # 顶层 /tasks 应仍然 limit 失效(始终 1 条)
@@ -82,13 +82,13 @@ TOT=$(zt_get "/products/$PROD_ID/bugs?status=resolved&limit=1" | jq -r '.total /
 [ "$TOT" = "0" ] && echo "✓ ?status= 仍破坏 bugs 查询" || echo "⚠ ?status= 行为变化(total=$TOT)"
 ```
 
-## L5 — 生产实例偏差回归(填回 known-issues.md §11 差异表)
+## L5 — Production Deviation Regression
 
-> **本节是 V3 关键交付**。逐项跑,把 known-issues.md §11 表中所有 `lib 推断` 行的实际方法 + 路径回填,改证据来源为 `已实测 ✓ + 日期`。
+> **本节是 V3 关键交付**。逐项跑,把 troubleshooting.md §11 表中所有 `lib 推断` 行的实际方法 + 路径回填,改证据来源为 `已实测 ✓ + 日期`。
 >
 > ⚠️ **生产数据保护硬约束**:严禁直接对生产已有的任务/Bug 操作。每节先创建专用一次性测试任务/Bug(标题前缀 `V3 verify L5 - delete after`),所有方法实测都在它上面跑,完成后 finish + close 它。
 
-### L5.1 任务方法实测(POST vs PUT,在专用测试任务上)
+### L5.1 — Task Method (POST vs PUT)
 
 ```bash
 EXEC_ID=$(zt_get '/executions?status=doing&limit=1' | jq -r '.executions[0].id')
@@ -125,7 +125,7 @@ echo "✓ 测试任务已 close(无 DELETE,close 是终态)"
 
 记录到 known-issues §11 差异表:`POST 成功 / PUT 成功(或 405 Method Not Allowed)`。
 
-### L5.2 Bug 方法实测(POST vs PUT,在专用测试 Bug 上)
+### L5.2 — Bug Method (POST vs PUT)
 
 ```bash
 PROD_ID=$(zt_get '/products?limit=1' | jq -r '.products[0].id')
@@ -157,7 +157,7 @@ done
 echo "✓ 测试 Bug 已 close"
 ```
 
-### L5.3 用例端点路径
+### L5.3 — Test-Case Endpoint Path
 
 ```bash
 PROD_ID=$(zt_get '/products?limit=1' | jq -r '.products[0].id')
@@ -173,7 +173,7 @@ zt_get "/products/$PROD_ID/cases?limit=1" | head -c 200; echo
 
 预期:其中之一返回正常 JSON,另一个 404 / error。
 
-### L5.4 测试单端点路径
+### L5.4 — Test-Task Endpoint Path
 
 ```bash
 # /testtasks
@@ -185,12 +185,12 @@ echo "--- /testsuites ---"
 zt_get '/testsuites?limit=1' | head -c 200; echo
 ```
 
-## L6 — patterns.md 数据流烟测
+## L6 — patterns.md Smoke Tests
 
 > 验 P1/P2/P3 能跑通(返回合法 JSON 数组),不判内容。需 L0–L2 全通过。
 > P4 是纯 jq 模板,无 HTTP 调用,不入烟测。
 
-### L6.1 P1 跨执行聚合任务
+### L6.1 — P1 Cross-Execution Smoke
 
 ```bash
 ME=$(zt_get /user | jq -r .profile.account)
@@ -209,7 +209,7 @@ else
 fi
 ```
 
-### L6.2 P2 跨产品聚合 Bug
+### L6.2 — P2 Cross-Product Smoke
 
 ```bash
 ME=$(zt_get /user | jq -r .profile.account)
@@ -226,7 +226,7 @@ else
 fi
 ```
 
-### L6.3 P3 父子关系还原
+### L6.3 — P3 Parent-Child Smoke
 
 注:`.parent > 0` 才是真子任务。`-1` 是 sentinel"我是父"(详见 known-issues §11.1)。
 单页足够烟测,避开 paginate 流式 jq 风险。
@@ -248,7 +248,7 @@ fi
 
 判定:三条都打 `✓` 或 `⚠ 跳过`(无数据可测,非失败)即通过;出现 `✗` 即失败,需要查 jq 表达式或上游 L1/L2 是否实际通了。
 
-## 失败排查
+## Failure Diagnosis
 
 | 现象 | 排查 |
 |------|------|

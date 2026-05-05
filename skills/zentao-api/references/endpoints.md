@@ -1,8 +1,8 @@
 # 禅道 v1 API 端点目录
 
-> 按需载入。先看 [`SKILL.md`](../SKILL.md) 主文件,再读这里。涉及反直觉行为/偏差请同时参考 [`known-issues.md`](known-issues.md)。
+> 按需载入。先看 [`SKILL.md`](../SKILL.md) 主文件,再读这里。涉及反直觉行为/偏差请同时参考 [`troubleshooting.md`](troubleshooting.md)。
 
-## 0. 全 v1 入口图
+## Entry Tree
 
 ```
 入口（无前置 ID,可直接调）:
@@ -25,7 +25,7 @@
 - `GET /executions/{id}/tasks` — 子任务藏在父对象的 `.children[]` 子数组,jq 必须递归
 - `GET /products/{id}/bugs` — 默认过滤 `status != closed`,历史 closed bug 全漏,要加 `?status=all`
 
-## 1. "已知什么 → 调什么"查找表
+## Known X → Call Y Lookup
 
 | 已知 | 想要 | 调用 |
 |------|------|------|
@@ -38,7 +38,7 @@
 | productplanId | 该计划下需求/Bug | `/productplans/{id}/{stories\|bugs}` |
 | taskId/bugId/storyId/userId/buildId | 详情 | 对应详情端点 |
 
-## 2. 端点目录(按官方 17 章节)
+## Endpoint Catalog
 
 ### 2.1 用户(高频)
 
@@ -260,9 +260,9 @@
 |------|------|------|
 | POST | `/tokens` | 取 Token;body `{account, password}`;⚠ 官方文档写 `GET /token`,**生产实例是 `POST /tokens`**(已实测,见 known-issues) |
 
-调用方式见 [`auth-and-curl.md`](auth-and-curl.md) S2 `zt_acquire_token`。
+调用方式见 [`quickstart.md`](quickstart.md) S2 `zt_acquire_token`。
 
-## 3. 通用查询参数白名单(实测)
+## Query Parameter Whitelist
 
 | 参数 | 在哪些接口生效 |
 |------|----------------|
@@ -270,7 +270,7 @@
 | `?status=` | `/executions` ✓(支持 doing/closed/all 等);`/products/{id}/bugs` **只接受 `all`**(其他值破坏查询返 0,默认值过滤 closed,见 known-issues §11.3) |
 | `?assignedTo=` `?openedBy=` `?resolvedBy=` 等 | ✗ 大部分被忽略,统一改 jq 客户端筛(见 [`patterns.md`](patterns.md) P4) |
 
-## 4. 高频调用链(简化,详细模板见 patterns.md)
+## Common Call Chains
 
 | 业务场景 | 调用链 |
 |----------|--------|

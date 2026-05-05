@@ -1,30 +1,30 @@
-# Auth & Curl Snippets — Zentao API v1
+#!/usr/bin/env bash
+# zt-functions.sh — Zentao API v1 toolkit
+#
+# Usage:
+#   source /path/to/zt-functions.sh
+#   zt_init && zt_acquire_token >/dev/null
+#   zt_get /user
+#
+# Required env: ZENTAO_BASE_URL ZENTAO_ACCOUNT ZENTAO_PASSWORD
+# Optional env: ZENTAO_ME ZENTAO_CACHE_DIR
+#
+# Functions:
+#   S1 zt_init           — validate env + cache dir
+#   S2 zt_acquire_token  — POST /tokens, write 600 token.json
+#   S3 zt_get            — GET wrapper (sanitize + 401 retry)
+#   S4 zt_write          — POST/PUT wrapper (sanitize + 401 retry)
+#   S5 zt_paginate       — page loop with 20-page safety valve
+#   S6 zt_week_range     — Mon 00:00 ~ next Mon 00:00 UTC (BSD/GNU compat)
+#
+# Safety (rationale → references/troubleshooting.md):
+#   * --noproxy '*'  (local Clash/Surge bypass returns 400)
+#   * tr -d '\000-\037'  (Zentao embeds raw C0 ctrl chars in JSON strings)
+#   * chmod 600 token.json, chmod 700 $ZT_CACHE, never logged
 
-> 把下面 6 段 bash 全部复制到当前 shell 后 `eval`,即获得本 skill 全部调用能力。
-> 6 段也可单段使用,按需复制。
-
-## 前置依赖
-
-- bash >= 4
-- curl
-- jq
-- macOS(BSD `date`)或 Linux(GNU `date`),snippet S6 已做兼容
-
-## 环境变量
-
-| 变量 | 必填 | 说明 |
-|------|------|------|
-| `ZENTAO_BASE_URL` | ✓ | 例 `https://chandao.bytenew.com/zentao/api.php/v1` |
-| `ZENTAO_ACCOUNT`  | ✓ | 登录账号 |
-| `ZENTAO_PASSWORD` | ✓ | 密码 |
-| `ZENTAO_ME`       | – | 缺省取 `/user.profile.account` |
-| `ZENTAO_CACHE_DIR`| – | 缺省 `${XDG_CACHE_HOME:-~/.cache}/zentao` |
-
-## S1: zt_init — 校验环境 + 缓存目录
-
-```bash
+# === S1 zt_init ===
 zt_init() {
-  setopt local_options typeset_silent 2>/dev/null   # zsh 默认 UNSET,导致 `local var; var=$(cmd)` 回显 var=value 到 stdout 污染输出
+  setopt local_options typeset_silent 2>/dev/null || true
   local missing=()
   [ -z "${ZENTAO_BASE_URL:-}" ] && missing+=("ZENTAO_BASE_URL")
   [ -z "${ZENTAO_ACCOUNT:-}"  ] && missing+=("ZENTAO_ACCOUNT")
@@ -37,13 +37,10 @@ zt_init() {
   mkdir -p "$ZT_CACHE" && chmod 700 "$ZT_CACHE" 2>/dev/null || true
   export ZT_CACHE
 }
-```
 
-## S2: zt_acquire_token — POST /tokens
-
-```bash
+# === S2 zt_acquire_token ===
 zt_acquire_token() {
-  setopt local_options typeset_silent 2>/dev/null
+  setopt local_options typeset_silent 2>/dev/null || true
   zt_init || return $?
   local body resp token
   body=$(jq -cn --arg a "$ZENTAO_ACCOUNT" --arg p "$ZENTAO_PASSWORD" \
@@ -61,18 +58,10 @@ zt_acquire_token() {
   chmod 600 "$f"
   printf '%s\n' "$token"
 }
-```
 
-## S3: zt_get — GET 包装(sanitize + 401 重取)
-
-Sanitize 步骤 `LC_ALL=C tr -d '\000-\037'` 关键:
-1. 多个端点(实测 `/programs`、部分 `/executions/{id}/tasks`)在字符串字段值里嵌**未转义**的 `\x01-\x1f`(JSON 规范要求 string 内 0-31 必须 escape),jq 严格 parse 会整体失败
-2. NUL 字节会让 bash `$(...)` 截断,响应被静默截短
-3. **strip 全部 C0(0-31)而非保留 `\t\n\r`** — 早期版本曾试图保留这三个作为合法 JSON inter-token 空白,但实测 Zentao 把它们当 in-string 内容嵌入,保留即破解析。代价:多行 description 字段内部 `\n` 会被吃掉(只读 API 消费场景可接受)。详见 `known-issues.md` §11
-
-```bash
+# === S3 zt_get ===
 zt_get() {
-  setopt local_options typeset_silent 2>/dev/null
+  setopt local_options typeset_silent 2>/dev/null || true
   zt_init || return $?
   local ep="$1"
   local f="$ZT_CACHE/token.json"
@@ -95,18 +84,10 @@ zt_get() {
   fi
   printf '%s\n' "$resp"
 }
-```
 
-## S4: zt_write — POST/PUT 包装
-
-用法:
-
-- `zt_write POST /executions/3292/tasks '{"name":"x","estStarted":"2026-05-04","deadline":"2026-05-06"}'`
-- `zt_write PUT  /tasks/43906          '{"parent":43901}'`
-
-```bash
+# === S4 zt_write ===
 zt_write() {
-  setopt local_options typeset_silent 2>/dev/null
+  setopt local_options typeset_silent 2>/dev/null || true
   zt_init || return $?
   local method="$1" ep="$2" body="$3"
   case "$method" in POST|PUT) ;; *)
@@ -132,15 +113,10 @@ zt_write() {
   fi
   printf '%s\n' "$resp"
 }
-```
 
-## S5: zt_paginate — ?limit=500&page=N 循环 + 20 页安全阀
-
-安全阀理由:顶层 `/tasks` 等"残废"端点 `limit/page` 失效永远返 1 条,不设安全阀会死循环。
-
-```bash
+# === S5 zt_paginate ===
 zt_paginate() {
-  setopt local_options typeset_silent 2>/dev/null
+  setopt local_options typeset_silent 2>/dev/null || true
   local ep="$1"
   local p=1 limit=500
   while :; do
@@ -162,16 +138,8 @@ zt_paginate() {
     fi
   done
 }
-```
 
-## S6: zt_week_range — 周一 00:00 ~ 下周一 00:00 UTC(BSD/GNU 兼容)
-
-已知边界陷阱:
-1. macOS BSD `date -j -f` 与 Linux GNU `date -d` 语法不同
-2. 周日 23:59 UTC 必须归属"本周"不是"下周"
-3. 跨年(2025-12-29~2026-01-04)、闰年 2 月需正确处理
-
-```bash
+# === S6 zt_week_range ===
 _zt_iso2ep() { TZ=UTC date -j -f "%Y-%m-%dT%H:%M:%SZ" "$1" +%s 2>/dev/null \
               || TZ=UTC date -d "$1" +%s; }
 _zt_ep2iso() { TZ=UTC date -r "$1" "+%Y-%m-%dT%H:%M:%SZ" 2>/dev/null \
@@ -180,7 +148,7 @@ _zt_ep2dow() { TZ=UTC date -j -f "%s" "$1" +%u 2>/dev/null \
               || TZ=UTC date -d "@$1" +%u; }
 
 zt_week_range() {
-  setopt local_options typeset_silent 2>/dev/null
+  setopt local_options typeset_silent 2>/dev/null || true
   local now_iso="${NOW_OVERRIDE:-$(TZ=UTC date "+%Y-%m-%dT%H:%M:%SZ")}"
   local now_ep dow day_ep mon_ep
   now_ep=$(_zt_iso2ep "$now_iso")
@@ -194,15 +162,3 @@ zt_week_range() {
   NEXT_E=$(_zt_ep2iso $((mon_ep + 14*86400)))
   export WK_START WK_END NEXT_S NEXT_E
 }
-```
-
-## 自检
-
-复制全部 S1-S6 snippet 到当前 shell 后:
-
-```bash
-zt_init && echo "✓ env OK"
-zt_acquire_token >/dev/null && echo "✓ token OK"
-zt_get /user | jq -e .profile.account >/dev/null && echo "✓ /user OK"
-zt_week_range && echo "WK_START=$WK_START WK_END=$WK_END"
-```
