@@ -100,6 +100,117 @@ _render_bug_row() {
   echo "| [[B${id}]] | ${title} | ${sev} | @${opened_by} | @${assigned} | ${status_label} | ${today_cell} |"
 }
 
+# Render the per-product story summary block (design §6.1).
+# Input: $1 = product JSON (with stories.* and tasks already injected per story)
+_render_story_summary() {
+  local prod=$1
+  local in_p t_done unas idle total_tasks task_breakdown progress_dist workload blockers
+  in_p=$(echo "$prod" | jq '.stories.in_progress | length')
+  t_done=$(echo "$prod" | jq '.stories.today_done | length')
+  unas=$(echo "$prod" | jq '.stories.unassigned | length')
+  idle=$(echo "$prod" | jq '.stories.idle | length')
+
+  # Task breakdown by type (only in_progress stories carry .tasks)
+  total_tasks=$(echo "$prod" | jq '[.stories.in_progress[]?.tasks[]?] | length')
+  task_breakdown=$(echo "$prod" | jq -r '
+    [.stories.in_progress[]?.tasks[]?.type]
+    | group_by(.) | map({type: .[0], count: length}) | sort_by(-.count)
+    | map(
+        (.type | (
+          if . == "design" then "📐 设计"
+          elif . == "devel" then "💻 开发"
+          elif . == "test" then "🧪 测试"
+          elif . == "study" then "🔍 研究"
+          elif . == "discuss" then "💬 讨论"
+          elif . == "ui" then "🎨 UI"
+          elif . == "talk" then "📞 沟通"
+          elif . == "request" then "📌 需求"
+          elif . == "affair" then "📝 事务"
+          elif . == "others" then "🔧 其他"
+          elif . == "normal" then "📋 普通"
+          else "❓ \(.)" end
+        )) + " " + (.count | tostring)
+      )
+    | join(" / ")
+  ')
+
+  # Progress distribution across all displayed stories (4 buckets)
+  progress_dist=$(echo "$prod" | jq -r '
+    [(.stories.in_progress[]?, .stories.today_done[]?, .stories.unassigned[]?, .stories.idle[]?) | .progress.value]
+    | (map(select(. <= 30)) | length) as $b1
+    | (map(select(. > 30 and . <= 70)) | length) as $b2
+    | (map(select(. > 70 and . < 100)) | length) as $b3
+    | (map(select(. >= 100)) | length) as $b4
+    | "0-30% \($b1) / 31-70% \($b2) / 71-99% \($b3) / 100% \($b4)"
+  ')
+
+  # Person workload (top 5 by in-progress task count)
+  workload=$(echo "$prod" | jq -r '
+    [.stories.in_progress[]?.tasks[]?
+     | select(.status != "done" and .status != "closed")
+     | .assignedTo]
+    | map(select(. != null and . != ""))
+    | group_by(.) | map({who: .[0], n: length}) | sort_by(-.n) | .[0:5]
+    | map("@\(.who) \(.n)") | join(" / ")
+  ')
+
+  # Today blockers: deadline date < today and task not done
+  local today_str
+  today_str=$(date "+%Y-%m-%d")
+  blockers=$(echo "$prod" | jq -r --arg t "$today_str" '
+    [.stories.in_progress[]?.tasks[]?
+     | select(.deadline != null and .deadline != "" and (.deadline | .[0:10]) < $t)
+     | select(.status != "done" and .status != "closed")
+     | "[[T\(.id)]] deadline \(.deadline | .[0:10])"]
+    | if length == 0 then "无" else .[0:3] | join("; ") end
+  ')
+
+  cat <<EOF
+
+**📊 需求小结**
+- 进行中 ${in_p} / 今日完成 ${t_done} / 未分配 ${unas} / 未执行 ${idle}
+- 关联任务 ${total_tasks}:${task_breakdown:-(无)}
+- 进度分布:${progress_dist}
+- 人员工作量(进行中任务数):${workload:-(无)}
+- 今日卡点:${blockers}
+
+EOF
+}
+
+# Render the per-product bug summary block (design §6.1).
+# Input: $1 = product JSON
+_render_bug_summary() {
+  local prod=$1
+  local total snap_breakdown sev_dist top_handlers today_n today_r today_c
+  total=$(echo "$prod" | jq '.bugs.all // [] | length')
+  snap_breakdown=$(echo "$prod" | jq -r '
+    .bugs.snapshot
+    | "待处理 \(."新增/未处理" | length) / 处理中 \(."处理中" | length) / 已解决待验 \(."已解决待验" | length) / 已关闭 \(."已关闭" | length)"
+  ')
+  sev_dist=$(echo "$prod" | jq -r '
+    [.bugs.all[]?.severity] | group_by(.) | map({s: .[0], n: length}) | sort_by(.s)
+    | map("\(.s)=\(.n)") | join(" / ")
+  ')
+  top_handlers=$(echo "$prod" | jq -r '
+    [.bugs.all[]? | select(.assignedTo != null and .assignedTo != "") | .assignedTo]
+    | group_by(.) | map({who: .[0], n: length}) | sort_by(-.n) | .[0:3]
+    | map("@\(.who) \(.n)") | join(" / ")
+  ')
+  today_n=$(echo "$prod" | jq '.bugs.today."新建" | length')
+  today_r=$(echo "$prod" | jq '.bugs.today."解决" | length')
+  today_c=$(echo "$prod" | jq '.bugs.today."关闭" | length')
+
+  cat <<EOF
+
+**📊 Bug 小结**
+- 总 ${total}(${snap_breakdown})
+- 严重分布:${sev_dist:-(无)}
+- 处理人 TOP3:${top_handlers:-(无)}
+- 今日动态:新增 ${today_n} / 解决 ${today_r} / 关闭 ${today_c}
+
+EOF
+}
+
 # Main entry point: render aggregated JSON into a Markdown daily report.
 # Input:  $1 = path to aggregated JSON file
 # Output: Markdown text on stdout
@@ -229,6 +340,9 @@ EOF
       echo
     fi
 
+    # Story summary (design §6.1: 进度分布 + 任务类型分布 + 人员工作量 + 卡点)
+    _render_story_summary "$prod"
+
     # Bug table
     echo "### 🐛 Bug 处理情况"
     echo
@@ -242,6 +356,9 @@ EOF
       _render_bug_row "$bug"
     done
     echo
+
+    # Bug summary (design §6.1: 状态总数 + 严重分布 + 处理人 TOP3)
+    _render_bug_summary "$prod"
   done
 
   cat <<'EOF'
@@ -252,4 +369,5 @@ EOF
 EOF
 }
 
-export -f render_markdown _render_story_line _render_task_line _render_bug_row _task_type_emoji
+export -f render_markdown _render_story_line _render_task_line _render_bug_row _task_type_emoji \
+          _render_story_summary _render_bug_summary

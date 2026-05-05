@@ -79,6 +79,15 @@ if [ -f "$OUTPUT_FILE" ]; then
 
   # Bug count: 1 historical active in scope (resolved filtered)
   assert_contains "$MD" "Bug:总 1" "overview bugs in scope"
+
+  # Per-product summary blocks (design §6.1)
+  assert_contains "$MD" "**📊 需求小结**" "story summary block"
+  assert_contains "$MD" "进度分布:" "progress distribution"
+  assert_contains "$MD" "人员工作量" "person workload row"
+  assert_contains "$MD" "今日卡点:" "blockers row"
+  assert_contains "$MD" "**📊 Bug 小结**" "bug summary block"
+  assert_contains "$MD" "严重分布:" "severity distribution"
+  assert_contains "$MD" "处理人 TOP3:" "top handlers row"
 fi
 
 test_end
