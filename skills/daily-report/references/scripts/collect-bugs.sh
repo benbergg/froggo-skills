@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # D3+D4: bug collection with status buckets and today filter (design §4.4-§4.5).
 
-# Normalize people fields and reduce historical closed bugs (only today-closed kept).
+# Normalize people fields and select only in-scope bugs.
 # Person fields (openedBy/assignedTo/resolvedBy/closedBy) may be string or
 # {id, account, realname, avatar} object. Output is a display string.
 #
 # In-scope bug definition (per user feedback):
-#   - All non-closed bugs (active, resolved) — historical pending bugs
-#   - Closed bugs only when closedDate is today — today's completed work
-# Out-of-scope: closed bugs with closedDate before today (历史已完成,不展示)
+#   - "当天完成的": today opened, resolved, or closed (any same-day event)
+#   - "历史未完成的": status == "active" (still open, not yet resolved)
+# Out-of-scope:
+#   - Historical resolved (status=resolved with resolvedDate < today): already solved, awaiting close
+#   - Historical closed (status=closed with closedDate < today): fully done
 filter_in_scope_bugs() {
   local bugs=$1
   local today_start=$2
@@ -16,6 +18,9 @@ filter_in_scope_bugs() {
     ($t | .[0:10]) as $tdate |
     def normalize_person:
       if type == "object" then (.realname // .account // "") else (. // "") end;
+    def is_today(field):
+      (.[field] // null) as $d
+      | $d != null and $d != "" and ($d | .[0:10]) >= $tdate;
     [.[]
      | .openedBy    |= normalize_person
      | .assignedTo  |= normalize_person
@@ -23,8 +28,10 @@ filter_in_scope_bugs() {
      | (if has("closedBy")   then .closedBy   |= normalize_person else . end)
     ]
     | map(select(
-        .status != "closed"
-        or (.closedDate != null and .closedDate != "" and (.closedDate | .[0:10]) >= $tdate)
+        .status == "active"
+        or is_today("openedDate")
+        or is_today("resolvedDate")
+        or is_today("closedDate")
       ))
   '
 }
