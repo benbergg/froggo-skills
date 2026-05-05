@@ -60,11 +60,19 @@ if [ -f "$OUTPUT_FILE" ]; then
   assert_contains "$MD" "💻 开发 [[T8001]]" "devel task with label"
   assert_contains "$MD" "🧪 测试 [[T8002]]" "test child task flattened"
 
+  # Real-Zentao quirk: task.type=normal (non-standard) should map to 📋 普通
+  assert_contains "$MD" "📋 普通 [[T8003]]" "normal task type fallback label"
+
+  # Draft stories must be excluded entirely (S9999 not anywhere in report)
+  assert_not_contains "$MD" "[[S9999]]" "draft story excluded"
+  assert_not_contains "$MD" "draft story (must NOT appear" "draft title excluded"
+
   # Bug filter: historical active kept; historical resolved excluded
   assert_contains "$MD" "[[B7001]]" "historical active bug present"
   assert_not_contains "$MD" "[[B7002]]" "historical resolved bug filtered out"
 
   # Overview counts: in_progress 1 / today_done 0 / unassigned 1 / idle 1
+  # (draft S9999 must not bump any counter)
   assert_contains "$MD" "进行中 1" "overview in_progress"
   assert_contains "$MD" "未分配 1" "overview unassigned"
   assert_contains "$MD" "未执行 1" "overview idle"
