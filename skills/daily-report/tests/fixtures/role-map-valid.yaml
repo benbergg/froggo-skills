@@ -1,0 +1,7 @@
+roles:
+  pm: [lily, wang]
+  dev: [qingwa, zhang, liu]
+  qa: [zhao, sun]
+names:
+  lily: 李丽
+  qingwa: 青蛙
