@@ -82,6 +82,10 @@ IFS=',' read -ra PIDS <<< "$PRODUCTS"
 for pid in "${PIDS[@]}"; do
   echo "-> collecting product $pid"
 
+  # Fetch real product name (fallback to Product-{pid} on failure)
+  PRODUCT_NAME=$(retry_with_backoff zt_get "/products/$pid" 2>/dev/null | jq -r '.name // empty')
+  [ -z "$PRODUCT_NAME" ] && PRODUCT_NAME="Product-${pid}"
+
   STORIES=$(collect_stories_for_product "$pid" "$TODAY_START")
   BUGS_RAW=$(collect_bugs_for_product "$pid")
   # Filter to in-scope bugs: all non-closed + today-closed only.
@@ -167,7 +171,7 @@ for pid in "${PIDS[@]}"; do
     --slurpfile all_arr "$ALL_F" \
     --arg date_str "$TODAY" \
     --argjson pid "$pid" \
-    --arg pname "Product-${pid}" \
+    --arg pname "$PRODUCT_NAME" \
     --argjson degrade "$([ "$DEGRADE" = "true" ] && echo true || echo false)" \
     --argjson rcount "$RANGE_TASK_COUNT" '
     {
