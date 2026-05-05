@@ -1,0 +1,9 @@
+{
+  "bugs": [
+    {"id": 5678, "title": "同步丢失商品", "status": "resolved", "resolution": "fixed",  "severity": 2, "pri": 2, "openedBy": "zhao",      "assignedTo": "qingwa", "resolvedBy": "qingwa", "openedDate": "2026-05-04", "resolvedDate": "2026-05-05", "closedDate": null,         "confirmed": 1},
+    {"id": 5685, "title": "数据看板报错", "status": "active",   "resolution": "",       "severity": 1, "pri": 1, "openedBy": "zhao",      "assignedTo": "zhang",  "resolvedBy": "",       "openedDate": "2026-05-05", "resolvedDate": null,         "closedDate": null,         "confirmed": 1},
+    {"id": 5670, "title": "历史 Bug",     "status": "closed",   "resolution": "fixed",  "severity": 3, "pri": 3, "openedBy": "sun",       "assignedTo": "liu",    "resolvedBy": "liu",    "openedDate": "2026-04-20", "resolvedDate": "2026-04-25", "closedDate": "2026-05-05", "confirmed": 1},
+    {"id": 5691, "title": "新提未确认",   "status": "active",   "resolution": "",       "severity": 2, "pri": 2, "openedBy": "zhao",      "assignedTo": "qingwa", "resolvedBy": "",       "openedDate": "2026-05-05", "resolvedDate": null,         "closedDate": null,         "confirmed": 0},
+    {"id": 5500, "title": "去年的",       "status": "closed",   "resolution": "fixed",  "severity": 4, "pri": 4, "openedBy": "wang",      "assignedTo": "liu",    "resolvedBy": "liu",    "openedDate": "2025-09-01", "resolvedDate": "2025-09-15", "closedDate": "2025-09-20", "confirmed": 1}
+  ]
+}
