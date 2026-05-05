@@ -1,13 +1,39 @@
 #!/usr/bin/env bash
 # D3+D4: bug collection with status buckets and today filter (design §4.4-§4.5).
 
+# Normalize people fields and reduce historical closed bugs (only today-closed kept).
+# Person fields (openedBy/assignedTo/resolvedBy/closedBy) may be string or
+# {id, account, realname, avatar} object. Output is a display string.
+#
+# In-scope bug definition (per user feedback):
+#   - All non-closed bugs (active, resolved) — historical pending bugs
+#   - Closed bugs only when closedDate is today — today's completed work
+# Out-of-scope: closed bugs with closedDate before today (历史已完成,不展示)
+filter_in_scope_bugs() {
+  local bugs=$1
+  local today_start=$2
+  echo "$bugs" | jq --arg t "$today_start" '
+    ($t | .[0:10]) as $tdate |
+    def normalize_person:
+      if type == "object" then (.realname // .account // "") else (. // "") end;
+    [.[]
+     | .openedBy    |= normalize_person
+     | .assignedTo  |= normalize_person
+     | (if has("resolvedBy") then .resolvedBy |= normalize_person else . end)
+     | (if has("closedBy")   then .closedBy   |= normalize_person else . end)
+    ]
+    | map(select(
+        .status != "closed"
+        or (.closedDate != null and .closedDate != "" and (.closedDate | .[0:10]) >= $tdate)
+      ))
+  '
+}
+
 # classify_bugs: bucket a bug array by lifecycle status.
+# Should be called on the in-scope subset (filter_in_scope_bugs result).
 #
-# Input:
-#   $1  bugs - JSON array of bug objects
-#
-# Output: JSON object with keys (priority order — first match wins):
-#   已关闭      - status == "closed"
+# Output buckets (priority — first match wins):
+#   已关闭      - status == "closed"  (only today-closed survive filter)
 #   已解决待验  - status == "resolved"
 #   新增/未处理 - status == "active" AND confirmed == 0 (or "0")
 #   处理中      - status == "active" AND confirmed != 0
@@ -61,4 +87,4 @@ collect_bugs_for_product() {
   echo "$raw" | jq '.bugs // .'
 }
 
-export -f classify_bugs today_bugs collect_bugs_for_product
+export -f filter_in_scope_bugs classify_bugs today_bugs collect_bugs_for_product

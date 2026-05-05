@@ -61,7 +61,7 @@ assert_contains "$md" "进行中 1" "overview in_progress"
 assert_contains "$md" "## 产品 产品 A · #95" "product section"
 assert_contains "$md" "### 📋 需求处理情况" "story section"
 assert_contains "$md" "[[S1234]]" "wikilink S1234"
-assert_contains "$md" "💻 [[T8001]]" "task with devel emoji"
+assert_contains "$md" "💻 开发 [[T8001]]" "task with devel label"
 assert_contains "$md" "[████████░░] 80%" "progress bar"
 assert_contains "$md" "(工时)" "progress source"
 

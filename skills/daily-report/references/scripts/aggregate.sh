@@ -10,14 +10,26 @@ aggregate() {
   local role_json="${args[$((count - 1))]}"
   local files=("${args[@]:0:$((count - 1))}")
 
-  # Build products array preserving input file order
-  local products="[]"
+  # Build products array preserving input file order via temp file
+  # (avoids ARG_MAX limit when products contain many stories/tasks).
+  local products_file
+  products_file=$(mktemp -t daily-products.XXXXXX) || return 1
+  jq -n '[]' > "$products_file"
   for f in "${files[@]}"; do
-    products=$(jq -s 'add' <(echo "$products") <(jq -c '[.]' "$f"))
+    jq -s 'add' "$products_file" <(jq -c '[.]' "$f") > "$products_file.new" \
+      && mv "$products_file.new" "$products_file"
   done
 
+  # Write role JSON to temp file too (defensive against very large maps).
+  local roles_file
+  roles_file=$(mktemp -t daily-roles.XXXXXX) || { rm -f "$products_file"; return 1; }
+  echo "$role_json" > "$roles_file"
+
   # Compose final aggregated JSON
-  jq -n --argjson products "$products" --argjson roles "$role_json" '
+  jq -n --slurpfile products_arr "$products_file" --slurpfile roles_arr "$roles_file" '
+    ($products_arr[0]) as $products
+    | ($roles_arr[0]) as $roles
+    |
     def merge_workloads(acc; w):
       reduce (w | keys[]) as $acct (acc;
         .[$acct] = (
@@ -54,6 +66,7 @@ aggregate() {
       names: ($roles.names // {})
     }
   '
+  rm -f "$products_file" "$roles_file"
 }
 
 export -f aggregate

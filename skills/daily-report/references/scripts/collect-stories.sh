@@ -22,7 +22,15 @@ classify_stories() {
   echo "$stories" | jq --arg t "$today_start" '
     # Normalize today_start to date-only prefix for comparison with date fields
     ($t | .[0:10]) as $tdate |
+    # Normalize people fields: Zentao API may return either string account or
+    # an object {id, account, realname, avatar}. Reduce to a display string.
+    def normalize_person:
+      if type == "object" then (.realname // .account // "") else (. // "") end;
     [.[] |
+     .openedBy   |= normalize_person |
+     .assignedTo |= normalize_person |
+     (if has("closedBy")   then .closedBy   |= normalize_person else . end) |
+     (if has("finishedBy") then .finishedBy |= normalize_person else . end) |
      if ((.closedDate != null and .closedDate != "" and (.closedDate | .[0:10]) >= $tdate) or
          (.finishedDate != null and .finishedDate != "" and (.finishedDate | .[0:10]) >= $tdate)) then
        . + {bucket: "today_done"}

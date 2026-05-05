@@ -54,8 +54,7 @@ _render_task_line() {
   consumed=$(echo "$task" | jq -r '.consumed')
   left=$(echo "$task" | jq -r '.left')
 
-  # Emoji placed directly before wikilink; label text appended after name
-  emoji=$(_task_type_emoji "$type")
+  # Use full label (emoji + Chinese name) once; do not duplicate emoji standalone.
   label=$(task_type_label "$type")
 
   case "$status" in
@@ -71,7 +70,7 @@ _render_task_line() {
     hours_info=" (已耗 ${consumed}h / 剩余 ${left}h)"
   fi
 
-  echo "- ${emoji} [[T${id}]] ${name} [${label}] · 执行人 @${assigned} · ${status_emoji} ${status}${hours_info}"
+  echo "- ${label} [[T${id}]] ${name} · 执行人 @${assigned} · ${status_emoji} ${status}${hours_info}"
 }
 
 # Render a single Bug table row.

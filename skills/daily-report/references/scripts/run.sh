@@ -5,6 +5,15 @@ set -euo pipefail
 
 DAILY_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)
 SCRIPTS="$DAILY_DIR/scripts"
+ZT_FUNCTIONS="$DAILY_DIR/../../zentao-api/scripts/zt-functions.sh"
+
+# Step 0: Source zentao-api toolkit (provides zt_init/zt_get/zt_paginate/etc.)
+if [ -f "$ZT_FUNCTIONS" ]; then
+  source "$ZT_FUNCTIONS"
+else
+  echo "FATAL: cannot find zt-functions.sh at $ZT_FUNCTIONS" >&2
+  exit 1
+fi
 
 # Step 0: Source all helper scripts
 source "$SCRIPTS/retry.sh"
@@ -43,8 +52,20 @@ echo "covering products: $PRODUCTS"
 # Load role mapping
 ROLE_JSON=$(load_role_map "${ZENTAO_ROLE_MAP:-$HOME/.zentao-roles.yaml}")
 
-# Step 1: Prepare output file path
-KNOWLEDGE_LIB="${KNOWLEDGE_LIB:-$HOME/Knowledge-Library}"
+# Step 1: Prepare output file path.
+# Auto-detect knowledge library: env override > ~/workspace/Knowledge-Library > ~/Knowledge-Library.
+# Avoid hardcoding so the skill is portable across machines.
+if [ -n "${KNOWLEDGE_LIB:-}" ]; then
+  : # explicit override
+elif [ -d "$HOME/workspace/Knowledge-Library" ]; then
+  KNOWLEDGE_LIB="$HOME/workspace/Knowledge-Library"
+elif [ -d "$HOME/Knowledge-Library" ]; then
+  KNOWLEDGE_LIB="$HOME/Knowledge-Library"
+else
+  echo "FATAL: KNOWLEDGE_LIB not found. Set env or create one of: ~/workspace/Knowledge-Library, ~/Knowledge-Library" >&2
+  exit 1
+fi
+echo "knowledge library: $KNOWLEDGE_LIB"
 OUTPUT_FILE="${KNOWLEDGE_LIB}/05-Reports/daily/${TODAY}.md"
 if [ -f "$OUTPUT_FILE" ]; then
   if [ "$MODE" = "cron" ]; then
@@ -63,6 +84,9 @@ for pid in "${PIDS[@]}"; do
 
   STORIES=$(collect_stories_for_product "$pid" "$TODAY_START")
   BUGS_RAW=$(collect_bugs_for_product "$pid")
+  # Filter to in-scope bugs: all non-closed + today-closed only.
+  # Historical closed bugs are dropped to keep the report focused on current/today work.
+  BUGS_RAW=$(filter_in_scope_bugs "$BUGS_RAW" "$TODAY_START")
   BUGS_SNAPSHOT=$(classify_bugs "$BUGS_RAW")
   BUGS_TODAY=$(today_bugs "$BUGS_RAW" "$TODAY_START")
 
@@ -73,14 +97,19 @@ for pid in "${PIDS[@]}"; do
   DEGRADE=$(should_degrade_tasks "$RANGE_TASKS")
   RANGE_TASK_COUNT=$(echo "$RANGE_TASKS" | jq 'length')
 
-  # Attach per-story task lists (placeholder progress; bash loop fills real value below)
+  # Attach per-story task lists (placeholder progress; bash loop fills real value below).
+  # Use slurpfile for tasks to avoid ARG_MAX limit with hundreds of tasks.
+  TASKS_F="/tmp/daily-${TODAY}-${pid}-tasks.tmp.json"
+  echo "$RANGE_TASKS" > "$TASKS_F"
   STORIES_WITH_PROGRESS=$(echo "$STORIES" | jq \
-    --argjson tasks "$RANGE_TASKS" \
+    --slurpfile tasks_arr "$TASKS_F" \
     --arg degrade "$DEGRADE" '
-    .in_progress |= map(
-      . + {
+    ($tasks_arr[0]) as $tasks
+    | .in_progress |= map(
+      . as $story
+      | . + {
         progress: { value: 0, source: "stage" },
-        tasks: (if $degrade == "true" then [] else [$tasks[] | select(.story == .id)] end)
+        tasks: (if $degrade == "true" then [] else [$tasks[] | select(.story == $story.id)] end)
       }
     )
   ')
@@ -119,13 +148,23 @@ for pid in "${PIDS[@]}"; do
     })
   ')
 
-  # Write per-product JSON
+  # Write per-product JSON.
+  # Use slurpfile for the four large JSON values to avoid OS ARG_MAX limit
+  # ('jq: Argument list too long' for products with many stories/tasks/bugs).
   PFILE="/tmp/daily-${TODAY}-${pid}.json"
+  STORIES_F="/tmp/daily-${TODAY}-${pid}-stories.tmp.json"
+  SNAP_F="/tmp/daily-${TODAY}-${pid}-snap.tmp.json"
+  TODAY_F="/tmp/daily-${TODAY}-${pid}-today.tmp.json"
+  ALL_F="/tmp/daily-${TODAY}-${pid}-all.tmp.json"
+  echo "$STORIES_WITH_PROGRESS" > "$STORIES_F"
+  echo "$BUGS_SNAPSHOT" > "$SNAP_F"
+  echo "$BUGS_TODAY" > "$TODAY_F"
+  echo "$BUGS_ALL" > "$ALL_F"
   jq -n \
-    --argjson stories "$STORIES_WITH_PROGRESS" \
-    --argjson snap "$BUGS_SNAPSHOT" \
-    --argjson today "$BUGS_TODAY" \
-    --argjson all  "$BUGS_ALL" \
+    --slurpfile stories "$STORIES_F" \
+    --slurpfile snap "$SNAP_F" \
+    --slurpfile today "$TODAY_F" \
+    --slurpfile all_arr "$ALL_F" \
     --arg date_str "$TODAY" \
     --argjson pid "$pid" \
     --arg pname "Product-${pid}" \
@@ -134,11 +173,12 @@ for pid in "${PIDS[@]}"; do
     {
       date: $date_str,
       product: { id: $pid, name: $pname, task_limit_exceeded: $degrade, range_task_count: $rcount },
-      stories: $stories,
-      bugs: { snapshot: $snap, today: $today, all: $all },
+      stories: $stories[0],
+      bugs: { snapshot: $snap[0], today: $today[0], all: $all_arr[0] },
       person_workload: {}
     }
   ' > "$PFILE"
+  rm -f "$STORIES_F" "$SNAP_F" "$TODAY_F" "$ALL_F"
   PRODUCT_FILES+=("$PFILE")
 done
 

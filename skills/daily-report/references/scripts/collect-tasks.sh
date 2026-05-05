@@ -29,7 +29,14 @@ filter_tasks_by_stories() {
   local tasks=$1
   local range_ids=$2
   echo "$tasks" | jq --argjson ids "$range_ids" '
-    [.[] | select(.story != null and .story != 0 and (.story as $s | $ids | index($s) != null))]
+    def normalize_person:
+      if type == "object" then (.realname // .account // "") else (. // "") end;
+    [.[]
+     | .assignedTo |= normalize_person
+     | (if has("finishedBy") then .finishedBy |= normalize_person else . end)
+     | (if has("closedBy")   then .closedBy   |= normalize_person else . end)
+     | select(.story != null and .story != 0 and (.story as $s | $ids | index($s) != null))
+    ]
   '
 }
 
