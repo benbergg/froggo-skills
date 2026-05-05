@@ -17,12 +17,14 @@ load_role_map() {
       return 1
     fi
   elif command -v python3 >/dev/null 2>&1; then
-    json=$(python3 -c "import yaml,json,sys
+    json=$(ROLE_FILE_PATH="$file" python3 -c "
+import yaml, json, os, sys
 try:
-    print(json.dumps(yaml.safe_load(open('$file'))))
+    print(json.dumps(yaml.safe_load(open(os.environ['ROLE_FILE_PATH']))))
 except Exception as e:
     print(f'PARSE_ERROR: {e}', file=sys.stderr)
-    sys.exit(1)" 2>&1)
+    sys.exit(1)
+" 2>&1)
     if [ $? -ne 0 ]; then
       echo "❌ python yaml parse failed: $json" >&2
       return 1
