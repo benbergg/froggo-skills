@@ -12,7 +12,7 @@
 
 数据流:`/user`.view.sprints ∩ `/executions?status=doing` → 遍历 `/executions/{eid}/tasks` → **递归扁平化(顶层 + `.children[]`)** → jq 筛。
 
-⚠️ **list 端点的子任务藏在父任务的 `.children[]` 子数组**(实测 2026-05-04 — 见 known-issues §11.2)。`.children[]` 元素带 task 完整字段(含 finishedBy/finishedDate),但 `assignedTo`/`finishedBy` 等是 string 而非 object,日期字段是 `"YYYY-MM-DD HH:MM:SS"` 而非 ISO8601。jq 必须**统一兼容**:用 `u(f)` 取 account,用 `dt(s)` 截前 10 字符做日期比较。
+⚠️ **list 端点的子任务藏在父任务的 `.children[]` 子数组**(实测 2026-05-04 — 见 troubleshooting.md §11.2)。`.children[]` 元素带 task 完整字段(含 finishedBy/finishedDate),但 `assignedTo`/`finishedBy` 等是 string 而非 object,日期字段是 `"YYYY-MM-DD HH:MM:SS"` 而非 ISO8601。jq 必须**统一兼容**:用 `u(f)` 取 account,用 `dt(s)` 截前 10 字符做日期比较。
 
 ```bash
 ME="${ZENTAO_ME:-$(zt_get /user | jq -r .profile.account)}"
@@ -56,7 +56,7 @@ done <<< "$MY_DOING" \
 
 数据流:`/user`.view.products → 遍历 `/products/{pid}/{bugs|stories}` → jq 筛。
 
-⚠️ **`/products/{pid}/bugs` 默认隐式过滤 `status != closed`** — 历史已关闭 bug 全部不返回(实测 2026-05-04 — 见 known-issues §11.3)。**Bug 场景必须加 `?status=all`** 才能拉到 closed 历史。Story 不受此影响。
+⚠️ **`/products/{pid}/bugs` 默认隐式过滤 `status != closed`** — 历史已关闭 bug 全部不返回(实测 2026-05-04 — 见 troubleshooting.md §11.3)。**Bug 场景必须加 `?status=all`** 才能拉到 closed 历史。Story 不受此影响。
 
 ⚠️ list 端点的字段命名:`assignedTo`/`resolvedBy` 等可能是 object 也可能是 string,统一用 `u(f)` 兼容;日期字段空值用 `"0000-00-00 00:00:00"` 或 `null`,统一用 `dt(s)` 截前 10 字符。
 

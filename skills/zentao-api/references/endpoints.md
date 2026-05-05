@@ -21,7 +21,7 @@
 - 顶层 `GET /tasks` — `limit`/`page` 失效,永远只返 1 条 → **禁用**,必须走 `/executions/{id}/tasks`
 - `GET /products/{id}/bugs?status=resolved`/`closed`/其他单值 — 破坏查询(返 0)→ **唯一接受的值是 `?status=all`**(用于解锁默认隐式过滤的 closed bug)
 
-⚠️ 隐式过滤陷阱(端点工作但默认漏数据,详见 known-issues §11.2/§11.3):
+⚠️ 隐式过滤陷阱(端点工作但默认漏数据,详见 troubleshooting.md §11.2/§11.3):
 - `GET /executions/{id}/tasks` — 子任务藏在父对象的 `.children[]` 子数组,jq 必须递归
 - `GET /products/{id}/bugs` — 默认过滤 `status != closed`,历史 closed bug 全漏,要加 `?status=all`
 
@@ -161,14 +161,14 @@
 
 | 方法 | 路径 | 上层依赖 | 响应 list key | 必填 body | 备注 |
 |------|------|---------|--------------|----------|------|
-| GET | `/executions/{id}/tasks` | execId | `.tasks` | — | **唯一可用的任务列表端点**;⚠ **子任务藏在父对象 `.children[]` 子数组,jq 必须递归 `[.tasks[]?]+[.tasks[]?.children[]?]`**(详见 known-issues §11.2) |
+| GET | `/executions/{id}/tasks` | execId | `.tasks` | — | **唯一可用的任务列表端点**;⚠ **子任务藏在父对象 `.children[]` 子数组,jq 必须递归 `[.tasks[]?]+[.tasks[]?.children[]?]`**(详见 troubleshooting.md §11.2) |
 | GET | `/tasks/{id}` | taskId | 单 obj | — | 任务详情(含 `.parent` 字段) |
 | ❌ GET | `/tasks` | — | — | — | 顶层 `/tasks` 残废,limit 失效永远返 1 条 → **禁用** |
 | POST | `/executions/{eid}/tasks` | execId | 新建 obj | `name` + `assignedTo` + `estStarted` + `deadline` | 创建任务;⚠ 官方文档说 `POST /tasks` 但**生产实例必须 `/executions/{eid}/tasks`**;`parent` 字段 POST 时被忽略;`assignedTo` 漏掉报 `『指派给』不能为空` |
 | PUT | `/tasks/{id}` | taskId | (无 list) | — | 修改 module/story/name/type/assignedTo/pri/estimate/estStarted/deadline |
-| POST | `/tasks/{id}/start` | taskId | — | `left` | wait → doing;⚠ 官方文档标 PUT,但 **PUT 返 200 + Content-Length: 0 静默 no-op**(V3 实测,见 known-issues §11)。**必须 POST** |
+| POST | `/tasks/{id}/start` | taskId | — | `left` | wait → doing;⚠ 官方文档标 PUT,但 **PUT 返 200 + Content-Length: 0 静默 no-op**(V3 实测,见 troubleshooting.md §11)。**必须 POST** |
 | POST | `/tasks/{id}/pause` | taskId | — | — | doing → pause;body 可含 `comment`;⚠ 同 start,PUT 静默 no-op |
-| POST | `/tasks/{id}/restart` | taskId | — | `left`(实测还要 `consumed`) | pause → doing;⚠ 端点是 `/restart` 不是官方文档的 `/continue`(已实测确认,见 known-issues §"resume_task 实测必填 consumed") |
+| POST | `/tasks/{id}/restart` | taskId | — | `left`(实测还要 `consumed`) | pause → doing;⚠ 端点是 `/restart` 不是官方文档的 `/continue`(已实测确认,见 troubleshooting.md §"resume_task 实测必填 consumed") |
 | POST | `/tasks/{id}/finish` | taskId | — | `currentConsumed`、`finishedDate` | → done;⚠ 同 start,PUT 静默 no-op |
 | POST | `/tasks/{id}/close` | taskId | — | — | done → closed;body 可含 `comment`;⚠ 同 start,PUT 静默 no-op;⚠ **副作用:`assignedTo` 被清成 `null`**(`finishedBy`/`closedBy` 保留),客户端按 assignedTo 筛会漏 closed 任务 |
 | POST | `/tasks/{id}/estimate` | taskId | — | `date[]` `work[]` `consumed[]` `left[]`(并行数组) | 添加工时日志;⚠ 端点是 `/estimate` 不是官方文档的 `/logs`(已实测) |
@@ -179,18 +179,18 @@
 > 1. `POST /executions/{eid}/tasks` 创建顶层任务(`parent` 字段被忽略)
 > 2. `PUT /tasks/{newId}` body `{"parent": <parentId>}` 设父子关系
 >
-> 详见 known-issues §"创建子任务必须两步:POST + PUT"。
+> 详见 troubleshooting.md §"创建子任务必须两步:POST + PUT"。
 
 ### 2.12 Bug(高频,**type/severity/pri/resolution 枚举完整**)
 
 | 方法 | 路径 | 上层依赖 | 响应 list key | 必填 body | 备注 |
 |------|------|---------|--------------|----------|------|
-| GET | `/products/{id}/bugs` | productId | `.bugs` | — | 产品 Bug 列表;⚠ **默认隐式过滤 `status != closed`,要拉历史 closed bug 必须加 `?status=all`**(实测 product 95 default total=34 → `?status=all` total=1115);单值 `?status=resolved` 等返 0(详见 known-issues §11.3) |
+| GET | `/products/{id}/bugs` | productId | `.bugs` | — | 产品 Bug 列表;⚠ **默认隐式过滤 `status != closed`,要拉历史 closed bug 必须加 `?status=all`**(实测 product 95 default total=34 → `?status=all` total=1115);单值 `?status=resolved` 等返 0(详见 troubleshooting.md §11.3) |
 | GET | `/bugs/{id}` | bugId | 单 obj | — | Bug 详情 |
 | ❌ GET | `/bugs` | — | — | — | 顶层 `/bugs` 报 "Need product id.",必须按产品查 |
 | POST | `/products/{pid}/bugs` | productId | 新建 obj | `title`、`severity`、`pri`、`type` | 创建 Bug;⚠ 官方文档说 `POST /bugs` 但**生产实例必须 `/products/{pid}/bugs`**;⚠ V3 实测时传入 `assignedTo` 跑通(类比创建任务的强约束),omit 未单独验证,稳妥起见传入 |
 | PUT | `/bugs/{id}` | bugId | (无 list) | — | 修改 15 个字段 |
-| POST | `/bugs/{id}/confirm` | bugId | — | — | body 可含 `comment`;⚠ 官方文档标 PUT,**PUT 返 200 静默 no-op**(V3 实测,见 known-issues §11)。**必须 POST** |
+| POST | `/bugs/{id}/confirm` | bugId | — | — | body 可含 `comment`;⚠ 官方文档标 PUT,**PUT 返 200 静默 no-op**(V3 实测,见 troubleshooting.md §11)。**必须 POST** |
 | POST | `/bugs/{id}/close` | bugId | — | — | body 可含 `comment`;⚠ 同 confirm,PUT 静默 no-op |
 | POST | `/bugs/{id}/active` | bugId | — | — | ⚠ 端点是 `/active` 不是官方文档的 `/activate`(已实测);⚠ 同 confirm,PUT 静默 no-op |
 | POST | `/bugs/{id}/resolve` | bugId | — | `resolution` | body 可含 `comment`;⚠ 同 confirm,PUT 静默 no-op |
@@ -203,13 +203,13 @@
 - `severity` / `pri`:V2 文档未明确列;按禅道社区版默认是 1-4 整数枚举(1=严重,4=最低)。具体以官方 https://www.zentao.net/book/api/722.html(创建 Bug)为准。
 - `status`(只读):`active` / `resolved` / `closed`
 
-> Bug "加备注"无独立端点;v1/v2 都没有。借 `confirm` / `close` / `active` / `resolve` 4 个 action 的 `comment` 字段附加。详见 known-issues §"Bug 加备注:无独立端点,须借 action 端点附带"。
+> Bug "加备注"无独立端点;v1/v2 都没有。借 `confirm` / `close` / `active` / `resolve` 4 个 action 的 `comment` 字段附加。详见 troubleshooting.md §"Bug 加备注:无独立端点,须借 action 端点附带"。
 
 ### 2.13 用例(低频)
 
 | 方法 | 路径 | 备注 |
 |------|------|------|
-| GET | `/products/{id}/testcases` | 产品用例列表;⚠ 官方文档写 `/cases`,**生产实例 V3 实测必须 `/testcases`**(`/cases` 返 `{"error":"not found"}`,见 known-issues §11) |
+| GET | `/products/{id}/testcases` | 产品用例列表;⚠ 官方文档写 `/cases`,**生产实例 V3 实测必须 `/testcases`**(`/cases` 返 `{"error":"not found"}`,见 troubleshooting.md §11) |
 | GET | `/testcases/{id}` | 用例详情 |
 | POST | `/testcases` | 创建用例 |
 | PUT | `/testcases/{id}` | 修改用例 |
@@ -222,7 +222,7 @@
 
 | 方法 | 路径 | 备注 |
 |------|------|------|
-| GET | `/testtasks` | 测试单列表;⚠ 官方文档写 `/testsuites`,**生产实例 V3 实测必须 `/testtasks`**(`/testsuites` 顶层报 `Need product id.`,要走 `/products/{id}/testsuites`,见 known-issues §11) |
+| GET | `/testtasks` | 测试单列表;⚠ 官方文档写 `/testsuites`,**生产实例 V3 实测必须 `/testtasks`**(`/testsuites` 顶层报 `Need product id.`,要走 `/products/{id}/testsuites`,见 troubleshooting.md §11) |
 | GET | `/projects/{id}/testtasks` | 项目下测试单 |
 | GET | `/testtasks/{id}` | 测试单详情 |
 
@@ -258,7 +258,7 @@
 
 | 方法 | 路径 | 备注 |
 |------|------|------|
-| POST | `/tokens` | 取 Token;body `{account, password}`;⚠ 官方文档写 `GET /token`,**生产实例是 `POST /tokens`**(已实测,见 known-issues) |
+| POST | `/tokens` | 取 Token;body `{account, password}`;⚠ 官方文档写 `GET /token`,**生产实例是 `POST /tokens`**(已实测,见 troubleshooting.md) |
 
 调用方式见 [`quickstart.md`](quickstart.md) S2 `zt_acquire_token`。
 
@@ -267,7 +267,7 @@
 | 参数 | 在哪些接口生效 |
 |------|----------------|
 | `limit` / `page` | 所有列表型端点 ✓;**唯独 `/tasks` 顶层失效** ✗ |
-| `?status=` | `/executions` ✓(支持 doing/closed/all 等);`/products/{id}/bugs` **只接受 `all`**(其他值破坏查询返 0,默认值过滤 closed,见 known-issues §11.3) |
+| `?status=` | `/executions` ✓(支持 doing/closed/all 等);`/products/{id}/bugs` **只接受 `all`**(其他值破坏查询返 0,默认值过滤 closed,见 troubleshooting.md §11.3) |
 | `?assignedTo=` `?openedBy=` `?resolvedBy=` 等 | ✗ 大部分被忽略,统一改 jq 客户端筛(见 [`patterns.md`](patterns.md) P4) |
 
 ## Common Call Chains

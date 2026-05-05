@@ -35,7 +35,7 @@ type zt_init zt_acquire_token zt_get zt_paginate zt_write zt_week_range >/dev/nu
   && echo "✓ 6 函数已加载"
 ```
 
-> 历史方式（V3 及更早，从 auth-and-curl.md 抽 bash 块）已废弃；如需 quickstart 文档详见 `$ZENTAO_SKILL_DIR/references/quickstart.md`。
+> V3 及更早的"从 markdown 抽 bash 块再 eval"方式已废弃；现在直接 source 函数库即可。如需 quickstart 文档详见 `$ZENTAO_SKILL_DIR/references/quickstart.md`。
 
 ## 2. Setup
 

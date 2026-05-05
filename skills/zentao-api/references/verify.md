@@ -123,7 +123,7 @@ done
 echo "✓ 测试任务已 close(无 DELETE,close 是终态)"
 ```
 
-记录到 known-issues §11 差异表:`POST 成功 / PUT 成功(或 405 Method Not Allowed)`。
+记录到 troubleshooting.md §11 差异表:`POST 成功 / PUT 成功(或 405 Method Not Allowed)`。
 
 ### L5.2 — Bug Method (POST vs PUT)
 
@@ -228,7 +228,7 @@ fi
 
 ### L6.3 — P3 Parent-Child Smoke
 
-注:`.parent > 0` 才是真子任务。`-1` 是 sentinel"我是父"(详见 known-issues §11.1)。
+注:`.parent > 0` 才是真子任务。`-1` 是 sentinel"我是父"(详见 troubleshooting.md §11.1)。
 单页足够烟测,避开 paginate 流式 jq 风险。
 
 ```bash
