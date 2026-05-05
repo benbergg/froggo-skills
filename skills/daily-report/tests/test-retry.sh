@@ -7,7 +7,7 @@ test_start "test-retry"
 
 # 1. Successful call: passes through output and increments count
 reset_api_call_count
-export DAILY_API_BUDGET=5
+export DAILY_API_BUDGET=100
 output=$(retry_with_backoff echo "ok")
 assert_eq "$output" "ok" "echo passes through"
 assert_eq "$(get_api_call_count)" "1" "count incremented"
@@ -16,6 +16,7 @@ assert_eq "$(get_api_call_count)" "1" "count incremented"
 fail_with_429() { echo "rate limit hit"; return 1; }
 export -f fail_with_429
 reset_api_call_count
+export DAILY_API_BUDGET=100
 DAILY_BACKOFF_OVERRIDE="0 0 0 0" output=$(retry_with_backoff fail_with_429 2>&1) || rc=$?
 assert_eq "${rc:-0}" "1" "exhaust retries returns 1"
 assert_eq "$(get_api_call_count)" "4" "4 attempts counted"
@@ -24,6 +25,7 @@ assert_eq "$(get_api_call_count)" "4" "4 attempts counted"
 fail_unrelated() { echo "other error"; return 1; }
 export -f fail_unrelated
 reset_api_call_count
+export DAILY_API_BUDGET=100
 output=$(retry_with_backoff fail_unrelated 2>&1) || rc=$?
 assert_eq "${rc:-0}" "1" "non-rate-limit error returns 1"
 assert_eq "$(get_api_call_count)" "1" "no retry on non-rate-limit"

@@ -2,34 +2,34 @@
 # Rate-limit backoff + API budget counter wrapper.
 # Uses a temp file to persist the call count across subshell boundaries.
 
-_DAILY_COUNT_FILE="${_DAILY_COUNT_FILE:-$(mktemp -t daily-count.XXXXXX)}"
-export _DAILY_COUNT_FILE
-
-# Initialize file from current variable value (default 0)
-echo "${API_CALL_COUNT:-0}" > "$_DAILY_COUNT_FILE"
+_init_count_file() {
+  if [ -z "${_DAILY_COUNT_FILE:-}" ]; then
+    _DAILY_COUNT_FILE=$(mktemp -t daily-count.XXXXXX 2>/dev/null) || {
+      echo "❌ retry.sh: mktemp failed; cannot init API call counter" >&2
+      return 1
+    }
+    export _DAILY_COUNT_FILE
+    echo 0 > "$_DAILY_COUNT_FILE"
+  fi
+  return 0
+}
+export -f _init_count_file
 
 get_api_call_count() {
-  if [ -n "${_DAILY_COUNT_FILE:-}" ] && [ -f "$_DAILY_COUNT_FILE" ]; then
-    cat "$_DAILY_COUNT_FILE"
-  else
-    echo "${API_CALL_COUNT:-0}"
-  fi
+  _init_count_file || return 1
+  cat "$_DAILY_COUNT_FILE"
 }
 export -f get_api_call_count
 
 reset_api_call_count() {
-  echo 0 > "${_DAILY_COUNT_FILE:-/dev/null}"
+  _init_count_file || return 1
+  echo 0 > "$_DAILY_COUNT_FILE"
   export API_CALL_COUNT=0
 }
 export -f reset_api_call_count
 
 retry_with_backoff() {
-  # Auto-init count file if not set (survives subshell re-entry)
-  if [ -z "${_DAILY_COUNT_FILE:-}" ] || [ ! -f "${_DAILY_COUNT_FILE:-}" ]; then
-    _DAILY_COUNT_FILE="$(mktemp -t daily-count.XXXXXX)"
-    export _DAILY_COUNT_FILE
-    echo "${API_CALL_COUNT:-0}" > "$_DAILY_COUNT_FILE"
-  fi
+  _init_count_file || return 1
 
   local max_retries=4
   local backoffs
