@@ -240,4 +240,34 @@ fi
 push_summary "$AGG_FILE" "$MODE" || \
   echo "feishu skipped/failed (non-fatal in $MODE mode)"
 
+# Step 8: Push to Yuque (single-doc cumulative) + DingTalk (summary card)
+# Both are best-effort; failures don't fail the main pipeline.
+YUQUE_URL=""
+YUQUE_STATE_DEFAULT="$HOME/.openclaw/workspace/astraeus/.playwright/yuque-state.json"
+if [ -n "${YUQUE_DOC_ID:-}" ] && [ -f "${YUQUE_STATE:-$YUQUE_STATE_DEFAULT}" ]; then
+  echo "-> push to yuque"
+  if YUQUE_OUT=$(node "$DAILY_DIR/references/scripts/push-to-yuque.js" 2>&1); then
+    echo "$YUQUE_OUT" | grep -E "^YUQUE_(OK|URL|FILES|BODY_LEN|UPDATED_AT):" || true
+    YUQUE_URL=$(echo "$YUQUE_OUT" | sed -n 's/^YUQUE_URL://p' | head -1)
+  else
+    echo "yuque push failed (non-fatal):" >&2
+    echo "$YUQUE_OUT" >&2
+  fi
+else
+  echo "yuque skipped (YUQUE_DOC_ID or yuque session not set)"
+fi
+
+if [ -n "${DINGTALK_WEBHOOK:-}" ]; then
+  DING_TARGET_URL="${YUQUE_URL:-${YUQUE_DOC_URL:-}}"
+  if [ -n "$DING_TARGET_URL" ]; then
+    echo "-> push to dingtalk"
+    bash "$DAILY_DIR/references/scripts/push-to-dingtalk.sh" "$OUTPUT_FILE" "$DING_TARGET_URL" || \
+      echo "dingtalk push failed (non-fatal)" >&2
+  else
+    echo "dingtalk skipped (no share URL: yuque push failed and YUQUE_DOC_URL unset)"
+  fi
+else
+  echo "dingtalk skipped (DINGTALK_WEBHOOK not set)"
+fi
+
 echo "daily-report done"
