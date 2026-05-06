@@ -1,7 +1,7 @@
 {
   "name": "froggo-skills",
-  "version": "1.27.0",
-  "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）、产研日报（每日需求/Bug/任务进度自动生成）",
+  "version": "1.28.0",
+  "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）、产研日报（每日需求/Bug/任务进度自动生成）、提示词工程模式（few-shot / CoT / ReAct 等生产级 prompt 模板）",
   "author": {
     "name": "benbergg"
   },
@@ -16,6 +16,7 @@
     "obsidian",
     "context7",
     "claude-context",
-    "mcp"
+    "mcp",
+    "prompt-engineering"
   ]
 }
