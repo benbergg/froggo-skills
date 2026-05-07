@@ -352,16 +352,13 @@ function deriveBug(b, date) {
 function deriveStory(s, tasksOfStory, date) {
   const stage = s.stage || 'wait';
   const closedDate = s.closedDate && s.closedDate !== '0000-00-00 00:00:00' ? s.closedDate : null;
-  // story.is_today_done — two precise signals (lastEditedDate dropped: it
-  // updates on any field edit, too noisy):
-  //   A. stage=closed AND closedDate today  →  formally closed today
-  //   B. stage∈{tested,released,verified} AND some task today_finished
-  //      →  dev/test cycle finished today (Zentao often leaves closedDate=null
-  //      on stage=tested, so we use task evidence instead).
-  const hasTaskFinishedToday = tasksOfStory.some((t) => t.is_today_finished);
-  const isClosedToday = stage === 'closed' && startsWithDate(closedDate, date);
-  const isTestPassedToday = ['tested', 'released', 'verified'].includes(stage) && hasTaskFinishedToday;
-  const isTodayDone = isClosedToday || isTestPassedToday;
+  // story.is_today_done — single authoritative signal (per user decision A):
+  //   stage=closed AND closedDate today  →  formally closed today
+  // Earlier we also accepted B (stage∈{tested,released,verified} with task
+  // today_finished) as "test passed today", but tested-stage stories are
+  // still in flight (closedDate=null) — they belong in "需求推进" only,
+  // not "今日完成的需求".
+  const isTodayDone = stage === 'closed' && startsWithDate(closedDate, date);
 
   // progress is computed only over leaf tasks of this story.
   const leaves = tasksOfStory.filter((t) => !tasksOfStory.some((c) => c.parent === t.id));
