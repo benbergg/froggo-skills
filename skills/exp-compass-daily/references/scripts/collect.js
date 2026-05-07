@@ -19,6 +19,33 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
+// ---- env autoloading -----------------------------------------------------
+// Auto-source common .env files when running outside an interactive shell
+// (e.g. openclaw cron). preflight rejects "set -a; source ..." composite
+// shell commands, so we read .env files directly with zero deps.
+function loadEnvFile(file) {
+  if (!fs.existsSync(file)) return;
+  const text = fs.readFileSync(file, 'utf-8');
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (key && process.env[key] === undefined) process.env[key] = val;
+  }
+}
+for (const f of [
+  path.join(process.env.HOME || '', '.openclaw/.env'),
+  path.join(process.env.HOME || '', '.zentao.env'),
+]) {
+  loadEnvFile(f);
+}
+
 // ---- constants ----------------------------------------------------------
 
 const STAGE_CN = {
@@ -469,15 +496,39 @@ function maybeDegrade(payload) {
   return payload;
 }
 
+// Hard wall-clock limit. Past tencent-vm cron runs left orphan collect.js
+// processes blocked indefinitely (suspected: spawnSync token refresh + a
+// long-poll edge case). 6 minutes is comfortably above the observed 50s
+// happy-path runtime. Beyond it the process self-terminates with exit 4.
+const HARD_TIMEOUT_MS = 6 * 60 * 1000;
+const _hardKill = setTimeout(() => {
+  console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
+  process.exit(4);
+}, HARD_TIMEOUT_MS);
+_hardKill.unref();
+
+function trace(msg) {
+  if (process.env.EXP_COMPASS_TRACE === '1') {
+    console.error(`[trace +${(Date.now() - TRACE_T0) / 1000}s] ${msg}`);
+  }
+}
+let TRACE_T0 = Date.now();
+
 async function main() {
+  TRACE_T0 = Date.now();
+  trace('main start');
   const args = parseArgs(process.argv);
   STATE.baseUrl = requireEnv('ZENTAO_BASE_URL');
   requireEnv('ZENTAO_ACCOUNT');
   requireEnv('ZENTAO_PASSWORD');
+  trace('env validated');
 
   let token = readTokenFile();
+  trace(`readTokenFile: ${token ? 'cached' : 'absent'}`);
   if (!token) {
+    trace('refreshTokenViaBash start');
     refreshTokenViaBash();
+    trace('refreshTokenViaBash done');
     token = readTokenFile();
     if (!token) {
       console.error('FATAL: failed to acquire token via zentao-api bridge');
@@ -489,9 +540,13 @@ async function main() {
   const t0 = Date.now();
 
   // Load account → realname map first; pickName uses it for string-typed person fields.
+  trace('loadUserMap start');
   await loadUserMap();
+  trace(`loadUserMap done (${USER_MAP.size} users)`);
 
+  trace('fetchProductName start');
   const productName = await fetchProductName(args.product);
+  trace(`fetchProductName done: ${productName}`);
 
   // Stories — must combine TWO queries on this Zentao instance:
   //   1. `/products/{id}/stories` (no status) → defaults to `activestory`,
@@ -636,7 +691,13 @@ async function main() {
   console.error(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} → ${args.out}`);
 }
 
-main().catch((e) => {
-  console.error(`FATAL: ${sanitizeMessage(e.message)}`);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    clearTimeout(_hardKill);
+    process.exit(0);
+  })
+  .catch((e) => {
+    clearTimeout(_hardKill);
+    console.error(`FATAL: ${sanitizeMessage(e.message)}`);
+    process.exit(1);
+  });

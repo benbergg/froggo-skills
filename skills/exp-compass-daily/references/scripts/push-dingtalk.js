@@ -30,6 +30,33 @@
 const fs = require('fs');
 const path = require('path');
 
+// ---- env autoloading -----------------------------------------------------
+// Auto-source common .env files when running outside an interactive shell
+// (e.g. openclaw cron). preflight rejects "set -a; source ..." composite
+// shell commands, so we read .env files directly with zero deps.
+function loadEnvFile(file) {
+  if (!fs.existsSync(file)) return;
+  const text = fs.readFileSync(file, 'utf-8');
+  for (const raw of text.split('\n')) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 0) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
+      val = val.slice(1, -1);
+    }
+    if (key && process.env[key] === undefined) process.env[key] = val;
+  }
+}
+for (const f of [
+  path.join(process.env.HOME || '', '.openclaw/.env'),
+  path.join(process.env.HOME || '', '.zentao.env'),
+]) {
+  loadEnvFile(f);
+}
+
 // ---- arg parsing --------------------------------------------------------
 
 function parseArgs(argv) {
@@ -112,6 +139,25 @@ function sliceMarkdown(md) {
 
 // ---- DingTalk API -------------------------------------------------------
 
+async function fetchTemplateInfo(accessToken, userid, templateName) {
+  // Returns { templateId, defaultConvIds: ["$DD_KEY_..."] }
+  // default_received_convs is what model 模板配置里"接收群"对应的 conversation_ids;
+  // we feed those to to_cids so API push (dd_from=openapi) actually reaches the
+  // bound chat — to_chat:true alone doesn't trigger auto-push for API calls.
+  const url = `https://oapi.dingtalk.com/topapi/report/template/getbyname?access_token=${encodeURIComponent(accessToken)}`;
+  const r = await fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ userid, template_name: templateName }),
+  });
+  const body = await r.json();
+  if (body.errcode !== 0 || !body.result) {
+    throw new Error(`getbyname failed: errcode=${body.errcode} errmsg=${body.errmsg}`);
+  }
+  const convs = (body.result.default_received_convs || []).map((c) => c.conversation_id).filter(Boolean);
+  return { templateId: body.result.id, defaultConvIds: convs };
+}
+
 async function getAccessToken(appkey, appsecret) {
   const url = `https://oapi.dingtalk.com/gettoken?appkey=${encodeURIComponent(appkey)}&appsecret=${encodeURIComponent(appsecret)}`;
   let resp;
@@ -171,12 +217,28 @@ async function createReport(accessToken, payload) {
 
 // ---- main ---------------------------------------------------------------
 
+const HARD_TIMEOUT_MS = 60 * 1000;
+const _hardKill = setTimeout(() => {
+  console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
+  process.exit(4);
+}, HARD_TIMEOUT_MS);
+_hardKill.unref();
+
 async function main() {
   const args = parseArgs(process.argv);
   const appkey = requireEnv('DINGTALK_APPKEY');
   const appsecret = requireEnv('DINGTALK_APPSECRET');
   const userid = requireEnv('DINGTALK_USERID');
-  const templateId = requireEnv('DINGTALK_TEMPLATE_ID');
+  // template resolution:
+  //   - if DINGTALK_TEMPLATE_NAME set: query getbyname → auto template_id +
+  //     auto to_cids from default_received_convs (preferred for cron).
+  //   - else: fall back to DINGTALK_TEMPLATE_ID, no auto-bind chat.
+  const templateName = process.env.DINGTALK_TEMPLATE_NAME || '';
+  let templateId = process.env.DINGTALK_TEMPLATE_ID || '';
+  if (!templateName && !templateId) {
+    console.error('FATAL: either DINGTALK_TEMPLATE_NAME or DINGTALK_TEMPLATE_ID is required');
+    process.exit(1);
+  }
 
   if (!fs.existsSync(args.md)) {
     console.error(`FATAL: MD file not found: ${args.md}`);
@@ -211,18 +273,36 @@ async function main() {
     process.exit(1);
   }
 
-  // Receivers (default: don't send to chat, no extra recipients)
+  // Receivers
   const toChat = process.env.DINGTALK_TO_CHAT === 'true';
   let toUserIds = [];
-  let toCids = [];
+  let manualCids = [];
   if (process.env.DINGTALK_TO_USERIDS) {
     try { toUserIds = JSON.parse(process.env.DINGTALK_TO_USERIDS); }
     catch (_) { console.error('WARN: DINGTALK_TO_USERIDS is not valid JSON, ignoring'); }
   }
   if (process.env.DINGTALK_TO_CIDS) {
-    try { toCids = JSON.parse(process.env.DINGTALK_TO_CIDS); }
+    try { manualCids = JSON.parse(process.env.DINGTALK_TO_CIDS); }
     catch (_) { console.error('WARN: DINGTALK_TO_CIDS is not valid JSON, ignoring'); }
   }
+
+  // Get access_token (used for getbyname and createReport)
+  const accessToken = await getAccessToken(appkey, appsecret);
+
+  // Auto-resolve template_id and bound chat from name
+  let autoCids = [];
+  if (templateName) {
+    const info = await fetchTemplateInfo(accessToken, userid, templateName);
+    if (!templateId) templateId = info.templateId;
+    autoCids = info.defaultConvIds;
+    if (autoCids.length > 0) {
+      console.error(`auto-resolved ${autoCids.length} default chat(s) from template "${templateName}"`);
+    } else {
+      console.error(`WARN: template "${templateName}" has no default_received_convs; pushing to chat will require DINGTALK_TO_CIDS`);
+    }
+  }
+  // Final to_cids = manual override (if any) ∪ auto from template
+  const toCids = manualCids.length > 0 ? manualCids : autoCids;
 
   const payload = {
     create_report_param: {
@@ -242,13 +322,18 @@ async function main() {
     process.exit(0);
   }
 
-  const accessToken = await getAccessToken(appkey, appsecret);
   const reportId = await createReport(accessToken, payload);
 
   console.log(`DINGTALK_REPORT_OK report_id=${reportId}`);
 }
 
-main().catch((e) => {
-  console.error(`FATAL: ${sanitizeMessage(e.message)}`);
-  process.exit(1);
-});
+main()
+  .then(() => {
+    clearTimeout(_hardKill);
+    process.exit(0);
+  })
+  .catch((e) => {
+    clearTimeout(_hardKill);
+    console.error(`FATAL: ${sanitizeMessage(e.message)}`);
+    process.exit(1);
+  });
