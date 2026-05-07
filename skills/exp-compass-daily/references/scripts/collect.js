@@ -351,18 +351,17 @@ function deriveBug(b, date) {
 
 function deriveStory(s, tasksOfStory, date) {
   const stage = s.stage || 'wait';
-  const isCompleted = STAGE_COMPLETED.includes(stage);
   const closedDate = s.closedDate && s.closedDate !== '0000-00-00 00:00:00' ? s.closedDate : null;
-  // story.is_today_done: stage progressed to a completed state (tested/released/
-  // verified/closed) with today's evidence — closedDate today, lastEditedDate
-  // today, or any of the story's tasks finished today. Wide net catches cases
-  // where Zentao does not stamp closedDate when stage=tested.
+  // story.is_today_done — two precise signals (lastEditedDate dropped: it
+  // updates on any field edit, too noisy):
+  //   A. stage=closed AND closedDate today  →  formally closed today
+  //   B. stage∈{tested,released,verified} AND some task today_finished
+  //      →  dev/test cycle finished today (Zentao often leaves closedDate=null
+  //      on stage=tested, so we use task evidence instead).
   const hasTaskFinishedToday = tasksOfStory.some((t) => t.is_today_finished);
-  const isTodayDone = isCompleted && (
-    startsWithDate(closedDate, date)
-    || startsWithDate(s.lastEditedDate, date)
-    || hasTaskFinishedToday
-  );
+  const isClosedToday = stage === 'closed' && startsWithDate(closedDate, date);
+  const isTestPassedToday = ['tested', 'released', 'verified'].includes(stage) && hasTaskFinishedToday;
+  const isTodayDone = isClosedToday || isTestPassedToday;
 
   // progress is computed only over leaf tasks of this story.
   const leaves = tasksOfStory.filter((t) => !tasksOfStory.some((c) => c.parent === t.id));
@@ -405,9 +404,9 @@ async function fetchProductName(productId) {
 function inScopeStory(s, date) {
   const stage = s.stage || 'wait';
   if (STAGE_IN_PROGRESS.includes(stage) || STAGE_TODO.includes(stage)) return true;
-  if (STAGE_DONE.includes(stage)) {
-    return startsWithDate(s.closedDate, date) || startsWithDate(s.lastEditedDate, date);
-  }
+  // Closed/released/verified stories: only today-closed are in scope.
+  // (lastEditedDate dropped — too noisy; rawStories merge already filters this.)
+  if (STAGE_DONE.includes(stage)) return startsWithDate(s.closedDate, date);
   return false;
 }
 
@@ -497,11 +496,35 @@ async function main() {
 
   const productName = await fetchProductName(args.product);
 
-  // Stories: no `status=all` (P1 finding: that filter returns empty stories array on this Zentao instance).
-  const rawStories = await ztPaginate(`/products/${args.product}/stories`, 'stories');
-  // Track ALL VOC product story ids (not just in-scope) — used to filter out
-  // cross-product task pollution from /executions/{eid}/tasks (V2 实测发现:
-  // VOC-linked execution may also contain tasks from sibling products).
+  // Stories — must combine TWO queries on this Zentao instance:
+  //   1. `/products/{id}/stories` (no status) → defaults to `activestory`,
+  //      i.e. only NON-closed stories (in-progress + todo). Misses closed stories.
+  //   2. `/products/{id}/stories?status=closedstory` → all closed, client-side
+  //      filter by closedDate today gives "today's truly completed stories".
+  //   `?status=all` returns empty on this instance (P1 finding), so we cannot
+  //   use it as a single combined query.
+  const activeStories = await ztPaginate(`/products/${args.product}/stories`, 'stories');
+  const closedStoriesAll = await ztPaginate(
+    `/products/${args.product}/stories?status=closedstory`,
+    'stories',
+  );
+  // Keep only stories closed today; older closed stories are out of scope.
+  const closedToday = closedStoriesAll.filter(
+    (s) => s.closedDate && startsWithDate(s.closedDate, args.date),
+  );
+  // Merge (active + today-closed). De-dup by id (active should never overlap
+  // closed, but be safe).
+  const seenStoryIds = new Set();
+  const rawStories = [];
+  for (const s of [...activeStories, ...closedToday]) {
+    if (seenStoryIds.has(s.id)) continue;
+    seenStoryIds.add(s.id);
+    rawStories.push(s);
+  }
+  // Track ALL VOC product story ids (active + closedToday) — used to filter
+  // out cross-product task pollution from /executions/{eid}/tasks.
+  // Note: closedStoriesAll is intentionally NOT included (those stories are
+  // out of date scope; their tasks shouldn't appear in today's report).
   const productStoryIds = new Set(rawStories.map((s) => s.id));
 
   // Bugs: must use `status=all` to include closed bugs; client-side filter narrows scope.
