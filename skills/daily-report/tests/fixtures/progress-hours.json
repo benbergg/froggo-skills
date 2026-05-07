@@ -1,4 +1,0 @@
-[
-  {"id": 8001, "story": 1234, "status": "doing", "consumed": 8, "left": 4},
-  {"id": 8002, "story": 1234, "status": "wait",  "consumed": 0, "left": 0}
-]
