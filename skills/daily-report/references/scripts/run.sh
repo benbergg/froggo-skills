@@ -213,7 +213,9 @@ fi
 
 # Step 6: Save to output file + git push
 mkdir -p "$(dirname "$OUTPUT_FILE")"
-cp "$DRAFT_MD" "$OUTPUT_FILE"
+if [ "$DRAFT_MD" != "$OUTPUT_FILE" ]; then
+  cp "$DRAFT_MD" "$OUTPUT_FILE"
+fi
 echo "written: $OUTPUT_FILE"
 
 if [ "$MODE" = "cron" ] || [ -d "$KNOWLEDGE_LIB/.git" ]; then
