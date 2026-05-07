@@ -84,7 +84,30 @@ skill: target-skill-name
 ```
 git-commit
 └── 独立，无外部依赖
+
+zentao-api
+└── 独立，提供 token 缓存(~/.cache/zentao/token.json)和 zt-functions.sh 函数库
+
+exp-compass-daily（体验罗盘日报，V2 取代 V1 daily-report）
+├── 强依赖 zentao-api（token 缓存 + zt-functions.sh 桥接）
+├── 强依赖 Node.js 18+（原生 fetch + AbortController）
+└── 软依赖 bash 4+（401 token 重取 fallback）
+
+weekly-report
+└── 强依赖 zentao-api
+
+prompt-engineering
+└── 独立，无外部依赖
 ```
+
+### exp-compass-daily 设计文档
+
+详细设计见知识库 [[20260507-体验罗盘日报-V2-设计文档]]:
+- 三层架构（数据采集 JS / AI 撰写 / 推送 + 自检）
+- 6 条撰写约束（数字必用 summary、stage 范围、6 段 filter、总结具体性、字段映射、H1 锚点）
+- 6 项自检 C1-C6（cross-check MD vs JSON）+ 3 轮上限
+- token 防泄漏 6 条细则
+- V1 关系矩阵（取代 collect-stories.sh / aggregate.sh / render.sh / check.sh 等 ~10 个脚本）
 
 ## 版本管理
 
