@@ -70,11 +70,14 @@ function sanitizeMessage(s) {
 
 // ---- MD slicing ---------------------------------------------------------
 
+// h1: MD 文件中的 H1 锚点(用于切片定位)
+// key: 钉钉模板字段名(必须与「体验罗盘-每日进度播报」模板字段精确匹配,含数字前缀)
+// 注意第 2 项「二、 需求推进」中文顿号后有一个空格,与模板一致
 const ANCHORS = [
-  { h1: '# 一、研发概览', key: '概览' },
-  { h1: '# 二、需求推进', key: '需求推进' },
-  { h1: '# 三、今日产出', key: '今日产出' },
-  { h1: '# 四、今日总结', key: '今日总结' },
+  { h1: '# 一、研发概览', key: '一、研发概览' },
+  { h1: '# 二、需求推进', key: '二、 需求推进' },
+  { h1: '# 三、今日产出', key: '三、今日产出' },
+  { h1: '# 四、今日总结', key: '四、今日总结' },
 ];
 
 function sliceMarkdown(md) {
@@ -190,6 +193,10 @@ async function main() {
   }
 
   const contents = ANCHORS.map((a, i) => ({
+    // sort 0-based (verified against actual 体验罗盘 template via report/list:
+    // sort: "0", "1", "2", "3"). Different templates use different sort base
+    // (产研周报 was 1-4 historically, but the API echoes whatever the template
+    // expects). We standardize on 0-based which matches this skill's template.
     sort: String(i),
     key: a.key,
     type: '1',
