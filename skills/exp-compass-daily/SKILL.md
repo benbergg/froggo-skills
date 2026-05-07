@@ -156,8 +156,8 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/push-ding
    | 段 | 数据来源 | 处理人/创建人 |
    |---|---|---|
    | 完成的需求 | `stories.filter(stage ∈ {closed,released,verified} && is_today_done)` | 拆 3 组:产品@`story.openedBy`、开发@`tasks.filter(type ∈ {devel,design}).map(finishedBy ?? assignedTo)` 去重、测试@`tasks.filter(type==test).map(finishedBy ?? assignedTo)` 去重;某角色为空则省略该角色组 |
-   | 完成任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_finished)` | `finishedBy` |
-   | 修复 Bug | `bugs.filter(is_today_closed \|\| is_today_resolved)` | `closedBy ?? resolvedBy` |
+   | 完成任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_finished && !is_aggregate_parent)` — `is_aggregate_parent=true` 表示该 parent 有 today-finished 的 child,跳过避免父+子重复 | `finishedBy` |
+   | 修复 Bug | `bugs.filter(is_today_closed \|\| is_today_resolved)` | 用 `bug.display_handlers` 数组(脚本已组合 resolvedBy + closedBy 去重),渲染为 `[张三, 李四]`;空数组写 `[-]` |
    | 新增需求 | `stories.filter(is_today_opened)` | `openedBy` |
    | 新增 Bug | `bugs.filter(is_today_opened)` | `openedBy` |
    | 新增任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_created)` | `openedBy` |
@@ -189,7 +189,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/push-ding
 |---|---|---|
 | **C1** | 概览表数字 | grep MD 中的 `\| 需求 \| ... \|` 等 3 行,共 12 个数字与 `summary.{story\|task\|bug}.{in_progress\|today_new\|today_done\|todo}` 严格相等 |
 | **C2** | 需求推进段覆盖 | MD 中 `### S{id}` 提到的 id 集合 == `stories.filter(stage ∈ {developing,developed,tested}).map(.id)` |
-| **C3** | 今日产出 6 段完整性 | 6 段中每段 id 集合 ⊇ JSON 对应 filter 结果 |
+| **C3** | 今日产出 6 段完整性 | 6 段中每段 id 集合 ⊇ JSON 对应 filter 结果(完成任务段:filter 含 `!is_aggregate_parent`) |
 | **C4** | 进度数字一致 | 每个 `进度 N%` 在 MD 中的 N 等于 `story.progress_pct` |
 | **C5** | 逾期标记 | MD 中"⚠️ 逾期"的 task id 集合 == `tasks.filter(is_overdue).map(.id)` |
 | **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |

@@ -92,6 +92,7 @@
   "left": 0,
   "is_today_created": false,
   "is_today_finished": false,
+  "is_aggregate_parent": false,    // 派生:该 task 是否至少有一个 today-finished 的 child(父任务的"完成"由子推动,渲染"完成任务"段时跳过)
   "openedDate": "...",
   "finishedDate": null
 }
@@ -101,6 +102,7 @@
 - `display_handler` 已根据 status 自动选好,渲染时直接用,**不要再判断**
 - `is_normal` / `is_overdue` 已派生,自检 C5 直接对照
 - 父任务的 children 已被扁平化为独立 task 记录(`parent` 字段保留关系)
+- `is_aggregate_parent=true` 的 task 在"完成任务"段必须跳过,避免父+子重复列出(用户原话:"如果有子任务,就不要再写主任务了")
 
 ## `loose_tasks[]`
 
@@ -122,6 +124,7 @@
   "closedBy": null,
   "closedDate": null,
   "assignedTo": "huanghu",
+  "display_handlers": ["huanghu"],   // 派生:resolvedBy + closedBy 去重(顺序保留),空数组表示无人处理。AI 在"修复 Bug"段直接渲染此数组。
   "is_today_opened": true,
   "is_today_resolved": true,
   "is_today_closed": false
@@ -155,6 +158,11 @@
 | `stage_cn` | `{wait/planned/projected/draft → 未开始, developing → 研发中, developed → 研发完毕, tested → 测试完毕, released → 已发布, verified → 已验收, closed → 已完成}` |
 | `status_cn` | `{wait → 未开始, doing → 进行中, done → 已完成, pause → 暂停, blocked → 阻塞, cancel → 取消, closed → 已关闭}` |
 | `progress_pct` | 工时优先:`Math.round(consumed / (consumed + left) * 100)` 累加所有 leaf task;无工时 → 阶段估值 `{wait:0, projected:20, developing:50, developed:80, tested:90, closed:100}` |
-| `display_handler` | `["done","closed"].includes(status) ? finishedBy : assignedTo` |
+| `display_handler`(task) | `["done","closed"].includes(status) ? finishedBy : assignedTo` |
+| `display_handlers`(bug,数组) | `[resolvedBy, closedBy]` 去重,空字符串/null 跳过;空数组表示无人处理 |
 | `is_overdue` | `deadline && deadline < today && !["done","closed"].includes(status)` |
 | `is_today_*` | 字段日期 `startsWith(date)`(`openedDate.startsWith("2026-05-07")` 等) |
+
+### account → realname 映射(V2 实测后补丁)
+
+禅道 API 返回 person 字段类型不一致:有时是 `{realname, account}` 对象,有时是裸字符串 account。collect.js 启动时拉一次 `/users?limit=500` 建 `Map<account, realname>`,`pickName` 收到字符串时查表换中文真名(查不到则保留原 string,兼容陌生 account)。所有 `openedBy/assignedTo/finishedBy/closedBy/resolvedBy` 字段均经此处理。

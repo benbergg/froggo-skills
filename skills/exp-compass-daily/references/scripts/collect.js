@@ -41,6 +41,10 @@ const STAGE_FALLBACK_PCT = {
 const STAGE_IN_PROGRESS = ['developing', 'developed', 'tested'];
 const STAGE_TODO = ['wait', 'planned', 'projected', 'draft'];
 const STAGE_DONE = ['closed', 'released', 'verified'];
+// "Completed for daily-report purposes": includes tested, since in this Zentao
+// workflow stage=tested with closedDate=null is still a meaningful "today done"
+// signal (dev/test cycle finished, awaiting formal close).
+const STAGE_COMPLETED = ['tested', 'released', 'verified', 'closed'];
 
 const TASK_TODO_STATUSES = ['wait', 'pause', 'blocked'];
 const TASK_DONE_STATUSES = ['done', 'closed'];
@@ -214,11 +218,30 @@ async function ztPaginate(basePath, listKey) {
 
 // ---- field helpers ------------------------------------------------------
 
+// account → realname map populated at startup from /users.
+// pickName uses this to resolve string accounts ("qingwa") to their realname ("青蛙")
+// because Zentao's person fields are inconsistent: sometimes the API returns the
+// account as a bare string, other times the full {account, realname, ...} object.
+const USER_MAP = new Map();
+
 function pickName(x) {
   if (x == null) return null;
-  if (typeof x === 'string') return x;
+  if (typeof x === 'string') {
+    const s = x.trim();
+    if (!s) return null;
+    return USER_MAP.get(s) || s;
+  }
   if (typeof x === 'object') return x.realname || x.account || null;
   return null;
+}
+
+async function loadUserMap() {
+  // /users returns { users: [{account, realname, ...}], total }.
+  // Populate USER_MAP; on failure leave empty (pickName falls back to the string itself).
+  const items = await ztPaginate('/users', 'users');
+  for (const u of items) {
+    if (u.account && u.realname) USER_MAP.set(u.account, u.realname);
+  }
 }
 
 function startsWithDate(iso, date) {
@@ -295,6 +318,14 @@ function deriveTask(t, date) {
 
 function deriveBug(b, date) {
   const status = b.status || 'active';
+  const resolvedBy = pickName(b.resolvedBy);
+  const closedBy = pickName(b.closedBy);
+  // display_handlers: ordered, deduplicated list of "who acted on this bug".
+  // Used by AI when rendering the "修复 Bug" section to show all relevant handlers
+  // (resolver + closer) instead of picking just one.
+  const handlers = [];
+  if (resolvedBy) handlers.push(resolvedBy);
+  if (closedBy && !handlers.includes(closedBy)) handlers.push(closedBy);
   return {
     id: b.id,
     title: b.title,
@@ -306,11 +337,12 @@ function deriveBug(b, date) {
     severity: Number(b.severity || 0),
     openedBy: pickName(b.openedBy),
     openedDate: b.openedDate || null,
-    resolvedBy: pickName(b.resolvedBy),
+    resolvedBy,
     resolvedDate: b.resolvedDate || null,
-    closedBy: pickName(b.closedBy),
+    closedBy,
     closedDate: b.closedDate || null,
     assignedTo: pickName(b.assignedTo),
+    display_handlers: handlers,
     is_today_opened: startsWithDate(b.openedDate, date),
     is_today_resolved: startsWithDate(b.resolvedDate, date),
     is_today_closed: startsWithDate(b.closedDate, date),
@@ -319,10 +351,18 @@ function deriveBug(b, date) {
 
 function deriveStory(s, tasksOfStory, date) {
   const stage = s.stage || 'wait';
-  const isDone = STAGE_DONE.includes(stage);
+  const isCompleted = STAGE_COMPLETED.includes(stage);
   const closedDate = s.closedDate && s.closedDate !== '0000-00-00 00:00:00' ? s.closedDate : null;
-  // story.is_today_done: closed today (or released-today edge case).
-  const isTodayDone = isDone && (startsWithDate(closedDate, date) || startsWithDate(s.lastEditedDate, date));
+  // story.is_today_done: stage progressed to a completed state (tested/released/
+  // verified/closed) with today's evidence — closedDate today, lastEditedDate
+  // today, or any of the story's tasks finished today. Wide net catches cases
+  // where Zentao does not stamp closedDate when stage=tested.
+  const hasTaskFinishedToday = tasksOfStory.some((t) => t.is_today_finished);
+  const isTodayDone = isCompleted && (
+    startsWithDate(closedDate, date)
+    || startsWithDate(s.lastEditedDate, date)
+    || hasTaskFinishedToday
+  );
 
   // progress is computed only over leaf tasks of this story.
   const leaves = tasksOfStory.filter((t) => !tasksOfStory.some((c) => c.parent === t.id));
@@ -395,7 +435,10 @@ function buildSummary(stories, allTasks, bugs) {
     task: {
       in_progress: cntTask((t) => t.status === 'doing'),
       today_new: cntTask((t) => t.is_today_created),
-      today_done: cntTask((t) => t.is_today_finished),
+      // today_done excludes aggregate parents: parent + child finishing the
+      // same day shouldn't double-count when the parent's "done" is just an
+      // aggregation of its children's actual work.
+      today_done: cntTask((t) => t.is_today_finished && !t.is_aggregate_parent),
       todo: cntTask((t) => TASK_TODO_STATUSES.includes(t.status)),
     },
     bug: {
@@ -449,10 +492,17 @@ async function main() {
 
   const t0 = Date.now();
 
+  // Load account → realname map first; pickName uses it for string-typed person fields.
+  await loadUserMap();
+
   const productName = await fetchProductName(args.product);
 
   // Stories: no `status=all` (P1 finding: that filter returns empty stories array on this Zentao instance).
   const rawStories = await ztPaginate(`/products/${args.product}/stories`, 'stories');
+  // Track ALL VOC product story ids (not just in-scope) — used to filter out
+  // cross-product task pollution from /executions/{eid}/tasks (V2 实测发现:
+  // VOC-linked execution may also contain tasks from sibling products).
+  const productStoryIds = new Set(rawStories.map((s) => s.id));
 
   // Bugs: must use `status=all` to include closed bugs; client-side filter narrows scope.
   const rawBugs = await ztPaginate(`/products/${args.product}/bugs?status=all`, 'bugs');
@@ -494,9 +544,33 @@ async function main() {
   });
 
   const tasksDerivedAll = dedupTasks.map((t) => deriveTask(t, args.date));
+
+  // Mark aggregate parents: a task is an aggregate parent if at least one of
+  // its direct children is is_today_finished. AI's "完成任务" section should skip
+  // these to avoid the parent + child duplication user reported (e.g. T43911 主
+  // 任务 + T43913 子测试任务 同名同日完成).
+  const todayFinishedIds = new Set(
+    tasksDerivedAll.filter((t) => t.is_today_finished).map((t) => t.id),
+  );
+  const parentsWithTodayFinishedChild = new Set();
+  for (const t of tasksDerivedAll) {
+    if (t.parent && t.parent !== -1 && t.parent !== 0 && todayFinishedIds.has(t.id)) {
+      parentsWithTodayFinishedChild.add(t.parent);
+    }
+  }
+  for (const t of tasksDerivedAll) {
+    t.is_aggregate_parent = parentsWithTodayFinishedChild.has(t.id);
+  }
+
   const tasksAttachedToStory = tasksDerivedAll.filter((t) => scopedStoryIds.has(t.storyID));
+  // loose_tasks must belong to THIS product:
+  //   - either storyID is 0 (no story attached, i.e. truly loose)
+  //   - or storyID is in this product's full story-id set (productStoryIds)
+  // Plus today-created or today-finished. This excludes cross-product pollution
+  // where /executions/{eid}/tasks returns tasks from sibling products' stories.
   const looseTasks = tasksDerivedAll.filter(
     (t) => !scopedStoryIds.has(t.storyID)
+      && (t.storyID === 0 || productStoryIds.has(t.storyID))
       && (t.is_today_created || t.is_today_finished),
   );
 
