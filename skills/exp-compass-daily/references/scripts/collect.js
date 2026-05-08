@@ -555,11 +555,15 @@ async function main() {
   //      filter by closedDate today gives "today's truly completed stories".
   //   `?status=all` returns empty on this instance (P1 finding), so we cannot
   //   use it as a single combined query.
+  trace('fetch activeStories start');
   const activeStories = await ztPaginate(`/products/${args.product}/stories`, 'stories');
+  trace(`fetch activeStories done (${activeStories.length})`);
+  trace('fetch closedStories start');
   const closedStoriesAll = await ztPaginate(
     `/products/${args.product}/stories?status=closedstory`,
     'stories',
   );
+  trace(`fetch closedStories done (${closedStoriesAll.length})`);
   // Keep only stories closed today; older closed stories are out of scope.
   const closedToday = closedStoriesAll.filter(
     (s) => s.closedDate && startsWithDate(s.closedDate, args.date),
