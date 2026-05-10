@@ -269,6 +269,57 @@ function buildSaveContentPayload(flags, env) {
   };
 }
 
+function normalizeResult(result, key) {
+  if (result == null) return null;
+  if (typeof result === 'string') return result;
+  if (typeof result === 'object' && key in result) return result[key];
+  return null;
+}
+
+async function runCreateReport({ env, flags, fetchImpl, log, errOut, exit }) {
+  const payload = buildCreateReportPayload(flags, env);
+  let body;
+  try {
+    body = await callBusinessApi({
+      env, fetchImpl,
+      urlBuilder: (t) => `${DT_HOST}/topapi/report/create?access_token=${encodeURIComponent(t)}`,
+      body: payload,
+    });
+  } catch (e) {
+    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+    errOut(`FATAL: dingtalk_create_report ${sanitize(e.message)}`); return exit(3);
+  }
+  if (body.errcode !== 0) {
+    errOut(`FATAL: dingtalk_create_report errcode=${body.errcode} errmsg=${body.errmsg}`);
+    return exit(3);
+  }
+  const reportId = normalizeResult(body.result, 'report_id');
+  log(JSON.stringify({ errcode: 0, report_id: reportId, raw: body }));
+  return exit(0);
+}
+
+async function runSaveContent({ env, flags, fetchImpl, log, errOut, exit }) {
+  const payload = buildSaveContentPayload(flags, env);
+  let body;
+  try {
+    body = await callBusinessApi({
+      env, fetchImpl,
+      urlBuilder: (t) => `${DT_HOST}/topapi/report/savecontent?access_token=${encodeURIComponent(t)}`,
+      body: payload,
+    });
+  } catch (e) {
+    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+    errOut(`FATAL: dingtalk_save_content ${sanitize(e.message)}`); return exit(3);
+  }
+  if (body.errcode !== 0) {
+    errOut(`FATAL: dingtalk_save_content errcode=${body.errcode} errmsg=${body.errmsg}`);
+    return exit(3);
+  }
+  const savedId = normalizeResult(body.result, 'report_id');
+  log(JSON.stringify({ errcode: 0, saved_id: savedId, raw: body }));
+  return exit(0);
+}
+
 async function main(deps = {}) {
   const argv = deps.argv ?? process.argv;
   const env = deps.env ?? process.env;
@@ -343,6 +394,9 @@ async function main(deps = {}) {
     return exit(0);
   }
 
+  if (sub === 'create-report') return runCreateReport({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
+  if (sub === 'save-content')  return runSaveContent({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
+
   if (sub === 'get-template') {
     return runGetTemplate({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
   }
@@ -366,4 +420,5 @@ module.exports = {
   ensureToken, sanitize, TokenError, getFetch,
   callBusinessApi, TOKEN_INVALID_ERRCODES,
   installHardTimeout,
+  normalizeResult, runCreateReport, runSaveContent,
 };

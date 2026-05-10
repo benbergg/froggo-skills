@@ -64,7 +64,29 @@ test('Issue-2 regression: unknown subcommand + --help → exit 1, not Usage', ()
   }
 });
 
-test('B2/B3 (deferred): userid env 兜底与 flag 优先', { skip: 'enable after fetch mock hookup (Task 11)' }, () => {});
+test('B2: userid 来自 env 兜底(create-report dry-run)', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]', '--dry-run'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'env_user' },
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.userid, 'env_user');
+  } finally { r.cleanup(); }
+});
+
+test('B3: --userid flag 覆盖 env', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--userid', 'flag_user', '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]', '--dry-run'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'env_user' },
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.userid, 'flag_user');
+  } finally { r.cleanup(); }
+});
 
 test('B22: stdin TTY 拒绝 (--contents -)', () => {
   const r = runCli({
@@ -475,5 +497,69 @@ test('B28: gettoken 永不返(cache miss) → exit 7 而非 2', () => {
   } finally {
     fs.rmSync(tmpHome, { recursive: true, force: true });
     r.cleanup();
+  }
+});
+
+test('B21: save-content happy path', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b21-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const r = runCli({
+    args: ['save-content', '--template-id', 'tpl1', '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]', '--userid', 'u'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ body: { errcode: 0, result: 'saved_xyz' } }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.errcode, 0);
+    assert.equal(j.saved_id, 'saved_xyz');
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B27: result 形态归一化 (string vs object)', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b27-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const args = ['create-report', '--template-id', 'tpl1', '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]', '--userid', 'u'];
+
+  // case 1: result 是 string
+  const r1 = runCli({
+    args, env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ body: { errcode: 0, result: 'id_str' } }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  // case 2: result 是 {report_id}
+  const r2 = runCli({
+    args, env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ body: { errcode: 0, result: { report_id: 'id_obj' } } }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(JSON.parse(r1.stdout).report_id, 'id_str');
+    assert.equal(JSON.parse(r2.stdout).report_id, 'id_obj');
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r1.cleanup(); r2.cleanup();
   }
 });
