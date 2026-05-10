@@ -15,7 +15,7 @@ froggo-skills/
 │   ├── weekly-report/
 │   ├── exp-compass-daily/
 │   ├── prompt-engineering/
-│   └── dingtalk-log/        # WIP
+│   └── dingtalk-log/
 ├── commands/                 # 命令入口(/xxx)
 └── hooks/
     └── hooks.json           # Hook 配置(可选)
@@ -33,7 +33,7 @@ froggo-skills/
 | [weekly-report](skills/weekly-report/SKILL.md) | 手动 + cron | 产研周报自动生成:Node 采集 → AI 撰写 → 7 项断言自检 → 写入 Knowledge-Library |
 | [exp-compass-daily](skills/exp-compass-daily/SKILL.md) | 手动 | 体验罗盘日报:禅道采集 → AI 撰写 → 6 项自检 → 钉钉 OA 日志推送 |
 | [prompt-engineering](skills/prompt-engineering/SKILL.md) | 自动(写 prompt 时) | few-shot / CoT / ReAct 等生产级 prompt 模板 |
-| [dingtalk-log](skills/dingtalk-log/SKILL.md) | – | 通用钉钉日志 OpenAPI 封装 CLI(WIP,实现中) |
+| [dingtalk-log](skills/dingtalk-log/SKILL.md) | 手动 | 通用钉钉日志 OpenAPI 封装 CLI:5 个子命令(create-report / save-content / get-template / list-templates / get-user),token 自管缓存,token 失效自动重取 |
 
 ## 安装
 
@@ -61,7 +61,8 @@ froggo-skills/
 | zentao-api | `ZENTAO_BASE_URL` `ZENTAO_ACCOUNT` `ZENTAO_PASSWORD` | – |
 | weekly-report | 同 zentao-api + `KNOWLEDGE_LIB`(本地与服务器各自设置,无 default) | `ZENTAO_ME` `AI_DAILY_DIR` `WEEKLY_API_BUDGET`(默认 2000) `WEEKLY_HARD_TIMEOUT_MS`(默认 600000) `WEEKLY_ALLOW_PARTIAL` |
 | exp-compass-daily | 同 zentao-api + `DINGTALK_APPKEY` `DINGTALK_APPSECRET` `DINGTALK_USERID` `DINGTALK_TEMPLATE_ID` | `ZENTAO_PRODUCTS`(默认 `95`) `EXP_COMPASS_API_BUDGET`(默认 300) `DINGTALK_TO_CHAT` `DRY_RUN` |
-| git-commit / prompt-engineering / dingtalk-log | – | – |
+| dingtalk-log | `DINGTALK_APPKEY` `DINGTALK_APPSECRET` `DINGTALK_USERID`(list-templates 可选) | – |
+| git-commit / prompt-engineering | – | – |
 
 示例 `~/.zentao.env`(本机):
 
