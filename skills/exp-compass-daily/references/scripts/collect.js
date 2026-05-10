@@ -317,6 +317,36 @@ async function loadUserMap() {
   }
 }
 
+// Server-side closedDate-desc + client-side early-exit. Replaces the previous
+// approach of paginating ALL closed stories (~540 rows) just to filter the
+// 0-2 rows closed today (~99.6% wasted). Probed 2026-05-10 against this
+// Zentao instance: `?status=closedstory&order=closedDate_desc` returns rows
+// in strict closedDate descending order, so the first row whose date < today
+// proves no later row matches either.
+//
+// Falls back to a full paginate + filter on transport failure, preserving
+// correctness if the order parameter is ever rejected on a future Zentao
+// version.
+async function fetchClosedTodayStories(productId, date) {
+  const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=500&page=1`;
+  const r = await ztFetch(url);
+  if (!r.ok) {
+    trace(`closedToday filtered fetch failed (${r.reason}); falling back to full paginate`);
+    const all = await ztPaginate(`/products/${productId}/stories?status=closedstory`, 'stories');
+    return all.filter((s) => s.closedDate && startsWithDate(s.closedDate, date));
+  }
+  const items = r.body.stories || [];
+  const out = [];
+  for (const s of items) {
+    if (!s.closedDate) continue;
+    const day = String(s.closedDate).slice(0, 10);
+    if (day < date) break;
+    if (day === date) out.push(s);
+    // day > date: clock skew or future-dated row — keep scanning, don't break
+  }
+  return out;
+}
+
 function startsWithDate(iso, date) {
   if (!iso) return false;
   return String(iso).slice(0, 10) === date;
@@ -605,23 +635,19 @@ async function main() {
     , // loadUserMap returns void; result side-effects USER_MAP only
     productName,
     activeStories,
-    closedStoriesAll,
+    closedToday,
     rawBugs,
     projectsResp,
   ] = await Promise.all([
     loadUserMap(),
     fetchProductName(args.product),
     ztPaginate(`/products/${args.product}/stories`, 'stories'),
-    ztPaginate(`/products/${args.product}/stories?status=closedstory`, 'stories'),
+    fetchClosedTodayStories(args.product, args.date),
     ztPaginate(`/products/${args.product}/bugs?status=all`, 'bugs'),
     ztFetch(`/products/${args.product}/projects`),
   ]);
-  trace(`phase1 done: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closed=${closedStoriesAll.length} bugs=${rawBugs.length}`);
+  trace(`phase1 done: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closedToday=${closedToday.length} bugs=${rawBugs.length}`);
 
-  // Keep only stories closed today; older closed stories are out of scope.
-  const closedToday = closedStoriesAll.filter(
-    (s) => s.closedDate && startsWithDate(s.closedDate, args.date),
-  );
   // Merge (active + today-closed). De-dup by id (active should never overlap
   // closed, but be safe).
   const seenStoryIds = new Set();
