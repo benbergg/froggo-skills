@@ -624,8 +624,9 @@ function maybeDegrade(payload) {
 // long-poll edge case). 10 minutes covers the observed worst-case ~5min runs
 // (Zentao slow + N+1 executions across 5+ projects) with headroom, while
 // staying well below the cron 1800s ceiling so the wrapper still has room to
-// run AI write-up + push steps after collect.js exits.
-const HARD_TIMEOUT_MS = 10 * 60 * 1000;
+// run AI write-up + push steps after collect.js exits. Override via
+// EXP_COMPASS_HARD_TIMEOUT_MS for tests or one-off cron tuning.
+const HARD_TIMEOUT_MS = parseInt(process.env.EXP_COMPASS_HARD_TIMEOUT_MS || String(10 * 60 * 1000), 10);
 const _hardKill = setTimeout(() => {
   console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
   process.exit(4);
@@ -715,7 +716,14 @@ async function main() {
   // Pull every project's executions in parallel, then flatten across project
   // boundaries before the tasks fan-out. The earlier per-project loop was the
   // longest serial section in the script.
+  //
+  // Wall-clock budget: this loop can take 2-5 minutes against a slow Zentao,
+  // and we'd rather emit a partial JSON than be SIGKILLed by the hard timeout
+  // mid-write. Reserve BUDGET_RESERVE_MS for the downstream merge / derive /
+  // writeFile path; once the elapsed time crosses (HARD_TIMEOUT - reserve),
+  // stop enqueueing new batches, mark the JSON degraded, and let main finish.
   const rawTasks = [];
+  let wallClockEarlyExit = false;
   if (projectsResp.ok) {
     const projects = projectsResp.body.projects || [];
     trace(`fetch projects done (${projects.length})`);
@@ -745,7 +753,21 @@ async function main() {
     // win over the previous per-project 5-way batching, which idled the
     // pool whenever a project had < 5 executions.
     const TASK_CONCURRENCY = 5;
+    const BUDGET_RESERVE_MS = 60_000;
+    const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
     for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
+      const elapsedMs = Date.now() - TRACE_T0;
+      if (elapsedMs > wallDeadlineMs) {
+        const remaining = allExecs.length - i;
+        trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} executions to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
+        STATE.skipped.push({
+          path: '/executions/*/tasks',
+          reason: 'wall-clock-budget',
+          remaining,
+        });
+        wallClockEarlyExit = true;
+        break;
+      }
       const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
       trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
       const results = await Promise.all(
@@ -843,6 +865,7 @@ async function main() {
       duration_ms: Date.now() - t0,
       skipped: STATE.skipped,
       budget_exceeded: STATE.budgetExceeded,
+      wall_clock_early_exit: wallClockEarlyExit,
     },
   };
 
