@@ -598,3 +598,147 @@ test('B15: get-template 完整 result 透传', () => {
     r.cleanup();
   }
 });
+
+test('B16: list-templates 单页', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b16-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const r = runCli({
+    args: ['list-templates', '--size', '50'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ body: { errcode: 0, result: { template_list: [{ name: 'A', report_code: 'r1' }] } } }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.result.template_list.length, 1);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B17: --all 翻页合并', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b17-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const counter = path.join(tmpHome, 'fc.json');
+  const r = runCli({
+    args: ['list-templates', '--all', '--size', '100'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([
+        { body: { errcode: 0, result: { template_list: [{ name: 'A' }], next_cursor: 100 } } },
+        { body: { errcode: 0, result: { template_list: [{ name: 'B' }], next_cursor: null } } },
+      ]),
+      DINGTALK_TEST_FETCH_COUNTER: counter,
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.result.template_list.length, 2);
+    assert.equal(j.result.pages_fetched, 2);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B18: --size 500 截断为 100 + WARN', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b18-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const fetchMockPath = path.join(tmpHome, 'fetch-mock-b18.js');
+  fs.writeFileSync(fetchMockPath, `
+    'use strict';
+    const fs = require('node:fs');
+    module.exports = async function (url, opts) {
+      if (url.includes('listbyuserid')) {
+        const body = JSON.parse(opts.body);
+        fs.writeFileSync(process.env.DINGTALK_TEST_BODY_DUMP, JSON.stringify(body));
+      }
+      return { status: 200, ok: true, json: async () => ({ errcode: 0, result: { template_list: [], next_cursor: null } }), text: async () => '{}' };
+    };
+  `);
+  const dump = path.join(tmpHome, 'body.json');
+  const r = runCli({
+    args: ['list-templates', '--size', '500'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', HOME: tmpHome,
+      DINGTALK_TEST_BODY_DUMP: dump,
+    },
+    fetchMockPath,
+  });
+  try {
+    assert.equal(r.code, 0);
+    assert.match(r.stderr, /WARN.*size/);
+    const sent = JSON.parse(fs.readFileSync(dump, 'utf-8'));
+    assert.equal(sent.size, 100);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B25: --all 50 页上限', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b25-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const counter = path.join(tmpHome, 'fc.json');
+  const fetchMockPath = path.join(tmpHome, 'fetch-mock-b25.js');
+  fs.writeFileSync(fetchMockPath, `
+    'use strict';
+    const fs = require('node:fs');
+    module.exports = async function (url) {
+      if (process.env.DINGTALK_TEST_FETCH_COUNTER) {
+        const f = process.env.DINGTALK_TEST_FETCH_COUNTER;
+        const cur = fs.existsSync(f) ? JSON.parse(fs.readFileSync(f, 'utf-8')) : { calls: [] };
+        cur.calls.push('listbyuserid');
+        fs.writeFileSync(f, JSON.stringify(cur));
+      }
+      return { status: 200, ok: true, json: async () => ({ errcode: 0, result: { template_list: [{}], next_cursor: 'never_ends' } }), text: async () => '{}' };
+    };
+  `);
+  const r = runCli({
+    args: ['list-templates', '--all'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_COUNTER: counter,
+    },
+    fetchMockPath,
+  });
+  try {
+    assert.equal(r.code, 5);
+    assert.match(r.stderr, /pagination cap.*50/);
+    const calls = readCounter(counter).calls;
+    assert.equal(calls.length, 50);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});

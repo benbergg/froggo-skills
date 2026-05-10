@@ -298,6 +298,61 @@ async function runCreateReport({ env, flags, fetchImpl, log, errOut, exit }) {
   return exit(0);
 }
 
+const PAGINATION_CAP = 50;
+
+async function runListTemplates({ env, flags, fetchImpl, log, errOut, exit }) {
+  let size = parseInt(flags['size'] || '100', 10);
+  if (size > 100) {
+    errOut(`WARN: --size ${size} exceeds API limit (100), truncated`);
+    size = 100;
+  }
+  const offset = parseInt(flags['offset'] || '0', 10);
+  const userid = flags['userid'] || env.DINGTALK_USERID;
+  const merged = [];
+  let pages = 0;
+  let cursor = offset;
+  let lastBody = null;
+
+  while (true) {
+    const body = { offset: String(cursor), size };
+    if (userid) body.userid = userid;
+    let parsed;
+    try {
+      parsed = await callBusinessApi({
+        env, fetchImpl,
+        urlBuilder: (t) => `${DT_HOST}/topapi/report/template/listbyuserid?access_token=${encodeURIComponent(t)}`,
+        body,
+      });
+    } catch (e) {
+      if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+      errOut(`FATAL: dingtalk_list_templates ${sanitize(e.message)}`); return exit(5);
+    }
+    if (parsed.errcode !== 0) {
+      errOut(`FATAL: dingtalk_list_templates errcode=${parsed.errcode} errmsg=${parsed.errmsg}`);
+      return exit(5);
+    }
+    pages++;
+    lastBody = parsed;
+    const list = (parsed.result && parsed.result.template_list) || [];
+    merged.push(...list);
+    const nextCursor = parsed.result && parsed.result.next_cursor;
+    if (!flags['all']) break;
+    if (nextCursor == null || nextCursor === '' || nextCursor === false) break;
+    if (pages >= PAGINATION_CAP) {
+      errOut(`FATAL: pagination cap (${PAGINATION_CAP} pages) hit, possible buggy server cursor`);
+      return exit(5);
+    }
+    cursor = nextCursor;
+  }
+
+  if (flags['all']) {
+    log(JSON.stringify({ errcode: 0, result: { template_list: merged, pages_fetched: pages }, raw: null }));
+  } else {
+    log(JSON.stringify({ errcode: 0, result: lastBody.result, raw: lastBody }));
+  }
+  return exit(0);
+}
+
 async function runSaveContent({ env, flags, fetchImpl, log, errOut, exit }) {
   const payload = buildSaveContentPayload(flags, env);
   let body;
@@ -401,6 +456,10 @@ async function main(deps = {}) {
     return runGetTemplate({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
   }
 
+  if (sub === 'list-templates') {
+    return runListTemplates({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
+  }
+
   errOut(`FATAL: subcommand "${sub}" not yet implemented`);
   return exit(1);
 }
@@ -421,4 +480,5 @@ module.exports = {
   callBusinessApi, TOKEN_INVALID_ERRCODES,
   installHardTimeout,
   normalizeResult, runCreateReport, runSaveContent,
+  runListTemplates, PAGINATION_CAP,
 };
