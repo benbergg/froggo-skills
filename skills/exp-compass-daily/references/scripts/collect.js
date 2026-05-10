@@ -230,28 +230,61 @@ async function ztPaginate(basePath, listKey) {
   // listKey: explicit field name to read items from (avoid heuristic-induced confusion).
   const sep = basePath.includes('?') ? '&' : '?';
   const limit = 500;
+  const sanitizedPath = basePath.replace(/\/products\/\d+|\/projects\/\d+|\/executions\/\d+/, (m) => m.replace(/\d+/, '*'));
   const out = [];
-  for (let page = 1; page <= 20; page++) {
+
+  // Page 1 first to discover total; subsequent pages can then be fetched
+  // in parallel instead of one-after-another. Big paginated endpoints like
+  // /products/{id}/bugs?status=all (1100+ rows) drop from 3 sequential
+  // round-trips to roughly 1 wall-clock round-trip after the first.
+  const r1 = await ztFetch(`${basePath}${sep}limit=${limit}&page=1`);
+  if (!r1.ok) {
+    STATE.skipped.push({ path: sanitizedPath, page: 1, reason: r1.reason });
+    return out;
+  }
+  const items1 = r1.body[listKey] || [];
+  out.push(...items1);
+  if (items1.length === 0) return out;
+
+  const total = typeof r1.body.total === 'number' ? r1.body.total : null;
+  const MAX_PAGES = 20;
+
+  if (total !== null) {
+    if (out.length >= total) return out;
+    const numPages = Math.min(Math.ceil(total / limit), MAX_PAGES);
+    if (numPages <= 1) return out;
+    const PAGE_CONCURRENCY = 4;
+    const remaining = [];
+    for (let p = 2; p <= numPages; p++) remaining.push(p);
+    for (let i = 0; i < remaining.length; i += PAGE_CONCURRENCY) {
+      const batch = remaining.slice(i, i + PAGE_CONCURRENCY);
+      const results = await Promise.all(
+        batch.map((p) => ztFetch(`${basePath}${sep}limit=${limit}&page=${p}`)),
+      );
+      for (let j = 0; j < results.length; j++) {
+        const r = results[j];
+        if (!r.ok) {
+          STATE.skipped.push({ path: sanitizedPath, page: batch[j], reason: r.reason });
+          continue;
+        }
+        out.push(...(r.body[listKey] || []));
+      }
+    }
+    return out;
+  }
+
+  // Endpoint doesn't expose total: fall back to sequential pull with the
+  // length heuristic + empty-page defense (legacy behavior).
+  for (let page = 2; page <= MAX_PAGES; page++) {
     const r = await ztFetch(`${basePath}${sep}limit=${limit}&page=${page}`);
     if (!r.ok) {
-      STATE.skipped.push({ path: basePath.replace(/\/products\/\d+|\/projects\/\d+|\/executions\/\d+/, (m) => m.replace(/\d+/, '*')), page, reason: r.reason });
+      STATE.skipped.push({ path: sanitizedPath, page, reason: r.reason });
       break;
     }
     const items = r.body[listKey] || [];
-    out.push(...items);
     if (items.length === 0) break;
-    // Prefer the server-reported total. Some Zentao endpoints return a page
-    // with items.length < limit even when more pages exist (observed on
-    // /products/95/stories?status=closedstory: total=536, page 1 sometimes
-    // returns 499 and sometimes 500 — the < limit early-out silently drops
-    // the remaining 37 rows). Trust total when it's a number; fall back to
-    // the length-based heuristic only when the endpoint doesn't expose it.
-    const total = typeof r.body.total === 'number' ? r.body.total : null;
-    if (total !== null) {
-      if (out.length >= total) break;
-    } else if (items.length < limit) {
-      break;
-    }
+    out.push(...items);
+    if (items.length < limit) break;
   }
   return out;
 }
@@ -555,31 +588,36 @@ async function main() {
 
   const t0 = Date.now();
 
-  // Load account → realname map first; pickName uses it for string-typed person fields.
-  trace('loadUserMap start');
-  await loadUserMap();
-  trace(`loadUserMap done (${USER_MAP.size} users)`);
+  // Phase 1: kick off the six independent root endpoints in parallel. They
+  // share no data dependency, so the wall-clock cost collapses from
+  // sum(loadUserMap, productName, activeStories, closedStories, bugs,
+  // projects) to max(...). Each ztPaginate now also fans out its own page-2+
+  // requests internally (see ztPaginate), so total in-flight fan-out can
+  // reach ~6 endpoints × up to 4 pages each — Zentao tolerates this in
+  // testing, and the 30s per-request timeout still bounds the worst case.
+  //
+  // Stories on this Zentao instance need TWO queries:
+  //   - `/products/{id}/stories` (no status) → activestory only (in-progress + todo)
+  //   - `/products/{id}/stories?status=closedstory` → all closed; client-side filter to today
+  //   `?status=all` returns empty on this instance, so we can't combine them.
+  trace('phase1 concurrent fetch start');
+  const [
+    , // loadUserMap returns void; result side-effects USER_MAP only
+    productName,
+    activeStories,
+    closedStoriesAll,
+    rawBugs,
+    projectsResp,
+  ] = await Promise.all([
+    loadUserMap(),
+    fetchProductName(args.product),
+    ztPaginate(`/products/${args.product}/stories`, 'stories'),
+    ztPaginate(`/products/${args.product}/stories?status=closedstory`, 'stories'),
+    ztPaginate(`/products/${args.product}/bugs?status=all`, 'bugs'),
+    ztFetch(`/products/${args.product}/projects`),
+  ]);
+  trace(`phase1 done: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closed=${closedStoriesAll.length} bugs=${rawBugs.length}`);
 
-  trace('fetchProductName start');
-  const productName = await fetchProductName(args.product);
-  trace(`fetchProductName done: ${productName}`);
-
-  // Stories — must combine TWO queries on this Zentao instance:
-  //   1. `/products/{id}/stories` (no status) → defaults to `activestory`,
-  //      i.e. only NON-closed stories (in-progress + todo). Misses closed stories.
-  //   2. `/products/{id}/stories?status=closedstory` → all closed, client-side
-  //      filter by closedDate today gives "today's truly completed stories".
-  //   `?status=all` returns empty on this instance (P1 finding), so we cannot
-  //   use it as a single combined query.
-  trace('fetch activeStories start');
-  const activeStories = await ztPaginate(`/products/${args.product}/stories`, 'stories');
-  trace(`fetch activeStories done (${activeStories.length})`);
-  trace('fetch closedStories start');
-  const closedStoriesAll = await ztPaginate(
-    `/products/${args.product}/stories?status=closedstory`,
-    'stories',
-  );
-  trace(`fetch closedStories done (${closedStoriesAll.length})`);
   // Keep only stories closed today; older closed stories are out of scope.
   const closedToday = closedStoriesAll.filter(
     (s) => s.closedDate && startsWithDate(s.closedDate, args.date),
@@ -599,46 +637,53 @@ async function main() {
   // out of date scope; their tasks shouldn't appear in today's report).
   const productStoryIds = new Set(rawStories.map((s) => s.id));
 
-  // Bugs: must use `status=all` to include closed bugs; client-side filter narrows scope.
-  trace('fetch bugs start');
-  const rawBugs = await ztPaginate(`/products/${args.product}/bugs?status=all`, 'bugs');
-  trace(`fetch bugs done (${rawBugs.length})`);
-
-  // Tasks: NOT directly available under /products/{id}/tasks (returns "not found").
-  // Must traverse: product → projects → executions → tasks (V1 collect-tasks.sh pattern).
+  // Phase 2: tasks. NOT directly available under /products/{id}/tasks (returns
+  // "not found") — must traverse product → projects → executions → tasks.
+  // Pull every project's executions in parallel, then flatten across project
+  // boundaries before the tasks fan-out. The earlier per-project loop was the
+  // longest serial section in the script.
   const rawTasks = [];
-  trace('fetch projects start');
-  const projectsResp = await ztFetch(`/products/${args.product}/projects`);
   if (projectsResp.ok) {
     const projects = projectsResp.body.projects || [];
     trace(`fetch projects done (${projects.length})`);
-    for (const proj of projects) {
-      trace(`fetch project=${proj.id} executions start`);
-      const execsResp = await ztFetch(`/projects/${proj.id}/executions`);
-      if (!execsResp.ok) {
-        trace(`fetch project=${proj.id} executions failed: ${execsResp.reason}`);
+    const execResults = await Promise.all(
+      projects.map(async (proj) => {
+        const r = await ztFetch(`/projects/${proj.id}/executions`);
+        return {
+          projId: proj.id,
+          ok: r.ok,
+          execs: r.ok ? (r.body.executions || []) : [],
+          reason: r.ok ? null : r.reason,
+        };
+      }),
+    );
+    const allExecs = [];
+    for (const er of execResults) {
+      if (!er.ok) {
+        trace(`fetch project=${er.projId} executions failed: ${er.reason}`);
         continue;
       }
-      const execs = execsResp.body.executions || [];
-      trace(`fetch project=${proj.id} executions done (${execs.length})`);
-      // Concurrent fetch: 5 executions in parallel keeps total time bounded
-      // (~30 executions × ~5s/each was 5+ min serial → ~1 min @ 5-way).
-      // ztFetch's STATE.apiCalls is JS-single-threaded so the counter stays
-      // consistent; budget check still gates total call volume.
-      const CONCURRENCY = 5;
-      for (let i = 0; i < execs.length; i += CONCURRENCY) {
-        const batch = execs.slice(i, i + CONCURRENCY);
-        trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
-        const results = await Promise.all(
-          batch.map(async (ex) => ({
-            id: ex.id,
-            tasks: await ztPaginate(`/executions/${ex.id}/tasks`, 'tasks'),
-          })),
-        );
-        for (const r of results) {
-          trace(`fetch execution=${r.id} tasks done (${r.tasks.length})`);
-          rawTasks.push(...r.tasks);
-        }
+      trace(`fetch project=${er.projId} executions done (${er.execs.length})`);
+      for (const ex of er.execs) allExecs.push(ex);
+    }
+    trace(`total executions to fetch tasks: ${allExecs.length}`);
+    // Cross-project flat batching: 5 concurrent task fetches at any time,
+    // independent of which project owns each execution. This is the main
+    // win over the previous per-project 5-way batching, which idled the
+    // pool whenever a project had < 5 executions.
+    const TASK_CONCURRENCY = 5;
+    for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
+      const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
+      trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
+      const results = await Promise.all(
+        batch.map(async (ex) => ({
+          id: ex.id,
+          tasks: await ztPaginate(`/executions/${ex.id}/tasks`, 'tasks'),
+        })),
+      );
+      for (const r of results) {
+        trace(`fetch execution=${r.id} tasks done (${r.tasks.length})`);
+        rawTasks.push(...r.tasks);
       }
     }
   } else {
