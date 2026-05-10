@@ -13,7 +13,7 @@ test('sanity: 无参数 → 打印 help', () => {
   }
 });
 
-test('B1: 凭据缺失 → exit 1 + stderr 列全缺失项 + 0 fetch', () => {
+test('B1: 凭据缺失 → exit 1 + stderr 列全缺失项', () => {
   const r = runCli({
     args: ['create-report', '--template-id', 'x', '--contents', '[]', '--userid', 'u'],
     env: { DINGTALK_APPKEY: '', DINGTALK_APPSECRET: '' },
@@ -48,6 +48,17 @@ test('B26: --help 跳过 env 校验', () => {
     assert.equal(r.code, 0);
     assert.match(r.stdout, /Usage: dingtalk-log create-report/);
     assert.doesNotMatch(r.stderr, /missing required env/);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('Issue-2 regression: unknown subcommand + --help → exit 1, not Usage', () => {
+  const r = runCli({ args: ['nonsense', '--help'], env: {} });
+  try {
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /unknown subcommand "nonsense"/);
+    assert.doesNotMatch(r.stdout, /Usage: dingtalk-log nonsense/);
   } finally {
     r.cleanup();
   }

@@ -57,9 +57,10 @@ async function main(deps = {}) {
 
   const { sub, flags, hasHelp } = parseArgs(argv);
 
-  if (!sub || !COMMANDS[sub]) {
-    if (hasHelp || !sub) { printHelp(sub, log); return exit(0); }
+  if (!sub) { printHelp(null, log); return exit(0); }
+  if (!COMMANDS[sub]) {
     errOut(`FATAL: unknown subcommand "${sub}"`);
+    errOut(`HINT: valid subcommands: ${Object.keys(COMMANDS).join(', ')}`);
     return exit(1);
   }
 
@@ -100,4 +101,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, parseArgs, requireEnv };
+module.exports = { main, parseArgs, requireEnv, parseJsonFlag };
