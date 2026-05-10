@@ -5,6 +5,8 @@
 // Spec: Knowledge-Library/12-Projects/N0003-钉钉日志-skill/20260510-钉钉日志-skill-v1-设计文档.md
 
 const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
 
 const COMMANDS = {
   'create-report':   { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
@@ -94,6 +96,43 @@ function parseJsonFlag(raw, flagName) {
   try { data = JSON.parse(raw); }
   catch (e) { throw new Error(`--${flagName} JSON parse failed: ${e.message}`); }
   return data;
+}
+
+function tokenCachePath(env) {
+  const home = env.HOME || os.homedir();
+  return path.join(home, '.cache', 'dingtalk', 'token.json');
+}
+
+function tokenCacheRead(env) {
+  const file = tokenCachePath(env);
+  if (!fs.existsSync(file)) return null;
+  let raw;
+  try { raw = fs.readFileSync(file, 'utf-8'); }
+  catch (_) { return null; }
+  let parsed;
+  try { parsed = JSON.parse(raw); }
+  catch (_) { return null; }
+  if (!parsed || typeof parsed.access_token !== 'string' || typeof parsed.expires_at !== 'number') return null;
+  return parsed;
+}
+
+function tokenCacheWrite(env, tok) {
+  const file = tokenCachePath(env);
+  const dir = path.dirname(file);
+  fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
+  const tmp = file + '.tmp';
+  const sanitized = JSON.stringify(tok).replace(/[\x00-\x1f]/g, '');
+  fs.writeFileSync(tmp, sanitized, { mode: 0o600 });
+  fs.renameSync(tmp, file);
+}
+
+function tokenCacheInvalidate(env) {
+  try { fs.unlinkSync(tokenCachePath(env)); } catch (_) {}
+}
+
+function tokenIsFresh(tok, nowSec) {
+  if (!tok) return false;
+  return (tok.expires_at - 60) > nowSec;
 }
 
 function buildCreateReportPayload(flags, env) {
@@ -207,4 +246,9 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, parseArgs, requireEnv, parseJsonFlag, loadFlagContent, loadJsonFlag, buildCreateReportPayload, buildSaveContentPayload };
+module.exports = {
+  main, parseArgs, requireEnv, parseJsonFlag,
+  loadFlagContent, loadJsonFlag,
+  buildCreateReportPayload, buildSaveContentPayload,
+  tokenCachePath, tokenCacheRead, tokenCacheWrite, tokenCacheInvalidate, tokenIsFresh,
+};

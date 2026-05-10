@@ -110,3 +110,67 @@ test('B7: --dry-run 打印 payload 且 0 fetch', () => {
     r.cleanup();
   }
 });
+
+test('tokenCache: write then read round-trip', () => {
+  const cli = require('../scripts/dingtalk-log.js');
+  const tmpHome = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'dt-cache-rt-'));
+  const env = { HOME: tmpHome };
+  try {
+    assert.equal(cli.tokenCacheRead(env), null, 'no cache yet → null');
+    cli.tokenCacheWrite(env, { access_token: 'tok_abc', expires_at: 9999999999 });
+    const got = cli.tokenCacheRead(env);
+    assert.deepEqual(got, { access_token: 'tok_abc', expires_at: 9999999999 });
+  } finally {
+    require('node:fs').rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('tokenCache: malformed JSON → null (graceful)', () => {
+  const cli = require('../scripts/dingtalk-log.js');
+  const tmpHome = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'dt-cache-bad-'));
+  const env = { HOME: tmpHome };
+  try {
+    const file = cli.tokenCachePath(env);
+    require('node:fs').mkdirSync(require('node:path').dirname(file), { recursive: true });
+    require('node:fs').writeFileSync(file, 'not-json{');
+    assert.equal(cli.tokenCacheRead(env), null);
+  } finally {
+    require('node:fs').rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('tokenCache: missing fields → null', () => {
+  const cli = require('../scripts/dingtalk-log.js');
+  const tmpHome = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'dt-cache-bad2-'));
+  const env = { HOME: tmpHome };
+  try {
+    const file = cli.tokenCachePath(env);
+    require('node:fs').mkdirSync(require('node:path').dirname(file), { recursive: true });
+    require('node:fs').writeFileSync(file, JSON.stringify({ wrong: 'shape' }));
+    assert.equal(cli.tokenCacheRead(env), null);
+  } finally {
+    require('node:fs').rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('tokenCache: invalidate removes file (idempotent)', () => {
+  const cli = require('../scripts/dingtalk-log.js');
+  const tmpHome = require('node:fs').mkdtempSync(require('node:path').join(require('node:os').tmpdir(), 'dt-cache-inv-'));
+  const env = { HOME: tmpHome };
+  try {
+    cli.tokenCacheWrite(env, { access_token: 't', expires_at: 1 });
+    cli.tokenCacheInvalidate(env);
+    assert.equal(cli.tokenCacheRead(env), null);
+    cli.tokenCacheInvalidate(env);  // 二次 invalidate 不抛
+  } finally {
+    require('node:fs').rmSync(tmpHome, { recursive: true, force: true });
+  }
+});
+
+test('tokenIsFresh: 60s safety margin', () => {
+  const cli = require('../scripts/dingtalk-log.js');
+  const now = 1000;
+  assert.equal(cli.tokenIsFresh({ expires_at: 1100 }, now), true,  'expires_at - now = 100 > 60 → fresh');
+  assert.equal(cli.tokenIsFresh({ expires_at: 1050 }, now), false, 'expires_at - now = 50 < 60 → stale');
+  assert.equal(cli.tokenIsFresh(null, now), false);
+});
