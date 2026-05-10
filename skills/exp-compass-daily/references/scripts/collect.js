@@ -7,7 +7,11 @@
 //   node collect.js [--product 95] [--date 2026-05-07] [--out /tmp/exp-compass-{DATE}.json]
 //
 // Required env: ZENTAO_BASE_URL, ZENTAO_ACCOUNT, ZENTAO_PASSWORD
-// Optional env: ZENTAO_CACHE_DIR, XDG_CACHE_HOME, EXP_COMPASS_API_BUDGET
+// Optional env: ZENTAO_CACHE_DIR, XDG_CACHE_HOME, EXP_COMPASS_PRODUCTS,
+//               EXP_COMPASS_API_BUDGET, EXP_COMPASS_HARD_TIMEOUT_MS
+//
+// Env loading: this script trusts process.env only. The caller is responsible
+// for injecting the env (shell rc for local, systemd EnvironmentFile for cron).
 //
 // Token bridge (see V2 design § 3.4): reads $ZT_CACHE/token.json maintained by
 // zentao-api skill; on 401 spawns `bash -c 'source zt-functions.sh; zt_acquire_token'`
@@ -18,33 +22,6 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
-
-// ---- env autoloading -----------------------------------------------------
-// Auto-source common .env files when running outside an interactive shell
-// (e.g. openclaw cron). preflight rejects "set -a; source ..." composite
-// shell commands, so we read .env files directly with zero deps.
-function loadEnvFile(file) {
-  if (!fs.existsSync(file)) return;
-  const text = fs.readFileSync(file, 'utf-8');
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    let val = line.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (key && process.env[key] === undefined) process.env[key] = val;
-  }
-}
-for (const f of [
-  path.join(process.env.HOME || '', '.openclaw/.env'),
-  path.join(process.env.HOME || '', '.zentao.env'),
-]) {
-  loadEnvFile(f);
-}
 
 // ---- constants ----------------------------------------------------------
 

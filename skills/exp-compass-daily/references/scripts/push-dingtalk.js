@@ -8,16 +8,20 @@
 //   node push-dingtalk.js [--date 2026-05-07] [--md /custom/path.md]
 //
 // Required env:
-//   DINGTALK_APPKEY        企业内部应用 AppKey
-//   DINGTALK_APPSECRET     AppSecret
-//   DINGTALK_USERID        创建日志的 userid (会显示为提交人)
-//   DINGTALK_TEMPLATE_ID   日志模板 report_code
+//   DINGTALK_APPKEY                       global, shared by all skills using DingTalk
+//   DINGTALK_APPSECRET                    global
+//   DINGTALK_USERID                       global, the report submitter userid
+//   DINGTALK_EXP_COMPASS_TEMPLATE_ID      skill-scoped, or _TEMPLATE_NAME (one of)
+//   DINGTALK_EXP_COMPASS_TEMPLATE_NAME    skill-scoped, preferred (auto-resolves id + bound chat)
 //
-// Optional env:
-//   DINGTALK_TO_CHAT       "true"|"false" (default false)
-//   DINGTALK_TO_USERIDS    JSON array of additional receiver userids
-//   DINGTALK_TO_CIDS       JSON array of additional receiver chat ids
-//   DRY_RUN                "1" -> print payload, do not call API
+// Optional env (skill-scoped):
+//   DINGTALK_EXP_COMPASS_TO_CHAT          "true"|"false" (default false)
+//   DINGTALK_EXP_COMPASS_TO_USERIDS       JSON array of additional receiver userids
+//   DINGTALK_EXP_COMPASS_TO_CIDS          JSON array of additional receiver chat ids
+//   DRY_RUN                               "1" -> print payload, do not call API
+//
+// Env loading: this script trusts process.env only. The caller is responsible
+// for injecting the env (shell rc for local, systemd EnvironmentFile for cron).
 //
 // Output:
 //   stdout: DINGTALK_REPORT_OK report_id={rid}
@@ -29,33 +33,6 @@
 
 const fs = require('fs');
 const path = require('path');
-
-// ---- env autoloading -----------------------------------------------------
-// Auto-source common .env files when running outside an interactive shell
-// (e.g. openclaw cron). preflight rejects "set -a; source ..." composite
-// shell commands, so we read .env files directly with zero deps.
-function loadEnvFile(file) {
-  if (!fs.existsSync(file)) return;
-  const text = fs.readFileSync(file, 'utf-8');
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    let val = line.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (key && process.env[key] === undefined) process.env[key] = val;
-  }
-}
-for (const f of [
-  path.join(process.env.HOME || '', '.openclaw/.env'),
-  path.join(process.env.HOME || '', '.zentao.env'),
-]) {
-  loadEnvFile(f);
-}
 
 // ---- arg parsing --------------------------------------------------------
 
@@ -204,7 +181,7 @@ async function createReport(accessToken, payload) {
   if (body.errcode !== 0) {
     console.error(`DINGTALK_REPORT_FAIL: errcode=${body.errcode} errmsg=${body.errmsg}`);
     if (body.errmsg && /template/i.test(body.errmsg)) {
-      console.error('HINT: errmsg references template — verify DINGTALK_TEMPLATE_ID and that the 4 contents.key match the template field names exactly.');
+      console.error('HINT: errmsg references template — verify DINGTALK_EXP_COMPASS_TEMPLATE_ID and that the 4 contents.key match the template field names exactly.');
     }
     process.exit(3);
   }
@@ -229,14 +206,14 @@ async function main() {
   const appkey = requireEnv('DINGTALK_APPKEY');
   const appsecret = requireEnv('DINGTALK_APPSECRET');
   const userid = requireEnv('DINGTALK_USERID');
-  // template resolution:
-  //   - if DINGTALK_TEMPLATE_NAME set: query getbyname → auto template_id +
-  //     auto to_cids from default_received_convs (preferred for cron).
-  //   - else: fall back to DINGTALK_TEMPLATE_ID, no auto-bind chat.
-  const templateName = process.env.DINGTALK_TEMPLATE_NAME || '';
-  let templateId = process.env.DINGTALK_TEMPLATE_ID || '';
+  // template resolution (skill-scoped):
+  //   - if DINGTALK_EXP_COMPASS_TEMPLATE_NAME set: query getbyname → auto
+  //     template_id + auto to_cids from default_received_convs (preferred).
+  //   - else: fall back to DINGTALK_EXP_COMPASS_TEMPLATE_ID, no auto-bind chat.
+  const templateName = process.env.DINGTALK_EXP_COMPASS_TEMPLATE_NAME || '';
+  let templateId = process.env.DINGTALK_EXP_COMPASS_TEMPLATE_ID || '';
   if (!templateName && !templateId) {
-    console.error('FATAL: either DINGTALK_TEMPLATE_NAME or DINGTALK_TEMPLATE_ID is required');
+    console.error('FATAL: either DINGTALK_EXP_COMPASS_TEMPLATE_NAME or DINGTALK_EXP_COMPASS_TEMPLATE_ID is required');
     process.exit(1);
   }
 
@@ -273,17 +250,17 @@ async function main() {
     process.exit(1);
   }
 
-  // Receivers
-  const toChat = process.env.DINGTALK_TO_CHAT === 'true';
+  // Receivers (skill-scoped)
+  const toChat = process.env.DINGTALK_EXP_COMPASS_TO_CHAT === 'true';
   let toUserIds = [];
   let manualCids = [];
-  if (process.env.DINGTALK_TO_USERIDS) {
-    try { toUserIds = JSON.parse(process.env.DINGTALK_TO_USERIDS); }
-    catch (_) { console.error('WARN: DINGTALK_TO_USERIDS is not valid JSON, ignoring'); }
+  if (process.env.DINGTALK_EXP_COMPASS_TO_USERIDS) {
+    try { toUserIds = JSON.parse(process.env.DINGTALK_EXP_COMPASS_TO_USERIDS); }
+    catch (_) { console.error('WARN: DINGTALK_EXP_COMPASS_TO_USERIDS is not valid JSON, ignoring'); }
   }
-  if (process.env.DINGTALK_TO_CIDS) {
-    try { manualCids = JSON.parse(process.env.DINGTALK_TO_CIDS); }
-    catch (_) { console.error('WARN: DINGTALK_TO_CIDS is not valid JSON, ignoring'); }
+  if (process.env.DINGTALK_EXP_COMPASS_TO_CIDS) {
+    try { manualCids = JSON.parse(process.env.DINGTALK_EXP_COMPASS_TO_CIDS); }
+    catch (_) { console.error('WARN: DINGTALK_EXP_COMPASS_TO_CIDS is not valid JSON, ignoring'); }
   }
 
   // Get access_token (used for getbyname and createReport)
@@ -298,7 +275,7 @@ async function main() {
     if (autoCids.length > 0) {
       console.error(`auto-resolved ${autoCids.length} default chat(s) from template "${templateName}"`);
     } else {
-      console.error(`WARN: template "${templateName}" has no default_received_convs; pushing to chat will require DINGTALK_TO_CIDS`);
+      console.error(`WARN: template "${templateName}" has no default_received_convs; pushing to chat will require DINGTALK_EXP_COMPASS_TO_CIDS`);
     }
   }
   // Final to_cids = manual override (if any) ∪ auto from template
