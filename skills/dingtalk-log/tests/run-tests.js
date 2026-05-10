@@ -278,3 +278,106 @@ test('B24: cache 损坏 → 当作 miss 不 crash', () => {
     r.cleanup();
   }
 });
+
+test('B10: 业务 errcode 42001 → 重取 token 后业务重试 = 0;fetch 总数 = 3', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b10-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok_old',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const counter = path.join(tmpHome, 'fc.json');
+  const r = runCli({
+    args: ['get-template', '--template-name', '日报', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u9',
+      HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([
+        { body: { errcode: 42001, errmsg: 'access_token expired' } },
+        { body: { errcode: 0, access_token: 'tok_new', expires_in: 7200 } },
+        { body: { errcode: 0, result: { id: 'tid', fields: [], default_received_convs: [], default_receivers: [] } } },
+      ]),
+      DINGTALK_TEST_FETCH_COUNTER: counter,
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 0);
+    const calls = readCounter(counter).calls;
+    assert.deepEqual(calls, ['getbyname', 'gettoken', 'getbyname']);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B11: 重试后业务仍 42001 → exit 4 (get-template);fetch 总数 = 3,不再重试', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b11-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok_old',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const counter = path.join(tmpHome, 'fc.json');
+  const r = runCli({
+    args: ['get-template', '--template-name', '日报', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u9',
+      HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([
+        { body: { errcode: 42001 } },
+        { body: { errcode: 0, access_token: 'tok_new', expires_in: 7200 } },
+        { body: { errcode: 42001 } },
+      ]),
+      DINGTALK_TEST_FETCH_COUNTER: counter,
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 4);
+    const calls = readCounter(counter).calls;
+    assert.deepEqual(calls, ['getbyname', 'gettoken', 'getbyname']);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B12: 业务 errcode 88 不重试 → exit 4 + 1 业务调用', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b12-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok_old',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const counter = path.join(tmpHome, 'fc.json');
+  const r = runCli({
+    args: ['get-template', '--template-name', '日报', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u9',
+      HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([
+        { body: { errcode: 88, errmsg: 'template field mismatch' } },
+      ]),
+      DINGTALK_TEST_FETCH_COUNTER: counter,
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 4);
+    const calls = readCounter(counter).calls;
+    assert.deepEqual(calls, ['getbyname']);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});

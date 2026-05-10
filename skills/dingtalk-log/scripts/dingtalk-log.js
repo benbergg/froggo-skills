@@ -178,25 +178,42 @@ async function ensureToken(env, fetchImpl) {
   return tok.access_token;
 }
 
+const TOKEN_INVALID_ERRCODES = new Set([42001, 40014, 41001]);
+
+async function callBusinessApi({ env, fetchImpl, urlBuilder, body }) {
+  let token = await ensureToken(env, fetchImpl);
+  let resp = await fetchImpl(urlBuilder(token), {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+  });
+  let parsed = await resp.json();
+  if (parsed && TOKEN_INVALID_ERRCODES.has(parsed.errcode)) {
+    tokenCacheInvalidate(env);
+    token = await ensureToken(env, fetchImpl);
+    resp = await fetchImpl(urlBuilder(token), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    parsed = await resp.json();
+  }
+  return parsed;
+}
+
 async function runGetTemplate({ env, flags, fetchImpl, log, errOut, exit }) {
   if (!flags['template-name']) { errOut('FATAL: --template-name is required'); return exit(1); }
   const userid = flags['userid'] || env.DINGTALK_USERID;
-  let token;
-  try { token = await ensureToken(env, fetchImpl); }
-  catch (e) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
-
-  const url = `${DT_HOST}/topapi/report/template/getbyname?access_token=${encodeURIComponent(token)}`;
   let body;
   try {
-    const resp = await fetchImpl(url, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ userid, template_name: flags['template-name'] }),
+    body = await callBusinessApi({
+      env, fetchImpl,
+      urlBuilder: (t) => `${DT_HOST}/topapi/report/template/getbyname?access_token=${encodeURIComponent(t)}`,
+      body: { userid, template_name: flags['template-name'] },
     });
-    body = await resp.json();
   } catch (e) {
-    errOut(`FATAL: dingtalk_get_template ${sanitize(e.message)}`);
-    return exit(4);
+    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+    errOut(`FATAL: dingtalk_get_template ${sanitize(e.message)}`); return exit(4);
   }
   if (body.errcode !== 0) {
     errOut(`FATAL: dingtalk_get_template errcode=${body.errcode} errmsg=${body.errmsg}`);
@@ -327,4 +344,5 @@ module.exports = {
   buildCreateReportPayload, buildSaveContentPayload,
   tokenCachePath, tokenCacheRead, tokenCacheWrite, tokenCacheInvalidate, tokenIsFresh,
   ensureToken, sanitize, TokenError, getFetch,
+  callBusinessApi, TOKEN_INVALID_ERRCODES,
 };
