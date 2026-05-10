@@ -534,17 +534,15 @@ function deriveStory(s, tasksOfStory, date) {
 // ---- main collection ----------------------------------------------------
 
 async function fetchProductName(productId) {
-  // Prefer cached user.json (zentao-api side-effect); fallback to /products/{id}.
-  const userJson = path.join(ztCacheDir(), 'user.json');
-  if (fs.existsSync(userJson)) {
-    try {
-      const u = JSON.parse(fs.readFileSync(userJson, 'utf-8'));
-      const products = u.profile && u.profile.view && u.profile.view.products;
-      if (products && products[productId]) return products[productId];
-    } catch (_) { /* ignore, fallback */ }
-  }
+  // Earlier versions tried user.json (cached by zentao-api side-effect) as a
+  // shortcut, but profile.view.products there is a CSV string of accessible
+  // product IDs (e.g. "44,48,...,95,..."), NOT a {id: name} map. Indexing it
+  // by productId returned a single character and quietly polluted the report
+  // with name="1". /products/{id} on this Zentao returns {id, name, code, ...}
+  // and the call already piggybacks on phase1's Promise.all fan-out, so the
+  // wall-clock cost is effectively zero.
   const r = await ztFetch(`/products/${productId}`);
-  if (r.ok) return r.body.name || `Product-${productId}`;
+  if (r.ok && r.body && r.body.name) return r.body.name;
   return `Product-${productId}`;
 }
 
