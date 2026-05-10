@@ -375,6 +375,30 @@ async function runSaveContent({ env, flags, fetchImpl, log, errOut, exit }) {
   return exit(0);
 }
 
+async function runGetUser({ env, flags, fetchImpl, log, errOut, exit }) {
+  const userid = flags['userid'] || env.DINGTALK_USERID;
+  if (!userid) { errOut('FATAL: --userid is required'); return exit(1); }
+  const body = { userid };
+  if (flags['language']) body.language = flags['language'];
+  let parsed;
+  try {
+    parsed = await callBusinessApi({
+      env, fetchImpl,
+      urlBuilder: (t) => `${DT_HOST}/topapi/v2/user/get?access_token=${encodeURIComponent(t)}`,
+      body,
+    });
+  } catch (e) {
+    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+    errOut(`FATAL: dingtalk_get_user ${sanitize(e.message)}`); return exit(6);
+  }
+  if (parsed.errcode !== 0) {
+    errOut(`FATAL: dingtalk_get_user errcode=${parsed.errcode} errmsg=${parsed.errmsg}`);
+    return exit(6);
+  }
+  log(JSON.stringify({ errcode: 0, result: parsed.result, raw: parsed }));
+  return exit(0);
+}
+
 async function main(deps = {}) {
   const argv = deps.argv ?? process.argv;
   const env = deps.env ?? process.env;
@@ -460,6 +484,10 @@ async function main(deps = {}) {
     return runListTemplates({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
   }
 
+  if (sub === 'get-user') {
+    return runGetUser({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
+  }
+
   errOut(`FATAL: subcommand "${sub}" not yet implemented`);
   return exit(1);
 }
@@ -480,5 +508,5 @@ module.exports = {
   callBusinessApi, TOKEN_INVALID_ERRCODES,
   installHardTimeout,
   normalizeResult, runCreateReport, runSaveContent,
-  runListTemplates, PAGINATION_CAP,
+  runListTemplates, PAGINATION_CAP, runGetUser,
 };

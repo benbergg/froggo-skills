@@ -742,3 +742,31 @@ test('B25: --all 50 页上限', () => {
     r.cleanup();
   }
 });
+
+test('B19: get-user 不脱敏 mobile/email', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b19-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const r = runCli({
+    args: ['get-user', '--userid', 'u1', '--language', 'en_US'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'admin', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ body: { errcode: 0, result: { userid: 'u1', mobile: '13800001234', email: 'foo@bar.com', title: 'eng' } } }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.result.mobile, '13800001234');
+    assert.equal(j.result.email, 'foo@bar.com');
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
