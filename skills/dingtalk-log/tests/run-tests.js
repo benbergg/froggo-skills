@@ -65,3 +65,31 @@ test('Issue-2 regression: unknown subcommand + --help → exit 1, not Usage', ()
 });
 
 test('B2/B3 (deferred): userid env 兜底与 flag 优先', { skip: 'enable after fetch mock hookup (Task 11)' }, () => {});
+
+test('B22: stdin TTY 拒绝 (--contents -)', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'x', '--contents', '-', '--userid', 'u'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+    isTty: true,
+  });
+  try {
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /requires piped stdin \(got tty\)/);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('B23: 双 - 冲突', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'x', '--contents', '-', '--to-userids', '-', '--userid', 'u'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+    stdin: '[]',
+  });
+  try {
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /only one flag may consume stdin/);
+  } finally {
+    r.cleanup();
+  }
+});
