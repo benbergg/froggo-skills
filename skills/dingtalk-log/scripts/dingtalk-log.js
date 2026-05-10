@@ -96,6 +96,34 @@ function parseJsonFlag(raw, flagName) {
   return data;
 }
 
+function buildCreateReportPayload(flags, env) {
+  const userid = flags['userid'] || env.DINGTALK_USERID;
+  const ddFrom = flags['dd-from'] || 'openapi';
+  return {
+    create_report_param: {
+      userid,
+      template_id: flags['template-id'],
+      dd_from: ddFrom,
+      contents: flags._contents,
+      to_chat: Boolean(flags['to-chat']),
+      to_userids: flags['_to-userids'] || [],
+      to_cids: flags['_to-cids'] || [],
+    },
+  };
+}
+
+function buildSaveContentPayload(flags, env) {
+  const userid = flags['userid'] || env.DINGTALK_USERID;
+  return {
+    create_report_param: {
+      userid,
+      template_id: flags['template-id'],
+      dd_from: flags['dd-from'] || 'report',
+      contents: flags._contents,
+    },
+  };
+}
+
 async function main(deps = {}) {
   const argv = deps.argv ?? process.argv;
   const env = deps.env ?? process.env;
@@ -153,6 +181,21 @@ async function main(deps = {}) {
     }
   }
 
+  // Validate --template-id required for create-report / save-content
+  if ((sub === 'create-report' || sub === 'save-content') && !flags['template-id']) {
+    errOut(`FATAL: --template-id is required`);
+    return exit(1);
+  }
+
+  if (flags['dry-run']) {
+    let payload;
+    if (sub === 'create-report') payload = buildCreateReportPayload(flags, effectiveEnv);
+    else if (sub === 'save-content') payload = buildSaveContentPayload(flags, effectiveEnv);
+    else { errOut(`FATAL: --dry-run only supports create-report / save-content`); return exit(1); }
+    log(JSON.stringify(payload, null, 2));
+    return exit(0);
+  }
+
   errOut(`FATAL: subcommand "${sub}" not yet implemented`);
   return exit(1);
 }
@@ -164,4 +207,4 @@ if (require.main === module) {
   });
 }
 
-module.exports = { main, parseArgs, requireEnv, parseJsonFlag, loadFlagContent, loadJsonFlag };
+module.exports = { main, parseArgs, requireEnv, parseJsonFlag, loadFlagContent, loadJsonFlag, buildCreateReportPayload, buildSaveContentPayload };

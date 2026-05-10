@@ -93,3 +93,20 @@ test('B23: 双 - 冲突', () => {
     r.cleanup();
   }
 });
+
+test('B7: --dry-run 打印 payload 且 0 fetch', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]', '--userid', 'u9', '--dry-run'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.template_id, 'tpl1');
+    assert.equal(j.create_report_param.userid, 'u9');
+    assert.equal(j.create_report_param.contents.length, 1);
+    assert.equal(j.create_report_param.dd_from, 'openapi');
+  } finally {
+    r.cleanup();
+  }
+});
