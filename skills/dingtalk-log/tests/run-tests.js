@@ -426,3 +426,54 @@ test('B14: sanitize 三形态(query/JSON/Bearer)', () => {
     assert.doesNotMatch(out, /bE3xxxx|secret123|ding_xxx_yyy/, `sanitize leak in: ${c} -> ${out}`);
   }
 });
+
+test('B20: 业务 fetch 永不返 → exit 7', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b20-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const r = runCli({
+    args: ['get-template', '--template-name', '日报', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u9',
+      HOME: tmpHome,
+      DINGTALK_TEST_HARD_TIMEOUT_MS: '300',
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ delay: 5000 }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /hard timeout/);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B28: gettoken 永不返(cache miss) → exit 7 而非 2', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b28-'));
+  const r = runCli({
+    args: ['get-template', '--template-name', '日报', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u9',
+      HOME: tmpHome,
+      DINGTALK_TEST_HARD_TIMEOUT_MS: '300',
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ delay: 5000 }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 7);
+    assert.match(r.stderr, /hard timeout/);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});

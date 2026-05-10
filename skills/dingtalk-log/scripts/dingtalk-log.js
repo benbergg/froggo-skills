@@ -137,6 +137,18 @@ function tokenIsFresh(tok, nowSec) {
 
 const DT_HOST = 'https://oapi.dingtalk.com';
 
+const HARD_TIMEOUT_MS_DEFAULT = 60_000;
+
+function installHardTimeout(env) {
+  const ms = Number(env.DINGTALK_TEST_HARD_TIMEOUT_MS) || HARD_TIMEOUT_MS_DEFAULT;
+  const t = setTimeout(() => {
+    process.stderr.write(`FATAL: hard timeout (${ms}ms) reached, aborting\n`);
+    process.exit(7);
+  }, ms);
+  t.unref();
+  return t;
+}
+
 class TokenError extends Error {
   constructor(msg) { super(msg); this.name = 'TokenError'; }
 }
@@ -289,6 +301,8 @@ async function main(deps = {}) {
     return exit(1);
   }
 
+  installHardTimeout(effectiveEnv);
+
   const stdinTaken = { value: false, name: null };
 
   if (sub === 'create-report' || sub === 'save-content') {
@@ -351,4 +365,5 @@ module.exports = {
   tokenCachePath, tokenCacheRead, tokenCacheWrite, tokenCacheInvalidate, tokenIsFresh,
   ensureToken, sanitize, TokenError, getFetch,
   callBusinessApi, TOKEN_INVALID_ERRCODES,
+  installHardTimeout,
 };
