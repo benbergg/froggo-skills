@@ -11,11 +11,13 @@ function freshHome() {
 }
 
 // 启动 CLI 子进程,fetchMockPath 指向一个导出 fetch 函数的 .js 文件
-function runCli({ args = [], env = {}, stdin = null, fetchMockPath = null, isTty = false }) {
+// productionMode=true 跳过默认 NODE_ENV=test 注入,用于验证生产构建下的安全 gate
+function runCli({ args = [], env = {}, stdin = null, fetchMockPath = null, isTty = false, productionMode = false }) {
   const tmpHome = freshHome();
   const fullEnv = {
     PATH: process.env.PATH,
     HOME: tmpHome,
+    ...(productionMode ? {} : { NODE_ENV: 'test' }),
     ...env,
   };
   if (fetchMockPath) fullEnv.DINGTALK_TEST_FETCH = fetchMockPath;

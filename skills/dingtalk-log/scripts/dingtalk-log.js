@@ -53,8 +53,13 @@ function loadFlagContent(raw, flagName, env, stdinTaken) {
   }
   if (raw.startsWith('@')) {
     const p = raw.slice(1);
-    if (!fs.existsSync(p)) throw new Error(`--${flagName} file not found: ${p}`);
-    return fs.readFileSync(p, 'utf-8');
+    const resolved = path.resolve(p);
+    const cwd = process.cwd();
+    if (resolved !== cwd && !resolved.startsWith(cwd + path.sep)) {
+      throw new Error(`--${flagName} @file path must be within cwd: ${resolved}`);
+    }
+    if (!fs.existsSync(resolved)) throw new Error(`--${flagName} file not found: ${resolved}`);
+    return fs.readFileSync(resolved, 'utf-8');
   }
   return raw;
 }
@@ -145,7 +150,9 @@ function installHardTimeout(env) {
 }
 
 function getFetch(env) {
-  if (env.DINGTALK_TEST_FETCH) {
+  // DINGTALK_TEST_FETCH is gated on NODE_ENV=test to prevent env-injection RCE
+  // in production. helpers.runCli sets NODE_ENV=test by default.
+  if (env.DINGTALK_TEST_FETCH && env.NODE_ENV === 'test') {
     delete require.cache[require.resolve(env.DINGTALK_TEST_FETCH)];
     return require(env.DINGTALK_TEST_FETCH);
   }

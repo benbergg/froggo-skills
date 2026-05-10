@@ -784,9 +784,12 @@ test('B4: --contents - 从 stdin 读', () => {
   } finally { r.cleanup(); }
 });
 
-test('B5a: --contents @nonexistent → exit 1', () => {
+test('B5a: --contents @nonexistent (cwd 内) → exit 1', () => {
+  // 用 cwd 子树内的不存在文件,触发 file-not-found 路径(而非 cwd 外被拒路径)
+  const path = require('node:path');
+  const fakePath = path.join(process.cwd(), 'tmp-b5a-nonexistent-' + Date.now() + '.json');
   const r = runCli({
-    args: ['create-report', '--template-id', 'tpl1', '--contents', '@/no/such/file.json', '--userid', 'u'],
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '@' + fakePath, '--userid', 'u'],
     env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
   });
   try {
@@ -795,9 +798,10 @@ test('B5a: --contents @nonexistent → exit 1', () => {
   } finally { r.cleanup(); }
 });
 
-test('B5b: --contents @file → 正确读取', () => {
+test('B5b: --contents @file → 正确读取(cwd 子树内)', () => {
   const fs = require('node:fs');
-  const tmpFile = require('node:os').tmpdir() + '/dingtalk-b5-' + Date.now() + '.json';
+  const path = require('node:path');
+  const tmpFile = path.join(process.cwd(), 'tmp-b5b-' + Date.now() + '.json');
   fs.writeFileSync(tmpFile, '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]');
   const r = runCli({
     args: ['create-report', '--template-id', 'tpl1', '--contents', '@' + tmpFile, '--userid', 'u', '--dry-run'],
@@ -808,4 +812,50 @@ test('B5b: --contents @file → 正确读取', () => {
     const j = JSON.parse(r.stdout);
     assert.equal(j.create_report_param.contents.length, 1);
   } finally { fs.unlinkSync(tmpFile); r.cleanup(); }
+});
+
+test('B29: @file 拒绝 cwd 子树之外的绝对路径(path traversal 防护)', () => {
+  // /etc/passwd 在 cwd 之外,必须被拒绝且永不发起 fetch
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '@/etc/passwd', '--userid', 'u'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /must be within cwd/);
+  } finally { r.cleanup(); }
+});
+
+test('B30 part1: NODE_ENV=test 时 DINGTALK_TEST_FETCH 仍被加载(回归)', () => {
+  // 已有所有用 fetchMockPath 的测试隐式覆盖此场景。再加一个 explicit unit 测试。
+  const cli = require('../scripts/dingtalk-log.js');
+  // 不存在的路径会触发 require 失败,说明在 test mode 下尝试加载 mock
+  assert.throws(
+    () => cli.getFetch({ DINGTALK_TEST_FETCH: '/non/existent/path.js', NODE_ENV: 'test' }),
+    /Cannot find module/,
+  );
+});
+
+test('B30 part2: 没 NODE_ENV=test 时 DINGTALK_TEST_FETCH 被忽略(env 注入 RCE 防护)', () => {
+  // 即便指向不存在路径,也不应该 require — 直接回落 native fetch
+  const cli = require('../scripts/dingtalk-log.js');
+  const f = cli.getFetch({ DINGTALK_TEST_FETCH: '/non/existent/path.js' /* no NODE_ENV */ });
+  assert.equal(typeof f, 'function');
+});
+
+test('B30 part3: 子进程默认 NODE_ENV=test;productionMode=true 时不注入', () => {
+  // helpers.runCli 默认注入 NODE_ENV=test。验证 productionMode=true 跳过该注入。
+  // 通过 list-templates --size 5(无 fetch mock)走真实 fetch 路径;
+  // 因为没真实凭据 + 真实 fetch DingTalk API,会失败,但不应该是 require error。
+  const r = runCli({
+    args: ['list-templates', '--size', '5'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_TEST_HARD_TIMEOUT_MS: '500' },
+    fetchMockPath: '/non/existent/mock.js',
+    productionMode: true,
+  });
+  try {
+    // 期望:走原生 fetch → 因网络 / 凭据 / timeout 失败,exit 非 0,但不应是 "Cannot find module" require 错误
+    assert.notEqual(r.code, 0);
+    assert.doesNotMatch(r.stderr, /Cannot find module/);
+  } finally { r.cleanup(); }
 });
