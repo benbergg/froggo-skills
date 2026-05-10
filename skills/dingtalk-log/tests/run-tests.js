@@ -563,3 +563,38 @@ test('B27: result 形态归一化 (string vs object)', () => {
     r1.cleanup(); r2.cleanup();
   }
 });
+
+test('B15: get-template 完整 result 透传', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b15-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok', expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const result = {
+    id: 'tid_abc',
+    fields: [{ field_name: 'a', sort: 0, type: 1 }, { field_name: 'b', sort: 1, type: 1 }, { field_name: 'c', sort: 2, type: 1 }],
+    default_received_convs: [{ conversation_id: '$DD_xxx', title: '群A' }],
+    default_receivers: [{ userid: 'u1', user_name: '张三' }],
+  };
+  const r = runCli({
+    args: ['get-template', '--template-name', '日报', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's', DINGTALK_USERID: 'u9', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ body: { errcode: 0, result } }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.result.id, 'tid_abc');
+    assert.equal(j.result.fields.length, 3);
+    assert.equal(j.result.default_received_convs[0].conversation_id, '$DD_xxx');
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
