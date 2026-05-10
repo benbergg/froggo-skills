@@ -623,8 +623,17 @@ function maybeDegrade(payload) {
 // (Zentao slow + N+1 executions across 5+ projects) with headroom, while
 // staying well below the cron 1800s ceiling so the wrapper still has room to
 // run AI write-up + push steps after collect.js exits. Override via
-// EXP_COMPASS_HARD_TIMEOUT_MS for tests or one-off cron tuning.
-const HARD_TIMEOUT_MS = parseInt(process.env.EXP_COMPASS_HARD_TIMEOUT_MS || String(10 * 60 * 1000), 10);
+// EXP_COMPASS_HARD_TIMEOUT_MS for tests or one-off cron tuning. Clamped to
+// [60s, 30min] so a stray 0 / negative / NaN env doesn't make the script
+// self-destruct on startup, and a too-large value can't blow past the
+// cron 1800s cap.
+const DEFAULT_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+const MIN_HARD_TIMEOUT_MS = 60_000;
+const MAX_HARD_TIMEOUT_MS = 30 * 60 * 1000;
+const rawHardTimeoutMs = parseInt(process.env.EXP_COMPASS_HARD_TIMEOUT_MS || '', 10);
+const HARD_TIMEOUT_MS = Number.isFinite(rawHardTimeoutMs)
+  ? Math.min(Math.max(rawHardTimeoutMs, MIN_HARD_TIMEOUT_MS), MAX_HARD_TIMEOUT_MS)
+  : DEFAULT_HARD_TIMEOUT_MS;
 const _hardKill = setTimeout(() => {
   console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
   process.exit(4);
