@@ -480,7 +480,7 @@ function maybeDegrade(payload) {
     process.exit(1);
   }
   if (sizeKB > 80) {
-    console.error(`WARN: JSON ${sizeKB.toFixed(1)}KB > 80KB, applying degrade (truncate non-essential tasks)`);
+    process.stdout.write(`WARN: JSON ${sizeKB.toFixed(1)}KB > 80KB, applying degrade (truncate non-essential tasks)\n`);
     for (const s of payload.stories) {
       s.tasks = s.tasks.filter((t) => t.status === 'doing'
         || TASK_TODO_STATUSES.includes(t.status)
@@ -490,7 +490,7 @@ function maybeDegrade(payload) {
     }
     payload._meta.degraded = true;
   } else if (sizeKB > 30) {
-    console.error(`WARN: JSON ${sizeKB.toFixed(1)}KB > 30KB`);
+    process.stdout.write(`WARN: JSON ${sizeKB.toFixed(1)}KB > 30KB\n`);
   }
   payload._meta.size_kb = Math.round(sizeKB * 10) / 10;
   return payload;
@@ -498,19 +498,22 @@ function maybeDegrade(payload) {
 
 // Hard wall-clock limit. Past tencent-vm cron runs left orphan collect.js
 // processes blocked indefinitely (suspected: spawnSync token refresh + a
-// long-poll edge case). 6 minutes is comfortably above the observed 50s
-// happy-path runtime. Beyond it the process self-terminates with exit 4.
-const HARD_TIMEOUT_MS = 6 * 60 * 1000;
+// long-poll edge case). 10 minutes covers the observed worst-case ~5min runs
+// (Zentao slow + N+1 executions across 5+ projects) with headroom, while
+// staying well below the cron 1800s ceiling so the wrapper still has room to
+// run AI write-up + push steps after collect.js exits.
+const HARD_TIMEOUT_MS = 10 * 60 * 1000;
 const _hardKill = setTimeout(() => {
   console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
   process.exit(4);
 }, HARD_TIMEOUT_MS);
 _hardKill.unref();
 
+// Progress signal goes to stdout so wrapping schedulers (openclaw helios
+// `process poll`, etc.) can observe it. stderr is reserved for FATAL/throw.
+// Always-on so silent stuck windows are observable without env tweaking.
 function trace(msg) {
-  if (process.env.EXP_COMPASS_TRACE === '1') {
-    console.error(`[trace +${(Date.now() - TRACE_T0) / 1000}s] ${msg}`);
-  }
+  process.stdout.write(`[trace +${((Date.now() - TRACE_T0) / 1000).toFixed(1)}s] ${msg}\n`);
 }
 let TRACE_T0 = Date.now();
 
@@ -584,24 +587,49 @@ async function main() {
   const productStoryIds = new Set(rawStories.map((s) => s.id));
 
   // Bugs: must use `status=all` to include closed bugs; client-side filter narrows scope.
+  trace('fetch bugs start');
   const rawBugs = await ztPaginate(`/products/${args.product}/bugs?status=all`, 'bugs');
+  trace(`fetch bugs done (${rawBugs.length})`);
 
   // Tasks: NOT directly available under /products/{id}/tasks (returns "not found").
   // Must traverse: product → projects → executions → tasks (V1 collect-tasks.sh pattern).
   const rawTasks = [];
+  trace('fetch projects start');
   const projectsResp = await ztFetch(`/products/${args.product}/projects`);
   if (projectsResp.ok) {
     const projects = projectsResp.body.projects || [];
+    trace(`fetch projects done (${projects.length})`);
     for (const proj of projects) {
+      trace(`fetch project=${proj.id} executions start`);
       const execsResp = await ztFetch(`/projects/${proj.id}/executions`);
-      if (!execsResp.ok) continue;
+      if (!execsResp.ok) {
+        trace(`fetch project=${proj.id} executions failed: ${execsResp.reason}`);
+        continue;
+      }
       const execs = execsResp.body.executions || [];
-      for (const ex of execs) {
-        const tasksOfExec = await ztPaginate(`/executions/${ex.id}/tasks`, 'tasks');
-        rawTasks.push(...tasksOfExec);
+      trace(`fetch project=${proj.id} executions done (${execs.length})`);
+      // Concurrent fetch: 5 executions in parallel keeps total time bounded
+      // (~30 executions × ~5s/each was 5+ min serial → ~1 min @ 5-way).
+      // ztFetch's STATE.apiCalls is JS-single-threaded so the counter stays
+      // consistent; budget check still gates total call volume.
+      const CONCURRENCY = 5;
+      for (let i = 0; i < execs.length; i += CONCURRENCY) {
+        const batch = execs.slice(i, i + CONCURRENCY);
+        trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
+        const results = await Promise.all(
+          batch.map(async (ex) => ({
+            id: ex.id,
+            tasks: await ztPaginate(`/executions/${ex.id}/tasks`, 'tasks'),
+          })),
+        );
+        for (const r of results) {
+          trace(`fetch execution=${r.id} tasks done (${r.tasks.length})`);
+          rawTasks.push(...r.tasks);
+        }
       }
     }
   } else {
+    trace(`fetch projects failed: ${projectsResp.reason}`);
     STATE.skipped.push({ path: `/products/*/projects`, reason: projectsResp.reason });
   }
 
@@ -692,7 +720,7 @@ async function main() {
   fs.writeFileSync(args.out, JSON.stringify(payload, null, 2));
   fs.chmodSync(args.out, 0o600);
 
-  console.error(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} → ${args.out}`);
+  process.stdout.write(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} → ${args.out}\n`);
 }
 
 main()
