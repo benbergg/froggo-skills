@@ -317,16 +317,18 @@ async function loadUserMap() {
   }
 }
 
-// Server-side closedDate-desc + client-side early-exit. Replaces the previous
-// approach of paginating ALL closed stories (~540 rows) just to filter the
-// 0-2 rows closed today (~99.6% wasted). Probed 2026-05-10 against this
-// Zentao instance: `?status=closedstory&order=closedDate_desc` returns rows
-// in strict closedDate descending order, so the first row whose date < today
-// proves no later row matches either.
+// Server-side closedDate-desc + client-side early-exit. Probed 2026-05-10
+// against this Zentao instance: `?...&order=closedDate_desc` returns rows in
+// strict closedDate descending order, with null closedDate sorted last —
+// so the first non-matching row proves no later row matches either.
 //
-// Falls back to a full paginate + filter on transport failure, preserving
-// correctness if the order parameter is ever rejected on a future Zentao
-// version.
+// Used for two scope-bound queries that previously paginated thousands of
+// rows just to surface today's events:
+//   - closed stories  (was ~540 rows → 0-5 today)
+//   - closed bugs     (was ~1100 rows → 0-10 today)
+//
+// Falls back to a full paginate + client filter on transport failure,
+// preserving correctness if the order parameter is ever rejected.
 async function fetchClosedTodayStories(productId, date) {
   const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=500&page=1`;
   const r = await ztFetch(url);
@@ -343,6 +345,51 @@ async function fetchClosedTodayStories(productId, date) {
     if (day < date) break;
     if (day === date) out.push(s);
     // day > date: clock skew or future-dated row — keep scanning, don't break
+  }
+  return out;
+}
+
+// Bugs scope is asymmetric: ALL unclosed bugs (active + resolved) plus only
+// the closed bugs whose closedDate is today. The previous approach pulled
+// `?status=all` (1100+ rows on this product) to filter ~25 in-scope rows.
+// Two queries instead — one tiny, one early-exit — get the same result
+// without the wall-of-bugs round trip.
+//
+// Note on the Zentao bugs API: status=active|resolved|closed all return 0;
+// only status=all and status=unclosed (= active + resolved) are accepted.
+async function fetchTodayClosedBugs(productId, date) {
+  const url = `/products/${productId}/bugs?status=all&order=closedDate_desc&limit=500&page=1`;
+  const r = await ztFetch(url);
+  if (!r.ok) return null;
+  const items = r.body.bugs || [];
+  const out = [];
+  for (const b of items) {
+    // Active + resolved bugs have closedDate=null and Zentao sorts them at
+    // the tail under closedDate_desc; encountering one means we've passed
+    // every closed row newer than `date`.
+    if (!b.closedDate) break;
+    const day = String(b.closedDate).slice(0, 10);
+    if (day < date) break;
+    if (day === date) out.push(b);
+  }
+  return out;
+}
+
+async function fetchBugsInScope(productId, date) {
+  const [unclosed, closedTodayMaybe] = await Promise.all([
+    ztPaginate(`/products/${productId}/bugs?status=unclosed`, 'bugs'),
+    fetchTodayClosedBugs(productId, date),
+  ]);
+  if (closedTodayMaybe === null) {
+    trace('bugs closed-today fetch failed; falling back to full paginate');
+    return ztPaginate(`/products/${productId}/bugs?status=all`, 'bugs');
+  }
+  const seen = new Set();
+  const out = [];
+  for (const b of [...unclosed, ...closedTodayMaybe]) {
+    if (seen.has(b.id)) continue;
+    seen.add(b.id);
+    out.push(b);
   }
   return out;
 }
@@ -643,7 +690,7 @@ async function main() {
     fetchProductName(args.product),
     ztPaginate(`/products/${args.product}/stories`, 'stories'),
     fetchClosedTodayStories(args.product, args.date),
-    ztPaginate(`/products/${args.product}/bugs?status=all`, 'bugs'),
+    fetchBugsInScope(args.product, args.date),
     ztFetch(`/products/${args.product}/projects`),
   ]);
   trace(`phase1 done: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closedToday=${closedToday.length} bugs=${rawBugs.length}`);
