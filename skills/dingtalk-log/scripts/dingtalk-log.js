@@ -8,29 +8,35 @@ const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
 
-const COMMANDS = {
-  'create-report':   { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
-  'save-content':    { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
-  'get-template':    { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
-  'list-templates':  { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET'] },
-  'get-user':        { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
-};
+// ============================================================================
+// ---- env & arg parse -------------------------------------------------------
+// ============================================================================
 
-function isStdinTty(env) {
-  // Test bridge via env; real runs use process.stdin.isTTY
-  if (env.DINGTALK_TEST_STDIN_TTY === '1') return true;
-  return Boolean(process.stdin.isTTY);
+function requireEnv(env, names) {
+  return names.filter((n) => !env[n] || env[n].trim() === '');
 }
 
-function readAllStdin() {
-  // Synchronously read stdin until EOF
-  const chunks = [];
-  const buf = Buffer.alloc(65536);
-  let n;
-  while ((n = fs.readSync(0, buf, 0, buf.length, null)) > 0) {
-    chunks.push(Buffer.from(buf.slice(0, n)));
+function parseArgs(argv) {
+  const out = { sub: null, flags: {}, hasHelp: false };
+  out.sub = argv[2] || null;
+  for (let i = 3; i < argv.length; i++) {
+    const a = argv[i];
+    if (a === '--help' || a === '-h') { out.hasHelp = true; continue; }
+    if (a.startsWith('--')) {
+      const key = a.slice(2);
+      const next = argv[i + 1];
+      if (next != null && !next.startsWith('--')) { out.flags[key] = next; i++; }
+      else { out.flags[key] = true; }
+    }
   }
-  return Buffer.concat(chunks).toString('utf-8');
+  return out;
+}
+
+function parseJsonFlag(raw, flagName) {
+  let data;
+  try { data = JSON.parse(raw); }
+  catch (e) { throw new Error(`--${flagName} JSON parse failed: ${e.message}`); }
+  return data;
 }
 
 // Load flag content: supports @file / - / raw JSON
@@ -62,41 +68,26 @@ function loadJsonFlag(raw, flagName, env, stdinTaken) {
   return data;
 }
 
-function parseArgs(argv) {
-  const out = { sub: null, flags: {}, hasHelp: false };
-  out.sub = argv[2] || null;
-  for (let i = 3; i < argv.length; i++) {
-    const a = argv[i];
-    if (a === '--help' || a === '-h') { out.hasHelp = true; continue; }
-    if (a.startsWith('--')) {
-      const key = a.slice(2);
-      const next = argv[i + 1];
-      if (next != null && !next.startsWith('--')) { out.flags[key] = next; i++; }
-      else { out.flags[key] = true; }
-    }
+function isStdinTty(env) {
+  // Test bridge via env; real runs use process.stdin.isTTY
+  if (env.DINGTALK_TEST_STDIN_TTY === '1') return true;
+  return Boolean(process.stdin.isTTY);
+}
+
+function readAllStdin() {
+  // Synchronously read stdin until EOF
+  const chunks = [];
+  const buf = Buffer.alloc(65536);
+  let n;
+  while ((n = fs.readSync(0, buf, 0, buf.length, null)) > 0) {
+    chunks.push(Buffer.from(buf.slice(0, n)));
   }
-  return out;
+  return Buffer.concat(chunks).toString('utf-8');
 }
 
-function printHelp(sub, log) {
-  const lines = [
-    `Usage: dingtalk-log ${sub || '<subcommand>'} [flags]`,
-    `Subcommands: ${Object.keys(COMMANDS).join(', ')}`,
-    `Common env: DINGTALK_APPKEY, DINGTALK_APPSECRET, DINGTALK_USERID`,
-  ];
-  log(lines.join('\n'));
-}
-
-function requireEnv(env, names) {
-  return names.filter((n) => !env[n] || env[n].trim() === '');
-}
-
-function parseJsonFlag(raw, flagName) {
-  let data;
-  try { data = JSON.parse(raw); }
-  catch (e) { throw new Error(`--${flagName} JSON parse failed: ${e.message}`); }
-  return data;
-}
+// ============================================================================
+// ---- token cache -----------------------------------------------------------
+// ============================================================================
 
 function tokenCachePath(env) {
   const home = env.HOME || os.homedir();
@@ -135,6 +126,10 @@ function tokenIsFresh(tok, nowSec) {
   return (tok.expires_at - 60) > nowSec;
 }
 
+// ============================================================================
+// ---- http ------------------------------------------------------------------
+// ============================================================================
+
 const DT_HOST = 'https://oapi.dingtalk.com';
 
 const HARD_TIMEOUT_MS_DEFAULT = 60_000;
@@ -147,10 +142,6 @@ function installHardTimeout(env) {
   }, ms);
   t.unref();
   return t;
-}
-
-class TokenError extends Error {
-  constructor(msg) { super(msg); this.name = 'TokenError'; }
 }
 
 function getFetch(env) {
@@ -173,6 +164,10 @@ function sanitize(s) {
   // Bearer header
   out = out.replace(/Bearer\s+\S+/gi, 'Bearer ***');
   return out;
+}
+
+class TokenError extends Error {
+  constructor(msg) { super(msg); this.name = 'TokenError'; }
 }
 
 async function ensureToken(env, fetchImpl) {
@@ -219,27 +214,11 @@ async function callBusinessApi({ env, fetchImpl, urlBuilder, body }) {
   return parsed;
 }
 
-async function runGetTemplate({ env, flags, fetchImpl, log, errOut, exit }) {
-  if (!flags['template-name']) { errOut('FATAL: --template-name is required'); return exit(1); }
-  const userid = flags['userid'] || env.DINGTALK_USERID;
-  let body;
-  try {
-    body = await callBusinessApi({
-      env, fetchImpl,
-      urlBuilder: (t) => `${DT_HOST}/topapi/report/template/getbyname?access_token=${encodeURIComponent(t)}`,
-      body: { userid, template_name: flags['template-name'] },
-    });
-  } catch (e) {
-    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
-    errOut(`FATAL: dingtalk_get_template ${sanitize(e.message)}`); return exit(4);
-  }
-  if (body.errcode !== 0) {
-    errOut(`FATAL: dingtalk_get_template errcode=${body.errcode} errmsg=${body.errmsg}`);
-    return exit(4);
-  }
-  log(JSON.stringify({ errcode: 0, result: body.result, raw: body }));
-  return exit(0);
-}
+// ============================================================================
+// ---- payload builders ------------------------------------------------------
+// ============================================================================
+
+const PAGINATION_CAP = 50;
 
 function buildCreateReportPayload(flags, env) {
   const userid = flags['userid'] || env.DINGTALK_USERID;
@@ -276,6 +255,10 @@ function normalizeResult(result, key) {
   return null;
 }
 
+// ============================================================================
+// ---- endpoints -------------------------------------------------------------
+// ============================================================================
+
 async function runCreateReport({ env, flags, fetchImpl, log, errOut, exit }) {
   const payload = buildCreateReportPayload(flags, env);
   let body;
@@ -298,7 +281,49 @@ async function runCreateReport({ env, flags, fetchImpl, log, errOut, exit }) {
   return exit(0);
 }
 
-const PAGINATION_CAP = 50;
+async function runSaveContent({ env, flags, fetchImpl, log, errOut, exit }) {
+  const payload = buildSaveContentPayload(flags, env);
+  let body;
+  try {
+    body = await callBusinessApi({
+      env, fetchImpl,
+      urlBuilder: (t) => `${DT_HOST}/topapi/report/savecontent?access_token=${encodeURIComponent(t)}`,
+      body: payload,
+    });
+  } catch (e) {
+    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+    errOut(`FATAL: dingtalk_save_content ${sanitize(e.message)}`); return exit(3);
+  }
+  if (body.errcode !== 0) {
+    errOut(`FATAL: dingtalk_save_content errcode=${body.errcode} errmsg=${body.errmsg}`);
+    return exit(3);
+  }
+  const savedId = normalizeResult(body.result, 'report_id');
+  log(JSON.stringify({ errcode: 0, saved_id: savedId, raw: body }));
+  return exit(0);
+}
+
+async function runGetTemplate({ env, flags, fetchImpl, log, errOut, exit }) {
+  if (!flags['template-name']) { errOut('FATAL: --template-name is required'); return exit(1); }
+  const userid = flags['userid'] || env.DINGTALK_USERID;
+  let body;
+  try {
+    body = await callBusinessApi({
+      env, fetchImpl,
+      urlBuilder: (t) => `${DT_HOST}/topapi/report/template/getbyname?access_token=${encodeURIComponent(t)}`,
+      body: { userid, template_name: flags['template-name'] },
+    });
+  } catch (e) {
+    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+    errOut(`FATAL: dingtalk_get_template ${sanitize(e.message)}`); return exit(4);
+  }
+  if (body.errcode !== 0) {
+    errOut(`FATAL: dingtalk_get_template errcode=${body.errcode} errmsg=${body.errmsg}`);
+    return exit(4);
+  }
+  log(JSON.stringify({ errcode: 0, result: body.result, raw: body }));
+  return exit(0);
+}
 
 async function runListTemplates({ env, flags, fetchImpl, log, errOut, exit }) {
   let size = parseInt(flags['size'] || '100', 10);
@@ -353,28 +378,6 @@ async function runListTemplates({ env, flags, fetchImpl, log, errOut, exit }) {
   return exit(0);
 }
 
-async function runSaveContent({ env, flags, fetchImpl, log, errOut, exit }) {
-  const payload = buildSaveContentPayload(flags, env);
-  let body;
-  try {
-    body = await callBusinessApi({
-      env, fetchImpl,
-      urlBuilder: (t) => `${DT_HOST}/topapi/report/savecontent?access_token=${encodeURIComponent(t)}`,
-      body: payload,
-    });
-  } catch (e) {
-    if (e instanceof TokenError) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
-    errOut(`FATAL: dingtalk_save_content ${sanitize(e.message)}`); return exit(3);
-  }
-  if (body.errcode !== 0) {
-    errOut(`FATAL: dingtalk_save_content errcode=${body.errcode} errmsg=${body.errmsg}`);
-    return exit(3);
-  }
-  const savedId = normalizeResult(body.result, 'report_id');
-  log(JSON.stringify({ errcode: 0, saved_id: savedId, raw: body }));
-  return exit(0);
-}
-
 async function runGetUser({ env, flags, fetchImpl, log, errOut, exit }) {
   const userid = flags['userid'] || env.DINGTALK_USERID;
   if (!userid) { errOut('FATAL: --userid is required'); return exit(1); }
@@ -397,6 +400,27 @@ async function runGetUser({ env, flags, fetchImpl, log, errOut, exit }) {
   }
   log(JSON.stringify({ errcode: 0, result: parsed.result, raw: parsed }));
   return exit(0);
+}
+
+// ============================================================================
+// ---- cli -------------------------------------------------------------------
+// ============================================================================
+
+const COMMANDS = {
+  'create-report':   { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
+  'save-content':    { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
+  'get-template':    { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
+  'list-templates':  { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET'] },
+  'get-user':        { needsEnv: ['DINGTALK_APPKEY', 'DINGTALK_APPSECRET', 'DINGTALK_USERID'] },
+};
+
+function printHelp(sub, log) {
+  const lines = [
+    `Usage: dingtalk-log ${sub || '<subcommand>'} [flags]`,
+    `Subcommands: ${Object.keys(COMMANDS).join(', ')}`,
+    `Common env: DINGTALK_APPKEY, DINGTALK_APPSECRET, DINGTALK_USERID`,
+  ];
+  log(lines.join('\n'));
 }
 
 async function main(deps = {}) {
@@ -491,6 +515,10 @@ async function main(deps = {}) {
   errOut(`FATAL: subcommand "${sub}" not yet implemented`);
   return exit(1);
 }
+
+// ============================================================================
+// ---- main entry ------------------------------------------------------------
+// ============================================================================
 
 if (require.main === module) {
   main().catch((e) => {
