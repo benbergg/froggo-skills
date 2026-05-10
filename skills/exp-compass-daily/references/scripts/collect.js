@@ -229,16 +229,29 @@ async function ztPaginate(basePath, listKey) {
   // basePath like '/products/95/bugs?status=all'
   // listKey: explicit field name to read items from (avoid heuristic-induced confusion).
   const sep = basePath.includes('?') ? '&' : '?';
+  const limit = 500;
   const out = [];
   for (let page = 1; page <= 20; page++) {
-    const r = await ztFetch(`${basePath}${sep}limit=500&page=${page}`);
+    const r = await ztFetch(`${basePath}${sep}limit=${limit}&page=${page}`);
     if (!r.ok) {
       STATE.skipped.push({ path: basePath.replace(/\/products\/\d+|\/projects\/\d+|\/executions\/\d+/, (m) => m.replace(/\d+/, '*')), page, reason: r.reason });
       break;
     }
     const items = r.body[listKey] || [];
     out.push(...items);
-    if (items.length < 500) break;
+    if (items.length === 0) break;
+    // Prefer the server-reported total. Some Zentao endpoints return a page
+    // with items.length < limit even when more pages exist (observed on
+    // /products/95/stories?status=closedstory: total=536, page 1 sometimes
+    // returns 499 and sometimes 500 — the < limit early-out silently drops
+    // the remaining 37 rows). Trust total when it's a number; fall back to
+    // the length-based heuristic only when the endpoint doesn't expose it.
+    const total = typeof r.body.total === 'number' ? r.body.total : null;
+    if (total !== null) {
+      if (out.length >= total) break;
+    } else if (items.length < limit) {
+      break;
+    }
   }
   return out;
 }
