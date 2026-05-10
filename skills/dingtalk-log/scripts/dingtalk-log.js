@@ -150,11 +150,17 @@ function getFetch(env) {
 }
 
 function sanitize(s) {
-  // Minimal sanitizer — Task 9 will expand this
-  return String(s)
-    .replace(/access_token=\S+/gi, 'access_token=***')
-    .replace(/appsecret=\S+/gi, 'appsecret=***')
-    .replace(/appkey=\S+/gi, 'appkey=***');
+  let out = String(s);
+  // Covers query (key=val), JSON ("key":"val"), and colon-form (key:val);
+  // optional quote before separator handles JSON key quoting;
+  // supports app_key / app_secret underscore variants alongside appkey / appsecret
+  out = out.replace(
+    /(access_token|app_?key|app_?secret)"?\s*([=:])\s*"?([^"\s&,}]+)"?/gi,
+    (_m, key, sep) => `${key}${sep}***`
+  );
+  // Bearer header
+  out = out.replace(/Bearer\s+\S+/gi, 'Bearer ***');
+  return out;
 }
 
 async function ensureToken(env, fetchImpl) {

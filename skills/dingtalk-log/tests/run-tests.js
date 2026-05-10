@@ -381,3 +381,48 @@ test('B12: 业务 errcode 88 不重试 → exit 4 + 1 业务调用', () => {
     r.cleanup();
   }
 });
+
+test('B13: 网络错误 → exit 4 + stderr 不含明文凭据', () => {
+  const fs = require('node:fs');
+  const path = require('node:path');
+  const tmpHome = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'dingtalk-test-b13-'));
+  const cacheDir = path.join(tmpHome, '.cache', 'dingtalk');
+  fs.mkdirSync(cacheDir, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(path.join(cacheDir, 'token.json'), JSON.stringify({
+    access_token: 'tok_secret_xyz',
+    expires_at: Math.floor(Date.now() / 1000) + 3600,
+  }));
+  const r = runCli({
+    args: ['get-template', '--template-name', '日報', '--userid', 'u9'],
+    env: {
+      DINGTALK_APPKEY: 'appkey_xyz', DINGTALK_APPSECRET: 'secret123',
+      DINGTALK_USERID: 'u9', HOME: tmpHome,
+      DINGTALK_TEST_FETCH_PLAN: JSON.stringify([{ throw: 'connection refused at appsecret=secret123' }]),
+    },
+    fetchMockPath: path.join(__dirname, 'fixtures', 'fetch-counter.js'),
+  });
+  try {
+    assert.equal(r.code, 4);
+    assert.doesNotMatch(r.stderr, /secret123/);
+    assert.doesNotMatch(r.stderr, /tok_secret_xyz/);
+  } finally {
+    fs.rmSync(tmpHome, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('B14: sanitize 三形态(query/JSON/Bearer)', () => {
+  const cli = require('../scripts/dingtalk-log.js');
+  const cases = [
+    'access_token=bE3xxxx',
+    '"access_token":"bE3xxxx"',
+    'appsecret=secret123&corp=xxx',
+    '"appsecret":"secret123"',
+    'Bearer bE3xxxx',
+    'appkey=ding_xxx_yyy',
+  ];
+  for (const c of cases) {
+    const out = cli.sanitize(c);
+    assert.doesNotMatch(out, /bE3xxxx|secret123|ding_xxx_yyy/, `sanitize leak in: ${c} -> ${out}`);
+  }
+});
