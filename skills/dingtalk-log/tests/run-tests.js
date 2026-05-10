@@ -770,3 +770,42 @@ test('B19: get-user 不脱敏 mobile/email', () => {
     r.cleanup();
   }
 });
+
+test('B4: --contents - 从 stdin 读', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '-', '--userid', 'u', '--dry-run'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+    stdin: '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]',
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.contents.length, 1);
+  } finally { r.cleanup(); }
+});
+
+test('B5a: --contents @nonexistent → exit 1', () => {
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '@/no/such/file.json', '--userid', 'u'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /file not found/);
+  } finally { r.cleanup(); }
+});
+
+test('B5b: --contents @file → 正确读取', () => {
+  const fs = require('node:fs');
+  const tmpFile = require('node:os').tmpdir() + '/dingtalk-b5-' + Date.now() + '.json';
+  fs.writeFileSync(tmpFile, '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]');
+  const r = runCli({
+    args: ['create-report', '--template-id', 'tpl1', '--contents', '@' + tmpFile, '--userid', 'u', '--dry-run'],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 0);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.contents.length, 1);
+  } finally { fs.unlinkSync(tmpFile); r.cleanup(); }
+});
