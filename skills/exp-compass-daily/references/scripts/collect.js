@@ -679,6 +679,7 @@ async function main() {
   //   - `/products/{id}/stories?status=closedstory` → all closed; client-side filter to today
   //   `?status=all` returns empty on this instance, so we can't combine them.
   trace('phase1 concurrent fetch start');
+  const tPhase1Start = Date.now();
   const [
     , // loadUserMap returns void; result side-effects USER_MAP only
     productName,
@@ -694,7 +695,8 @@ async function main() {
     fetchBugsInScope(args.product, args.date),
     ztFetch(`/products/${args.product}/projects`),
   ]);
-  trace(`phase1 done: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closedToday=${closedToday.length} bugs=${rawBugs.length}`);
+  const tPhase1Ms = Date.now() - tPhase1Start;
+  trace(`phase1 done in ${tPhase1Ms}ms: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closedToday=${closedToday.length} bugs=${rawBugs.length}`);
 
   // Merge (active + today-closed). De-dup by id (active should never overlap
   // closed, but be safe).
@@ -724,6 +726,7 @@ async function main() {
   // stop enqueueing new batches, mark the JSON degraded, and let main finish.
   const rawTasks = [];
   let wallClockEarlyExit = false;
+  const tPhase2Start = Date.now();
   if (projectsResp.ok) {
     const projects = projectsResp.body.projects || [];
     trace(`fetch projects done (${projects.length})`);
@@ -785,6 +788,8 @@ async function main() {
     trace(`fetch projects failed: ${projectsResp.reason}`);
     STATE.skipped.push({ path: `/products/*/projects`, reason: projectsResp.reason });
   }
+  const tPhase2Ms = Date.now() - tPhase2Start;
+  trace(`phase2 done in ${tPhase2Ms}ms (rawTasks=${rawTasks.length}${wallClockEarlyExit ? ', partial' : ''})`);
 
   // Scope-filter stories
   const scopedStories = rawStories.filter((s) => inScopeStory(s, args.date));
@@ -863,6 +868,10 @@ async function main() {
     _meta: {
       api_calls: STATE.apiCalls,
       duration_ms: Date.now() - t0,
+      timings: {
+        phase1_ms: tPhase1Ms,
+        phase2_ms: tPhase2Ms,
+      },
       skipped: STATE.skipped,
       budget_exceeded: STATE.budgetExceeded,
       wall_clock_early_exit: wallClockEarlyExit,
