@@ -13,8 +13,8 @@ ZENTAO_PASSWORD=<你的密码>
 EOF
 chmod 600 ~/.zentao.env
 
-# 0.2 知识库(本机若无可指向只读 clone 或临时目录)
-export KNOWLEDGE_LIB="${KNOWLEDGE_LIB:-$HOME/Knowledge-Library}"
+# 0.2 知识库(必填,本机与服务器路径不同)
+[ -n "$KNOWLEDGE_LIB" ] || { echo "FATAL: KNOWLEDGE_LIB not set; add to ~/.zentao.env (本机) 或 ~/.openclaw/.env (服务器)" >&2; exit 1; }
 
 # 0.3 工具(node 18+ 与 jq)
 node --version | grep -E 'v(1[89]|2[0-9])' >/dev/null && echo "✓ node OK"

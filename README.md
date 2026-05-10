@@ -59,18 +59,17 @@ froggo-skills/
 | Skill | 必填 | 关键可选 |
 |------|------|---------|
 | zentao-api | `ZENTAO_BASE_URL` `ZENTAO_ACCOUNT` `ZENTAO_PASSWORD` | – |
-| weekly-report | 同 zentao-api | `ZENTAO_ME` `KNOWLEDGE_LIB`(默认 `~/Knowledge-Library`) `AI_DAILY_DIR` `WEEKLY_API_BUDGET`(默认 2000) `WEEKLY_HARD_TIMEOUT_MS`(默认 600000) `WEEKLY_ALLOW_PARTIAL` |
+| weekly-report | 同 zentao-api + `KNOWLEDGE_LIB`(本地与服务器各自设置,无 default) | `ZENTAO_ME` `AI_DAILY_DIR` `WEEKLY_API_BUDGET`(默认 2000) `WEEKLY_HARD_TIMEOUT_MS`(默认 600000) `WEEKLY_ALLOW_PARTIAL` |
 | exp-compass-daily | 同 zentao-api + `DINGTALK_APPKEY` `DINGTALK_APPSECRET` `DINGTALK_USERID` `DINGTALK_TEMPLATE_ID` | `ZENTAO_PRODUCTS`(默认 `95`) `EXP_COMPASS_API_BUDGET`(默认 300) `DINGTALK_TO_CHAT` `DRY_RUN` |
 | git-commit / prompt-engineering / dingtalk-log | – | – |
 
-示例 `~/.zentao.env`:
+示例 `~/.zentao.env`(本机):
 
 ```bash
 ZENTAO_BASE_URL=https://chandao.example.com/zentao/api.php/v1
 ZENTAO_ACCOUNT=your_account
 ZENTAO_PASSWORD=your_password
-# weekly / exp-compass 按需追加
-KNOWLEDGE_LIB=/Users/you/Knowledge-Library
+# weekly / exp-compass 按需追加;KNOWLEDGE_LIB 在本机 / 服务器路径不同,各环境 .env 自行设置
 DINGTALK_APPKEY=...
 ```
 
