@@ -135,6 +135,77 @@ function tokenIsFresh(tok, nowSec) {
   return (tok.expires_at - 60) > nowSec;
 }
 
+const DT_HOST = 'https://oapi.dingtalk.com';
+
+class TokenError extends Error {
+  constructor(msg) { super(msg); this.name = 'TokenError'; }
+}
+
+function getFetch(env) {
+  if (env.DINGTALK_TEST_FETCH) {
+    delete require.cache[require.resolve(env.DINGTALK_TEST_FETCH)];
+    return require(env.DINGTALK_TEST_FETCH);
+  }
+  return globalThis.fetch.bind(globalThis);
+}
+
+function sanitize(s) {
+  // Minimal sanitizer — Task 9 will expand this
+  return String(s)
+    .replace(/access_token=\S+/gi, 'access_token=***')
+    .replace(/appsecret=\S+/gi, 'appsecret=***')
+    .replace(/appkey=\S+/gi, 'appkey=***');
+}
+
+async function ensureToken(env, fetchImpl) {
+  const now = Math.floor(Date.now() / 1000);
+  const cached = tokenCacheRead(env);
+  if (tokenIsFresh(cached, now)) return cached.access_token;
+
+  const url = `${DT_HOST}/gettoken?appkey=${encodeURIComponent(env.DINGTALK_APPKEY)}&appsecret=${encodeURIComponent(env.DINGTALK_APPSECRET)}`;
+  let resp;
+  try { resp = await fetchImpl(url); }
+  catch (e) { throw new TokenError(`gettoken network error: ${e.message}`); }
+  let body;
+  try { body = await resp.json(); }
+  catch (e) { throw new TokenError(`gettoken response not JSON (status=${resp.status})`); }
+  if (body.errcode !== 0 || !body.access_token) {
+    throw new TokenError(`gettoken errcode=${body.errcode} errmsg=${body.errmsg}`);
+  }
+  const expiresIn = typeof body.expires_in === 'number' ? body.expires_in : 7200;
+  const tok = { access_token: body.access_token, expires_at: now + expiresIn - 60 };
+  tokenCacheWrite(env, tok);
+  return tok.access_token;
+}
+
+async function runGetTemplate({ env, flags, fetchImpl, log, errOut, exit }) {
+  if (!flags['template-name']) { errOut('FATAL: --template-name is required'); return exit(1); }
+  const userid = flags['userid'] || env.DINGTALK_USERID;
+  let token;
+  try { token = await ensureToken(env, fetchImpl); }
+  catch (e) { errOut(`FATAL: ${sanitize(e.message)}`); return exit(2); }
+
+  const url = `${DT_HOST}/topapi/report/template/getbyname?access_token=${encodeURIComponent(token)}`;
+  let body;
+  try {
+    const resp = await fetchImpl(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ userid, template_name: flags['template-name'] }),
+    });
+    body = await resp.json();
+  } catch (e) {
+    errOut(`FATAL: dingtalk_get_template ${sanitize(e.message)}`);
+    return exit(4);
+  }
+  if (body.errcode !== 0) {
+    errOut(`FATAL: dingtalk_get_template errcode=${body.errcode} errmsg=${body.errmsg}`);
+    return exit(4);
+  }
+  log(JSON.stringify({ errcode: 0, result: body.result, raw: body }));
+  return exit(0);
+}
+
 function buildCreateReportPayload(flags, env) {
   const userid = flags['userid'] || env.DINGTALK_USERID;
   const ddFrom = flags['dd-from'] || 'openapi';
@@ -235,6 +306,10 @@ async function main(deps = {}) {
     return exit(0);
   }
 
+  if (sub === 'get-template') {
+    return runGetTemplate({ env: effectiveEnv, flags, fetchImpl: getFetch(effectiveEnv), log, errOut, exit });
+  }
+
   errOut(`FATAL: subcommand "${sub}" not yet implemented`);
   return exit(1);
 }
@@ -251,4 +326,5 @@ module.exports = {
   loadFlagContent, loadJsonFlag,
   buildCreateReportPayload, buildSaveContentPayload,
   tokenCachePath, tokenCacheRead, tokenCacheWrite, tokenCacheInvalidate, tokenIsFresh,
+  ensureToken, sanitize, TokenError, getFetch,
 };

@@ -15,8 +15,8 @@ function runCli({ args = [], env = {}, stdin = null, fetchMockPath = null, isTty
   const tmpHome = freshHome();
   const fullEnv = {
     PATH: process.env.PATH,
-    ...env,
     HOME: tmpHome,
+    ...env,
   };
   if (fetchMockPath) fullEnv.DINGTALK_TEST_FETCH = fetchMockPath;
   if (isTty) fullEnv.DINGTALK_TEST_STDIN_TTY = '1';
