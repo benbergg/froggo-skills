@@ -88,9 +88,9 @@ git-commit
 zentao-api
 └── 独立，提供 token 缓存(~/.cache/zentao/token.json)和 zt-functions.sh 函数库
 
-exp-compass-daily(体验罗盘日报,V3 取代 V2)
+exp-compass-daily(体验罗盘日报,V3.1 取代 V2)
 ├── 强依赖 zentao-api(token 缓存 + zt-functions.sh 桥接)
-├── 强依赖 dingtalk-log(save-content 推草稿)
+├── 强依赖 dingtalk-log(get-template 查模板 + create-report 广播)
 ├── 强依赖 Node.js 18+(原生 fetch + AbortController)
 └── 软依赖 bash 4+(401 token 重取 fallback)
 
@@ -113,11 +113,17 @@ prompt-engineering
 ### exp-compass-daily V3 行为变化
 
 详见 [[20260511-体验罗盘日报-V3-设计文档]]:
-- **不再自动推送给接收人/群**,改推到用户钉钉日志草稿区,由用户在钉钉 APP 手动发布
 - 删除 Step 4 AskUserQuestion,cron 与 manual 共享同一份代码路径
-- 钉钉草稿首段注入 `> 📅 汇报日期 YYYY-MM-DD` quote
-- 研发概览段表格转 list(emoji 前缀),钉钉摘要场景更友好
+- 钉钉日志首段注入 `**📅 汇报日期 YYYY-MM-DD**` 粗体(原 quote 形式被钉钉渲染器截断成 `&g`)
+- 研发概览段表格转 emoji 行(无 `- ` 前缀,钉钉吃掉 markdown list bullet)
 - 钉钉 OpenAPI 调用全部走 dingtalk-log skill,exp-compass-daily 不再维护自己的 push 实现
+
+### exp-compass-daily V3.1 第二次 pivot (2026-05-11)
+
+- **推送语义**:无广播日志 → **广播到模板 `default_received_convs`**(不传 `--to-chat`,默认 `to_chat=true`)。理由:用户每天打开 APP 手动转发反而比 V2 直接广播体验差,自检 6 项已兜底质量。
+- **模板配置**:`DINGTALK_EXP_COMPASS_TEMPLATE_ID` env → **模板名固化在 skill**(默认 `体验罗盘日报`),Step 0 由 `resolve-template.js` 按名查 template_id 并缓存到 `~/.cache/exp-compass-daily/template.json`。理由:模板 ID 入 env 易和其他 skill 串台(参考 2026-05-11 OPT 学习笔记群误广播事件)。
+- **新文件**:`references/scripts/resolve-template.js` + `tests/run-resolve-template-tests.js` (10 BDD)
+- **删除 env**:`_TEMPLATE_ID` / `_TO_CHAT` / `_TO_USERIDS` / `_TO_CIDS` 全部移除,广播范围由钉钉后台模板配置决定
 
 ## 版本管理
 
