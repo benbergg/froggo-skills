@@ -88,10 +88,11 @@ git-commit
 zentao-api
 └── 独立，提供 token 缓存(~/.cache/zentao/token.json)和 zt-functions.sh 函数库
 
-exp-compass-daily（体验罗盘日报，V2 取代 V1 daily-report）
-├── 强依赖 zentao-api（token 缓存 + zt-functions.sh 桥接）
-├── 强依赖 Node.js 18+（原生 fetch + AbortController）
-└── 软依赖 bash 4+（401 token 重取 fallback）
+exp-compass-daily(体验罗盘日报,V3 取代 V2)
+├── 强依赖 zentao-api(token 缓存 + zt-functions.sh 桥接)
+├── 强依赖 dingtalk-log(save-content 推草稿)
+├── 强依赖 Node.js 18+(原生 fetch + AbortController)
+└── 软依赖 bash 4+(401 token 重取 fallback)
 
 weekly-report
 └── 强依赖 zentao-api
@@ -108,6 +109,15 @@ prompt-engineering
 - 6 项自检 C1-C6（cross-check MD vs JSON）+ 3 轮上限
 - token 防泄漏 6 条细则
 - V1 关系矩阵（取代 collect-stories.sh / aggregate.sh / render.sh / check.sh 等 ~10 个脚本）
+
+### exp-compass-daily V3 行为变化
+
+详见 [[20260511-体验罗盘日报-V3-设计文档]]:
+- **不再自动推送给接收人/群**,改推到用户钉钉日志草稿区,由用户在钉钉 APP 手动发布
+- 删除 Step 4 AskUserQuestion,cron 与 manual 共享同一份代码路径
+- 钉钉草稿首段注入 `> 📅 汇报日期 YYYY-MM-DD` quote
+- 研发概览段表格转 list(emoji 前缀),钉钉摘要场景更友好
+- 钉钉 OpenAPI 调用全部走 dingtalk-log skill,exp-compass-daily 不再维护自己的 push 实现
 
 ## 版本管理
 
