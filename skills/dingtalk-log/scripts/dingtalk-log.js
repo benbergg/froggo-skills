@@ -227,6 +227,21 @@ async function callBusinessApi({ env, fetchImpl, urlBuilder, body }) {
 
 const PAGINATION_CAP = 50;
 
+// Parse a CLI bool flag tolerantly. `--to-chat false` arrives as the STRING
+// "false", which `Boolean()` (incorrectly) coerces to true. Treat the textual
+// values "false"/"0"/"no" as false. Undefined falls back to `false` so callers
+// who omit the flag get the safe no-broadcast default.
+function parseBoolFlag(v) {
+  if (v === undefined || v === null) return false;
+  if (typeof v === 'boolean') return v;
+  if (typeof v === 'string') {
+    const s = v.trim().toLowerCase();
+    if (s === 'false' || s === '0' || s === 'no' || s === '') return false;
+    if (s === 'true' || s === '1' || s === 'yes') return true;
+  }
+  return Boolean(v);
+}
+
 function buildCreateReportPayload(flags, env) {
   const userid = flags['userid'] || env.DINGTALK_USERID;
   const ddFrom = flags['dd-from'] || 'openapi';
@@ -236,7 +251,7 @@ function buildCreateReportPayload(flags, env) {
       template_id: flags['template-id'],
       dd_from: ddFrom,
       contents: flags._contents,
-      to_chat: Boolean(flags['to-chat']),
+      to_chat: parseBoolFlag(flags['to-chat']),
       to_userids: flags['_to-userids'] || [],
       to_cids: flags['_to-cids'] || [],
     },
