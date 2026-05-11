@@ -1,13 +1,13 @@
 ---
 name: exp-compass-daily
-description: "体验罗盘-每日研发进度播报。从禅道采集单产品(默认 95 VOC)的需求/任务/Bug,AI 在对话内按 4 段模板撰写日报,跑 6 项数据自检,人工预览确认后推送钉钉 OA 日志。触发词:体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理。"
+description: "体验罗盘-每日研发进度播报。从禅道采集单产品(默认 95 VOC)的需求/任务/Bug,AI 在对话内按 4 段模板撰写日报,跑 6 项数据自检,推送钉钉日志草稿(用户在钉钉 APP 内最终发布或定时发送)。触发词:体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理。"
 ---
 
 # 体验罗盘-每日研发进度播报
 
 > 依赖 [`zentao-api`](../zentao-api/SKILL.md) skill 的 token 缓存。
 > 详细设计 [[20260507-体验罗盘日报-V2-设计文档]]。
-> **核心理念**:脚本只做"禅道→标准 JSON"的转换,AI 看完整 JSON 自己写报告,自检后人工确认再推送。
+> **核心理念**:脚本只做"禅道→标准 JSON"的转换,AI 看完整 JSON 自己写报告,自检后推送钉钉草稿,用户在钉钉 APP 内最终发布。
 
 ## When to Use
 
@@ -283,7 +283,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-cont
 - 措辞质量(C6 仅保底"具体性",文采由用户在钉钉草稿发布前最终判断)
 - 时间一致性(${DATE} 已硬性绑定,无需再查)
 - API 字段缺失(collect.js 已校验)
-- H1 锚点正确性(写入约束 #6 已规定;若错则 push 时段切片失败暴露)
+- H1 锚点正确性(写入约束 #6 已规定;若错则 build-draft.js Step 5 exit 4 暴露)
 
 ---
 
