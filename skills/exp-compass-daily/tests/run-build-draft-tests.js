@@ -86,3 +86,13 @@ test('T3b: 其他 3 段保留原 | 表格(若有)', () => {
     assert.match(j.contents[1].content, /\| T43911 \| 接口联调/);
   } finally { r.cleanup(); }
 });
+
+test('T4: 缺锚点 → exit 4 + stderr 列缺失锚点', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-missing-anchor.md'), '--date', '2026-05-11'],
+  });
+  try {
+    assert.equal(r.code, 4, `expected exit 4 got ${r.code}, stderr=${r.stderr}`);
+    assert.match(r.stderr, /missing required H1 anchors.*三、今日产出/);
+  } finally { r.cleanup(); }
+});
