@@ -1,0 +1,21 @@
+{
+  "errcode": 0,
+  "result": {
+    "id": "19dfc9ea0ad6bea06e79f444e4fa630e",
+    "name": "体验罗盘日报",
+    "userid": "u9",
+    "default_received_convs": [
+      {
+        "conversation_id": "$DD_KEY_CENTER_1.0$Wdq4i8NvhEmziTDcckl3aw==",
+        "title": "体验罗盘-每日进度播报"
+      }
+    ],
+    "default_receivers": [],
+    "fields": [
+      { "field_name": "一、研发概览", "sort": 0, "type": 1, "content_type": "markdown" },
+      { "field_name": "二、 需求推进", "sort": 1, "type": 1, "content_type": "markdown" },
+      { "field_name": "三、今日产出", "sort": 2, "type": 1, "content_type": "markdown" },
+      { "field_name": "四、今日总结", "sort": 3, "type": 1, "content_type": "markdown" }
+    ]
+  }
+}

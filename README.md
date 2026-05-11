@@ -31,7 +31,7 @@ froggo-skills/
 | [git-commit](skills/git-commit/SKILL.md) | 自动(commit 时) | Conventional Commits 提交规范 |
 | [zentao-api](skills/zentao-api/SKILL.md) | 自动(查/写禅道时) | 禅道 RESTful API v1 读 + 受控写(任务/Bug 全生命周期,无 DELETE) |
 | [weekly-report](skills/weekly-report/SKILL.md) | 手动 + cron | 产研周报自动生成:Node 采集 → AI 撰写 → 7 项断言自检 → 写入 Knowledge-Library |
-| [exp-compass-daily](skills/exp-compass-daily/SKILL.md) | 手动 | 体验罗盘日报:禅道采集 → AI 撰写 → 6 项自检 → 钉钉 OA 日志推送 |
+| [exp-compass-daily](skills/exp-compass-daily/SKILL.md) | 手动 + cron | 体验罗盘日报:禅道采集 → AI 撰写 → 6 项自检 → 推送钉钉日志草稿(由用户在钉钉 APP 内最终发布) |
 | [prompt-engineering](skills/prompt-engineering/SKILL.md) | 自动(写 prompt 时) | few-shot / CoT / ReAct 等生产级 prompt 模板 |
 | [dingtalk-log](skills/dingtalk-log/SKILL.md) | 手动 | 通用钉钉日志 OpenAPI 封装 CLI:5 个子命令(create-report / save-content / get-template / list-templates / get-user),token 自管缓存,token 失效自动重取 |
 
@@ -96,7 +96,7 @@ Type:`feat` `fix` `docs` `style` `refactor` `perf` `test` `build` `ci` `chore` `
 ### 周报 / 日报
 
 - 周报:触发词 `周报` / `weekly report`,产物写入 `$KNOWLEDGE_LIB/05-Reports/weekly/{WK}-工作周报.md`,详见 [skills/weekly-report/SKILL.md](skills/weekly-report/SKILL.md)。
-- 日报:触发词 `体验罗盘` / `daily compass`,推送钉钉 OA 日志,详见 [skills/exp-compass-daily/SKILL.md](skills/exp-compass-daily/SKILL.md)。
+- 日报:触发词 `体验罗盘` / `daily compass`,推送钉钉日志草稿,由用户在钉钉 APP 内最终发布,详见 [skills/exp-compass-daily/SKILL.md](skills/exp-compass-daily/SKILL.md)。
 
 ## License
 

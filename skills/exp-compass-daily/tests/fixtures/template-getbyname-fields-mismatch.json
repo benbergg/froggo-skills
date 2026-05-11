@@ -1,0 +1,14 @@
+{
+  "errcode": 0,
+  "result": {
+    "id": "19dfc9ea0ad6bea06e79f444e4fa630e",
+    "name": "体验罗盘日报",
+    "default_received_convs": [{ "conversation_id": "cid", "title": "g" }],
+    "fields": [
+      { "field_name": "一、研发概览", "sort": 0, "type": 1 },
+      { "field_name": "今日需求", "sort": 1, "type": 1 },
+      { "field_name": "三、今日产出", "sort": 2, "type": 1 },
+      { "field_name": "四、今日总结", "sort": 3, "type": 1 }
+    ]
+  }
+}
