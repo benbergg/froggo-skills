@@ -96,3 +96,19 @@ test('T4: 缺锚点 → exit 4 + stderr 列缺失锚点', () => {
     assert.match(r.stderr, /missing required H1 anchors.*三、今日产出/);
   } finally { r.cleanup(); }
 });
+
+test('T5: 概览段表格列数残缺 → 退化照搬原表格 + stderr WARN + exit 0', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-bad-table.md'), '--date', '2026-05-11'],
+  });
+  try {
+    assert.equal(r.code, 0, `expected exit 0 got ${r.code}, stderr=${r.stderr}`);
+    assert.match(r.stderr, /WARN: overview table parse failed/);
+    const j = JSON.parse(r.stdout);
+    const overview = j.contents[0].content;
+    // 退化后保留原表格行
+    assert.match(overview, /\| 类型 \| 进行中 \|/);
+    // 但日期 quote 仍注入
+    assert.match(overview, /^> 📅 汇报日期 2026-05-11/);
+  } finally { r.cleanup(); }
+});
