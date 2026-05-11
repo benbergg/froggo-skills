@@ -2,6 +2,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { runCli, FIXTURE } = require('./helpers');
+const fs = require('node:fs');
+const path = require('node:path');
 
 test('T1: 标准 MD → 输出 contents 含 4 段 + key 与 ANCHORS 一致', () => {
   const r = runCli({
@@ -110,5 +112,25 @@ test('T5: 概览段表格列数残缺 → 退化照搬原表格 + stderr WARN + 
     assert.match(overview, /\| 类型 \| 进行中 \|/);
     // 但日期 quote 仍注入
     assert.match(overview, /^> 📅 汇报日期 2026-05-11/);
+  } finally { r.cleanup(); }
+});
+
+test('T6: --out 文件输出与 stdout 一致', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily.md'), '--date', '2026-05-11'],
+  });
+  try {
+    const stdoutJson = JSON.parse(r.stdout);
+
+    const outPath = path.join(r.tmp, 'out.json');
+    const r2 = runCli({
+      args: ['--md', FIXTURE('sample-daily.md'), '--date', '2026-05-11', '--out', outPath],
+    });
+    try {
+      assert.equal(r2.code, 0);
+      assert.equal(r2.stdout, '', '--out 模式 stdout 应为空');
+      const fileJson = JSON.parse(fs.readFileSync(outPath, 'utf-8'));
+      assert.deepEqual(fileJson, stdoutJson);
+    } finally { r2.cleanup(); }
   } finally { r.cleanup(); }
 });
