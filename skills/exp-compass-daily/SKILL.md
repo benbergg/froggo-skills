@@ -297,7 +297,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-cont
 | 自检 3 轮不过 | 仍写 MD + 推草稿,stderr 列瑕疵,run log 标 WARN |
 | `build-draft.js` H1 锚点缺失 | exit 4,知识库 MD 仍存,手工修后重跑 Step 5+6 |
 | `build-draft.js` 概览表格残缺 | 退化照搬原表格 + stderr WARN,流程继续 |
-| `dingtalk-log save-content` 失败 | exit 5,知识库 MD 与 contents.json 仍存,手工 ssh 重跑 Step 6 |
+| `dingtalk-log save-content` 失败 | exit 3(dingtalk-log 内部码),知识库 MD 与 contents.json 仍存,手工 ssh 重跑 Step 6 |
 | 钉钉模板字段不匹配 | dingtalk-log errmsg 暴露,提示对照 SKILL Step 0 校验段 |
 
 ---
