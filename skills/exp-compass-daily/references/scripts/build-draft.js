@@ -88,6 +88,29 @@ function injectDateQuote(content, date) {
   return `> 📅 汇报日期 ${date}\n\n${content}`;
 }
 
+const ROW_EMOJI = { '需求': '📋', '任务': '✅', 'BUG': '🐞' };
+
+// Returns { ok: true, text } when transformed; { ok: false } when malformed
+// (caller should fall back to original markdown).
+function transformOverviewTable(content) {
+  const lines = content.split('\n');
+  const rows = [];
+  for (const line of lines) {
+    const m = line.match(/^\|\s*(需求|任务|BUG)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*$/);
+    if (m) {
+      const [, type, inProgress, todayNew, todayDone, todo] = m;
+      rows.push({ type, inProgress, todayNew, todayDone, todo });
+    }
+  }
+  if (rows.length !== 3) return { ok: false };
+  const types = rows.map((r) => r.type).sort().join(',');
+  if (types !== 'BUG,任务,需求') return { ok: false };
+  const listLines = rows.map((r) =>
+    `- ${ROW_EMOJI[r.type]} **${r.type}**:进行中 ${r.inProgress} / 今日新增 ${r.todayNew} / 今日完成 ${r.todayDone} / 待处理 ${r.todo}`
+  );
+  return { ok: true, text: listLines.join('\n') };
+}
+
 function main() {
   const args = parseArgs(process.argv);
   if (!args.md) { console.error('FATAL: --md is required'); process.exit(1); }
@@ -100,7 +123,15 @@ function main() {
 
   const contents = anchors.map((a, i) => {
     let body = sections[a.key];
-    if (i === 0) body = injectDateQuote(body, args.date);
+    if (i === 0) {
+      const transformed = transformOverviewTable(body);
+      if (transformed.ok) {
+        body = transformed.text;
+      } else {
+        console.error(`WARN: overview table parse failed, falling back to original markdown`);
+      }
+      body = injectDateQuote(body, args.date);
+    }
     return {
       sort: String(i),
       key: a.key,
