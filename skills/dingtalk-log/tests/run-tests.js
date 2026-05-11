@@ -859,3 +859,59 @@ test('B30 part3: 子进程默认 NODE_ENV=test;productionMode=true 时不注入'
     assert.doesNotMatch(r.stderr, /Cannot find module/);
   } finally { r.cleanup(); }
 });
+
+test('Bug-fix: --to-chat "false" 应被解析为 false (不是 Boolean("false")=true)', () => {
+  const r = runCli({
+    args: [
+      'create-report',
+      '--template-id', 'tpl1',
+      '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]',
+      '--userid', 'u',
+      '--to-chat', 'false',
+      '--dry-run',
+    ],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 0, `stderr=${r.stderr}`);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.to_chat, false, `to_chat should be false, got ${j.create_report_param.to_chat}`);
+  } finally { r.cleanup(); }
+});
+
+test('Bug-fix: --to-chat 不传时默认 false (安全无广播默认)', () => {
+  const r = runCli({
+    args: [
+      'create-report',
+      '--template-id', 'tpl1',
+      '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]',
+      '--userid', 'u',
+      '--dry-run',
+    ],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 0, `stderr=${r.stderr}`);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.to_chat, false, `default to_chat should be false`);
+  } finally { r.cleanup(); }
+});
+
+test('Bug-fix: --to-chat "true" 解析为 true', () => {
+  const r = runCli({
+    args: [
+      'create-report',
+      '--template-id', 'tpl1',
+      '--contents', '[{"key":"a","sort":"0","type":"1","content_type":"markdown","content":"x"}]',
+      '--userid', 'u',
+      '--to-chat', 'true',
+      '--dry-run',
+    ],
+    env: { DINGTALK_APPKEY: 'k', DINGTALK_APPSECRET: 's' },
+  });
+  try {
+    assert.equal(r.code, 0, `stderr=${r.stderr}`);
+    const j = JSON.parse(r.stdout);
+    assert.equal(j.create_report_param.to_chat, true, `to_chat should be true, got ${j.create_report_param.to_chat}`);
+  } finally { r.cleanup(); }
+});
