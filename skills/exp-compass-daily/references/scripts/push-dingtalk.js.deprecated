@@ -1,3 +1,5 @@
+// DEPRECATED 2026-05-11: replaced by build-draft.js + dingtalk-log save-content (V3).
+// Keep for 1 week as rollback fallback. Schedule deletion: 2026-05-18.
 #!/usr/bin/env node
 // exp-compass-daily / push-dingtalk.js
 // Pushes the daily MD (already written to Knowledge-Library) to a DingTalk
