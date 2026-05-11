@@ -84,7 +84,10 @@ function sliceMarkdown(md, anchors) {
 }
 
 function injectDateQuote(content, date) {
-  return `> 📅 汇报日期 ${date}\n\n${content}`;
+  // NOTE: avoid leading `>` (markdown blockquote) — DingTalk renderer
+  // HTML-entity-encodes it and the UI decoder truncates `&gt;` to `&g`,
+  // surfacing as a visible glitch. Use bold instead.
+  return `**📅 汇报日期 ${date}**\n\n${content}`;
 }
 
 const ROW_EMOJI = { '需求': '📋', '任务': '✅', 'BUG': '🐞' };
@@ -104,8 +107,10 @@ function transformOverviewTable(content) {
   if (rows.length !== 3) return { ok: false };
   const types = rows.map((r) => r.type).sort().join(',');
   if (types !== 'BUG,任务,需求') return { ok: false };
+  // NOTE: no leading `- ` list bullet — DingTalk renderer drops it. Use emoji
+  // as the visual bullet directly.
   const listLines = rows.map((r) =>
-    `- ${ROW_EMOJI[r.type]} **${r.type}**:进行中 ${r.inProgress} / 今日新增 ${r.todayNew} / 今日完成 ${r.todayDone} / 待处理 ${r.todo}`
+    `${ROW_EMOJI[r.type]} **${r.type}**:进行中 ${r.inProgress} / 今日新增 ${r.todayNew} / 今日完成 ${r.todayDone} / 待处理 ${r.todo}`
   );
   return { ok: true, text: listLines.join('\n') };
 }

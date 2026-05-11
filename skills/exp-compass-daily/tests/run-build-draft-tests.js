@@ -31,7 +31,7 @@ test('T1: 标准 MD → 输出 contents 含 4 段 + key 与 ANCHORS 一致', () 
   }
 });
 
-test('T2: 第一段(研发概览)首行注入 quote 形式的汇报日期', () => {
+test('T2: 第一段(研发概览)首行注入粗体汇报日期(不用 > 避免钉钉 HTML 实体 bug)', () => {
   const r = runCli({
     args: ['--md', FIXTURE('sample-daily.md'), '--date', '2026-05-11'],
   });
@@ -40,10 +40,10 @@ test('T2: 第一段(研发概览)首行注入 quote 形式的汇报日期', () =
     const j = JSON.parse(r.stdout);
     const overview = j.contents[0].content;
     const lines = overview.split('\n');
-    assert.equal(lines[0], '> 📅 汇报日期 2026-05-11', `actual line 0: ${lines[0]}`);
-    assert.equal(lines[1], '', '应有空行分隔 quote 与正文');
+    assert.equal(lines[0], '**📅 汇报日期 2026-05-11**', `actual line 0: ${lines[0]}`);
+    assert.equal(lines[1], '', '应有空行分隔标题与正文');
     // 第三行起应该是正文(表格已转 list,故以 - 开头)
-    assert.match(lines[2], /^- /, `actual line 2: ${lines[2]}`);
+    assert.match(lines[2], /^📋 /, `actual line 2: ${lines[2]}`);
   } finally {
     r.cleanup();
   }
@@ -68,9 +68,9 @@ test('T3: 研发概览段表格转 list,且不含 | 残留', () => {
   try {
     const j = JSON.parse(r.stdout);
     const overview = j.contents[0].content;
-    assert.match(overview, /- 📋 \*\*需求\*\*:进行中 7 \/ 今日新增 0 \/ 今日完成 0 \/ 待处理 3/);
-    assert.match(overview, /- ✅ \*\*任务\*\*:进行中 6 \/ 今日新增 10 \/ 今日完成 7 \/ 待处理 15/);
-    assert.match(overview, /- 🐞 \*\*BUG\*\*:进行中 15 \/ 今日新增 5 \/ 今日完成 7 \/ 待处理 15/);
+    assert.match(overview, /^📋 \*\*需求\*\*:进行中 7 \/ 今日新增 0 \/ 今日完成 0 \/ 待处理 3$/m);
+    assert.match(overview, /^✅ \*\*任务\*\*:进行中 6 \/ 今日新增 10 \/ 今日完成 7 \/ 待处理 15$/m);
+    assert.match(overview, /^🐞 \*\*BUG\*\*:进行中 15 \/ 今日新增 5 \/ 今日完成 7 \/ 待处理 15$/m);
     // 概览段不再含原表格的 | 字符
     assert.doesNotMatch(overview, /\| 需求 \|/);
     assert.doesNotMatch(overview, /\| 任务 \|/);
@@ -110,8 +110,8 @@ test('T5: 概览段表格列数残缺 → 退化照搬原表格 + stderr WARN + 
     const overview = j.contents[0].content;
     // 退化后保留原表格行
     assert.match(overview, /\| 类型 \| 进行中 \|/);
-    // 但日期 quote 仍注入
-    assert.match(overview, /^> 📅 汇报日期 2026-05-11/);
+    // 但粗体日期仍注入
+    assert.match(overview, /^\*\*📅 汇报日期 2026-05-11\*\*/);
   } finally { r.cleanup(); }
 });
 

@@ -1,19 +1,19 @@
 ---
 name: exp-compass-daily
-description: "体验罗盘-每日研发进度播报。从禅道采集单产品(默认 95 VOC)的需求/任务/Bug,AI 在对话内按 4 段模板撰写日报,跑 6 项数据自检,推送钉钉日志草稿(用户在钉钉 APP 内最终发布或定时发送)。触发词:体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理。"
+description: "体验罗盘-每日研发进度播报。从禅道采集单产品(默认 95 VOC)的需求/任务/Bug,AI 在对话内按 4 段模板撰写日报,跑 6 项数据自检,创建无广播的钉钉日志条目(用户在钉钉 APP 我的日志查看后手动转发或新发)。触发词:体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理。"
 ---
 
 # 体验罗盘-每日研发进度播报
 
 > 依赖 [`zentao-api`](../zentao-api/SKILL.md) skill 的 token 缓存。
 > 详细设计 [[20260507-体验罗盘日报-V2-设计文档]]。
-> **核心理念**:脚本只做"禅道→标准 JSON"的转换,AI 看完整 JSON 自己写报告,自检后推送钉钉草稿,用户在钉钉 APP 内最终发布。
+> **核心理念**:脚本只做"禅道→标准 JSON"的转换,AI 看完整 JSON 自己写报告,自检后用 `create-report --to-chat=false` 创建一条无广播的钉钉日志(只本人可见),用户在钉钉 APP 我的日志看到后手动转发或新发选接收人,达成"用户最终确认才广播"的语义。
 
 ## When to Use
 
 触发词:**体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理**。
 
-`user-invocable: true`。手动与 cron 共享同一份 6 步代码路径,无人工确认分支;推送的是钉钉草稿(用户在 APP 内最终发布)。
+`user-invocable: true`。手动与 cron 共享同一份 6 步代码路径,无人工确认分支;推到钉钉的是 `create-report --to-chat=false` 无广播条目(只本人可见,用户在 APP 我的日志查看后决定是否手动转发/新发广播)。
 
 ## 环境变量
 
@@ -114,7 +114,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.j
 按 § 自检 checklist 跑 C1-C6,最多 3 轮:
 - 全过 → 进入 Step 4
 - 有失败 → 在对话中列出失败项 + 改写 MD + 再跑
-- 3 轮全失败 → 仍写 MD + 推草稿,stderr 列瑕疵清单(C1-C6 失败项),run log 标 WARN
+- 3 轮全失败 → 仍写 MD + 推钉钉无广播日志,stderr 列瑕疵清单(C1-C6 失败项),run log 标 WARN
 
 每轮失败原因都要 echo 给用户看(透明)。
 
@@ -138,22 +138,27 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/build-dra
 
 - 退出非 0 → 中止流程,echo stderr
 - exit 4 = H1 锚点缺失或乱序,知识库 MD 已存,可手工修后重跑此步
-- exit 0 + WARN = 概览表格残缺退化(草稿仍推,格式略丑)
+- exit 0 + WARN = 概览表格残缺退化(钉钉条目仍创建,格式略丑)
 
-### Step 6 推钉钉草稿(save-content)
+### Step 6 创建钉钉日志(无广播,create-report)
 
 ```bash
 DATE=$(date +%Y-%m-%d)
 CONTENTS_JSON=$(jq -c .contents /tmp/exp-compass-$DATE.contents.json)
-node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-content \
+node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
   --template-id "$DINGTALK_EXP_COMPASS_TEMPLATE_ID" \
   --userid "$DINGTALK_USERID" \
-  --contents "$CONTENTS_JSON"
+  --contents "$CONTENTS_JSON" \
+  --to-chat false \
+  --to-userids '[]' \
+  --to-cids '[]'
 ```
 
-成功 echo `saved_id`;失败 echo dingtalk-log 的 errcode + errmsg。
+成功 echo `report_id`;失败 echo dingtalk-log 的 errcode + errmsg。
 
-**草稿不会触达接收人/群**——你打开钉钉 APP 进入"日志→草稿",看到草稿后点"发布"或设"定时发送"。
+**关于"无广播"语义**:`to_chat=false` + 空 `to_userids` + 空 `to_cids` 让钉钉创建一条"已记录但无接收人"的日志,**不会通知/推送给任何人**,只在 userid 自己的"我的日志"列表里可见。你打开钉钉 APP → 我的(日志列表) → 看到今天新一条 → 检查内容 OK 后 → 在 APP 端**点"转发"或新建日志手动选接收人/群**正式发布。
+
+为什么不用 `save-content`:实测 `save-content` 端点返回 `errcode=0 + saved_id` 但钉钉 APP **不消费**(写日志选模板时不会预填),从 vm 调用反复验证均不生效。`create-report --to-chat=false` 是经 V2 验证的稳定接口,只是改成空接收人模式即可达成"用户最终确认才广播"的语义。
 
 钉钉 token 失效由 dingtalk-log 自动重取,不必关心。
 
@@ -280,7 +285,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-cont
 
 ### 不在自检范围
 
-- 措辞质量(C6 仅保底"具体性",文采由用户在钉钉草稿发布前最终判断)
+- 措辞质量(C6 仅保底"具体性",文采由用户在钉钉 APP 我的日志查看后决定是否转发前最终判断)
 - 时间一致性(${DATE} 已硬性绑定,无需再查)
 - API 字段缺失(collect.js 已校验)
 - H1 锚点正确性(写入约束 #6 已规定;若错则 build-draft.js Step 5 exit 4 暴露)
@@ -294,10 +299,10 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-cont
 | `collect.js` 退出非 0 | 中止主流程,echo stderr,提示检查 zentao 凭据 |
 | Token 401 自动刷新失败 | `collect.js` 已退出,提示用户在终端跑 `zt_init && zt_acquire_token` |
 | `summary` 字段缺失 | JSON 损坏,中止 Step 2,echo `cat /tmp/exp-compass-{DATE}.json \| jq .` |
-| 自检 3 轮不过 | 仍写 MD + 推草稿,stderr 列瑕疵,run log 标 WARN |
+| 自检 3 轮不过 | 仍写 MD + 推无广播日志,stderr 列瑕疵,run log 标 WARN |
 | `build-draft.js` H1 锚点缺失 | exit 4,知识库 MD 仍存,手工修后重跑 Step 5+6 |
 | `build-draft.js` 概览表格残缺 | 退化照搬原表格 + stderr WARN,流程继续 |
-| `dingtalk-log save-content` 失败 | exit 3(dingtalk-log 内部码),知识库 MD 与 contents.json 仍存,手工 ssh 重跑 Step 6 |
+| `dingtalk-log create-report` 失败 | exit 3(dingtalk-log 内部码),知识库 MD 与 contents.json 仍存,手工 ssh 重跑 Step 6 |
 | 钉钉模板字段不匹配 | dingtalk-log errmsg 暴露,提示对照 SKILL Step 0 校验段 |
 
 ---
@@ -307,7 +312,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-cont
 | 何时读 | 文件 |
 |---|---|
 | 看不懂 collect.js 输出的 JSON 字段 | [`references/data-schema.md`](references/data-schema.md) |
-| 修改钉钉草稿推送行为 | `references/scripts/build-draft.js`(切片+友好化) + dingtalk-log skill(API) |
+| 修改钉钉日志创建行为 | `references/scripts/build-draft.js`(切片+友好化) + dingtalk-log skill(API,V3 用 create-report --to-chat=false) |
 | 修改数据采集逻辑 | `references/scripts/collect.js` |
 | 理解整体架构与设计动机 | [[20260507-体验罗盘日报-V2-设计文档]] |
 
@@ -322,4 +327,4 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js save-cont
 - **token 不入日志**:`collect.js` 与 `dingtalk-log` 已实装 sanitize
 - **写入路径固定** `~/Knowledge-Library/05-Reports/daily/{DATE}.md`,用 Write 工具(不用 obsidian-cli)
 - **H1 锚点字符级精确**:见撰写约束 #6;`build-draft.js` 切片依赖此精确匹配
-- **钉钉草稿模式**:`save-content` 暂存到用户草稿,不触达接收人;最终发布由用户在钉钉 APP 完成
+- **钉钉无广播模式**:`create-report --to-chat=false` + 空 to_userids/to_cids,创建日志条目但不触达任何接收人;只 userid 自己可在 APP 我的日志看到;最终是否广播由用户在 APP 端"转发"或"新建日志选接收人"决定。**不用 save-content**:实测 saveContent 端点 APP 不消费(返回 errcode=0 但内容无效)。
