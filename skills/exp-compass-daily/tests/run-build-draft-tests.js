@@ -28,3 +28,33 @@ test('T1: 标准 MD → 输出 contents 含 4 段 + key 与 ANCHORS 一致', () 
     r.cleanup();
   }
 });
+
+test('T2: 第一段(研发概览)首行注入 quote 形式的汇报日期', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily.md'), '--date', '2026-05-11'],
+  });
+  try {
+    assert.equal(r.code, 0, `stderr=${r.stderr}`);
+    const j = JSON.parse(r.stdout);
+    const overview = j.contents[0].content;
+    const lines = overview.split('\n');
+    assert.equal(lines[0], '> 📅 汇报日期 2026-05-11', `actual line 0: ${lines[0]}`);
+    assert.equal(lines[1], '', '应有空行分隔 quote 与正文');
+    // 第三行起应该是原始正文(此时还没做表格转 list,所以是 |...|)
+    assert.match(lines[2], /^\|/, `actual line 2: ${lines[2]}`);
+  } finally {
+    r.cleanup();
+  }
+});
+
+test('T2b: 其他 3 段不注入日期 quote', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily.md'), '--date', '2026-05-11'],
+  });
+  try {
+    const j = JSON.parse(r.stdout);
+    for (let i = 1; i < 4; i++) {
+      assert.doesNotMatch(j.contents[i].content, /汇报日期/, `section ${i} should not have date`);
+    }
+  } finally { r.cleanup(); }
+});

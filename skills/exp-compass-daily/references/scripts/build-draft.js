@@ -20,6 +20,8 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// NOTE: the second key '二、 需求推进' has a deliberate space after the 顿号 to
+// match the existing DingTalk template field_name (legacy). Do NOT normalize.
 const DEFAULT_ANCHORS = [
   { h1: '# 一、研发概览', key: '一、研发概览' },
   { h1: '# 二、需求推进', key: '二、 需求推进' },
@@ -82,6 +84,10 @@ function sliceMarkdown(md, anchors) {
   return sections;
 }
 
+function injectDateQuote(content, date) {
+  return `> 📅 汇报日期 ${date}\n\n${content}`;
+}
+
 function main() {
   const args = parseArgs(process.argv);
   if (!args.md) { console.error('FATAL: --md is required'); process.exit(1); }
@@ -92,13 +98,17 @@ function main() {
   const anchors = resolveAnchors();
   const sections = sliceMarkdown(md, anchors);
 
-  const contents = anchors.map((a, i) => ({
-    sort: String(i),
-    key: a.key,
-    type: '1',
-    content_type: 'markdown',
-    content: sections[a.key],
-  }));
+  const contents = anchors.map((a, i) => {
+    let body = sections[a.key];
+    if (i === 0) body = injectDateQuote(body, args.date);
+    return {
+      sort: String(i),
+      key: a.key,
+      type: '1',
+      content_type: 'markdown',
+      content: body,
+    };
+  });
 
   const empty = contents.filter((c) => !c.content);
   if (empty.length > 0) {
