@@ -320,7 +320,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 |---|---|
 | 看不懂 collect.js 输出的 JSON 字段 | [`references/data-schema.md`](references/data-schema.md) |
 | 修改模板解析 / 模板名固化策略 | `references/scripts/resolve-template.js` + `tests/run-resolve-template-tests.js` |
-| 修改钉钉日志创建行为 | `references/scripts/build-draft.js`(切片+友好化) + dingtalk-log skill(API,V3 用 create-report 广播到模板默认群) |
+| 修改钉钉日志创建行为 | `references/scripts/build-draft.js`(切片+友好化) + dingtalk-log skill(API);V3.1 用 `create-report --to-chat true --to-cids "$(jq -c '[.default_received_convs[].conversation_id]' ~/.cache/exp-compass-daily/template.json)"`,**to_cids 必须显式注入,钉钉不自动 fanout default_received_convs** |
 | 修改数据采集逻辑 | `references/scripts/collect.js` |
 | 理解整体架构与设计动机 | [[20260507-体验罗盘日报-V2-设计文档]] + [[20260511-体验罗盘日报-V3-设计文档]] |
 

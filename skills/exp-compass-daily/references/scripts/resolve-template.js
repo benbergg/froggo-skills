@@ -194,19 +194,24 @@ function main() {
     process.stderr.write(`default_received_convs: ${defaultReceivedConvs.length} (${titles})\n`);
   }
 
+  // stdout first so callers always see template_id even if cache write fails
+  process.stdout.write(templateId + '\n');
+
   if (!args.noCache) {
     const cachePath = args.cache || defaultCachePath();
-    writeCache(cachePath, {
-      template_id: templateId,
-      template_name: args.templateName,
-      default_received_convs: defaultReceivedConvs,
-      fields: fields.map((f) => ({ field_name: f.field_name, sort: f.sort, type: f.type })),
-      cached_at: new Date().toISOString(),
-    });
-    process.stderr.write(`cache written: ${cachePath}\n`);
+    try {
+      writeCache(cachePath, {
+        template_id: templateId,
+        template_name: args.templateName,
+        default_received_convs: defaultReceivedConvs,
+        fields: fields.map((f) => ({ field_name: f.field_name, sort: f.sort, type: f.type })),
+      });
+      process.stderr.write(`cache written: ${cachePath}\n`);
+    } catch (e) {
+      process.stderr.write(`WARN: cache write failed: ${e.message}\n`);
+    }
   }
 
-  process.stdout.write(templateId + '\n');
   process.exit(0);
 }
 
