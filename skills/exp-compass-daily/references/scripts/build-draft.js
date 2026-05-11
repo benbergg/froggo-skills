@@ -18,7 +18,6 @@
 'use strict';
 
 const fs = require('node:fs');
-const path = require('node:path');
 
 // NOTE: the second key '二、 需求推进' has a deliberate space after the 顿号 to
 // match the existing DingTalk template field_name (legacy). Do NOT normalize.
