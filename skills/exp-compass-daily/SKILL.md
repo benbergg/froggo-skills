@@ -266,7 +266,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 |---|---|---|
 | **C1** | 概览表数字 | grep MD 中的 `\| 需求 \| ... \|` 等 3 行,共 12 个数字与 `summary.{story\|task\|bug}.{in_progress\|today_new\|today_done\|todo}` 严格相等 |
 | **C2** | 需求推进段覆盖 | MD 中 `### S{id}` 提到的 id 集合 == `stories.filter(stage ∈ {developing,developed,tested}).map(.id)` |
-| **C3** | 今日产出 6 段完整性 | 6 段中每段 id 集合 ⊇ JSON 对应 filter 结果(完成任务段:filter 含 `!is_aggregate_parent`) |
+| **C3** | 今日产出 6 段完整性 + 无编造 | 6 段中每段 id 集合 == JSON 对应 filter 结果(双向:既不漏 JSON 中应有的 id,也不出现 JSON 中没有的 id — 锚定撰写约束 #5;完成任务段:filter 含 `!is_aggregate_parent`) |
 | **C4** | 进度数字一致 | 每个 `进度 N%` 在 MD 中的 N 等于 `story.progress_pct` |
 | **C5** | 逾期标记 | MD 中"⚠️ 逾期"的 task id 集合 == `tasks.filter(is_overdue).map(.id)` |
 | **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |
