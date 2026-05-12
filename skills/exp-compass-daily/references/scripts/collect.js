@@ -143,12 +143,17 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
   STATE.apiCalls++;
 
   const url = STATE.baseUrl + pathAndQuery;
-  const backoff = [1000, 2000, 4000, 8000];
+  // Backoff shrunk from 4 retries (1+2+4+8s) to 2 (1+2s) and per-request
+  // timeout from 30s to 15s after 2026-05-12 cron self-kill: a single
+  // unresponsive endpoint could previously eat 4×30+15 = 135s of the 600s
+  // hard budget before failure. Zentao P95 against this instance is ~10s;
+  // 15s still covers the slow-tail without enabling cascading retries.
+  const backoff = [1000, 2000];
   let lastErr = null;
 
   for (let attempt = 0; attempt <= backoff.length; attempt++) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30_000);
+    const timer = setTimeout(() => ctrl.abort(), 15_000);
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -310,9 +315,13 @@ async function fetchClosedTodayStories(productId, date) {
   const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=500&page=1`;
   const r = await ztFetch(url);
   if (!r.ok) {
-    trace(`closedToday filtered fetch failed (${r.reason}); falling back to full paginate`);
-    const all = await ztPaginate(`/products/${productId}/stories?status=closedstory`, 'stories');
-    return all.filter((s) => s.closedDate && startsWithDate(s.closedDate, date));
+    // 2026-05-12: fallback to full paginate burns 200-400s pulling 540+ rows
+    // to match 0-5 today-closed entries — net zero ROI when Zentao is slow,
+    // and the SKILL.md "do not retry" contract means the surrounding cron
+    // already gave up anyway. Return [] and let the report run with today's
+    // closed-story field empty rather than self-kill the whole pipeline.
+    trace(`closedToday stories fetch failed (${r.reason}); skipping (no fallback)`);
+    return [];
   }
   const items = r.body.stories || [];
   const out = [];
@@ -358,8 +367,14 @@ async function fetchBugsInScope(productId, date) {
     fetchTodayClosedBugs(productId, date),
   ]);
   if (closedTodayMaybe === null) {
-    trace('bugs closed-today fetch failed; falling back to full paginate');
-    return ztPaginate(`/products/${productId}/bugs?status=all`, 'bugs');
+    // 2026-05-12: same reasoning as fetchClosedTodayStories. Full paginate on
+    // ?status=all is the longest single operation against this Zentao
+    // (1100+ rows, 3 pages of 500); when the fast-path already failed under
+    // load, fanning out a heavier query on the same backend is a guaranteed
+    // hard-timeout path. Return just unclosed bugs and accept that today's
+    // closed-bug delta will be missing from the daily report.
+    trace('bugs closed-today fetch failed; returning unclosed only (no fallback)');
+    return unclosed;
   }
   const seen = new Set();
   const out = [];
@@ -712,8 +727,25 @@ async function main() {
   let wallClockEarlyExit = false;
   const tPhase2Start = Date.now();
   if (projectsResp.ok) {
-    const projects = projectsResp.body.projects || [];
-    trace(`fetch projects done (${projects.length})`);
+    const allProjects = projectsResp.body.projects || [];
+    // 2026-05-12: /products/95/projects returns every project whose `products`
+    // array contains 95, including iPaaS / aPaaS / 基础引擎 / 犇犇 — where VOC
+    // is a referenced product but not the project's primary scope. Those
+    // projects ship Q1-Q4 sprint executions with hundreds of tasks unrelated
+    // to VOC, and their tasks endpoint is the slow path that hung phase2 for
+    // 5+ minutes. Hard-coded blacklist keeps scope tight without a second
+    // round-trip; override via EXP_COMPASS_PROJECT_BLACKLIST=2359,2119,...
+    const DEFAULT_NON_VOC_PROJECT_IDS = [2359, 2119, 441, 2434];
+    const blacklistEnv = process.env.EXP_COMPASS_PROJECT_BLACKLIST || '';
+    const projectBlacklist = new Set(
+      (blacklistEnv ? blacklistEnv.split(',') : DEFAULT_NON_VOC_PROJECT_IDS.map(String))
+        .map((s) => String(s).trim())
+        .filter(Boolean)
+        .map(Number),
+    );
+    const projects = allProjects.filter((p) => !projectBlacklist.has(Number(p.id)));
+    const droppedIds = allProjects.filter((p) => projectBlacklist.has(Number(p.id))).map((p) => p.id);
+    trace(`fetch projects done (${projects.length}/${allProjects.length}; dropped non-VOC: [${droppedIds.join(',')}])`);
     const execResults = await Promise.all(
       projects.map(async (proj) => {
         const r = await ztFetch(`/projects/${proj.id}/executions`);
