@@ -53,6 +53,14 @@ const STAGE_COMPLETED = ['tested', 'released', 'verified', 'closed'];
 const TASK_TODO_STATUSES = ['wait', 'pause', 'blocked'];
 const TASK_DONE_STATUSES = ['done', 'closed'];
 
+// VOC-owned project ids — projects whose executions are considered VOC's
+// own work, even when their tasks have no story attached (storyID=0).
+// 2026-05-13: introduced after iPaaS-owned tasks (T44099/T44098 "618 大促慢
+// SQL 优化") leaked into the daily report via the loose-task path. A task on
+// an execution outside this list must have a VOC-scoped storyID to be kept.
+// Override via EXP_COMPASS_VOC_PROJECT_IDS=3084,2353,...
+const DEFAULT_VOC_OWNED_PROJECT_IDS = [3084, 2353, 1829, 1845, 2023];
+
 // ---- arg parsing --------------------------------------------------------
 
 function parseArgs(argv) {
@@ -445,6 +453,7 @@ function deriveTask(t, date) {
     name: t.name,
     type: t.type,
     storyID: Number(t.story || t.storyID || 0),
+    execution: Number(t.execution || 0),
     parent: Number(t.parent || 0),
     status,
     status_cn: STATUS_CN[status] || status,
@@ -729,6 +738,16 @@ async function main() {
   // mid-write. Reserve BUDGET_RESERVE_MS for the downstream merge / derive /
   // writeFile path; once the elapsed time crosses (HARD_TIMEOUT - reserve),
   // stop enqueueing new batches, mark the JSON degraded, and let main finish.
+  // Resolve VOC-owned project whitelist (env override > default const)
+  const vocProjectEnv = process.env.EXP_COMPASS_VOC_PROJECT_IDS || '';
+  const vocOwnedProjectIds = new Set(
+    (vocProjectEnv ? vocProjectEnv.split(',') : DEFAULT_VOC_OWNED_PROJECT_IDS.map(String))
+      .map((s) => String(s).trim())
+      .filter(Boolean)
+      .map(Number),
+  );
+  const vocOwnedExecutionIds = new Set();
+
   const rawTasks = [];
   let wallClockEarlyExit = false;
   const tPhase2Start = Date.now();
@@ -754,8 +773,11 @@ async function main() {
       }
       trace(`fetch project=${er.projId} executions done (${er.execs.length})`);
       for (const ex of er.execs) allExecs.push(ex);
+      if (vocOwnedProjectIds.has(Number(er.projId))) {
+        for (const ex of er.execs) vocOwnedExecutionIds.add(Number(ex.id));
+      }
     }
-    trace(`total executions to fetch tasks: ${allExecs.length}`);
+    trace(`total executions to fetch tasks: ${allExecs.length}; VOC-owned executions: ${vocOwnedExecutionIds.size}`);
     // Cross-project flat batching: 5 concurrent task fetches at any time,
     // independent of which project owns each execution. This is the main
     // win over the previous per-project 5-way batching, which idled the
@@ -856,14 +878,17 @@ async function main() {
   }
 
   const tasksAttachedToStory = tasksDerivedAll.filter((t) => scopedStoryIds.has(t.storyID));
-  // loose_tasks must belong to THIS product:
-  //   - either storyID is 0 (no story attached, i.e. truly loose)
-  //   - or storyID is in this product's full story-id set (productStoryIds)
-  // Plus today-created or today-finished. This excludes cross-product pollution
-  // where /executions/{eid}/tasks returns tasks from sibling products' stories.
+  // loose_tasks (2026-05-13): tasks without a VOC-scoped story attached, but
+  // belonging to a VOC-owned execution. Previously this gate was storyID-based
+  // (storyID===0 OR storyID in productStoryIds), which let any execution's
+  // storyID=0 task through — e.g. T44099/T44098 (618 大促慢 SQL 优化) on
+  // aPaaS_26_Q2 leaked into the VOC daily report. Switching to
+  // execution-membership disambiguates: tasks under iPaaS / aPaaS / 基础引擎 /
+  // 犇犇 executions need a VOC storyID to be kept; tasks under班牛 sprints
+  // (regardless of story link) are VOC's own work.
   const looseTasks = tasksDerivedAll.filter(
     (t) => !scopedStoryIds.has(t.storyID)
-      && (t.storyID === 0 || productStoryIds.has(t.storyID))
+      && vocOwnedExecutionIds.has(t.execution)
       && (t.is_today_created || t.is_today_finished),
   );
 
