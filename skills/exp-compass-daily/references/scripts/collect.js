@@ -211,7 +211,13 @@ async function ztPaginate(basePath, listKey) {
   // basePath like '/products/95/bugs?status=all'
   // listKey: explicit field name to read items from (avoid heuristic-induced confusion).
   const sep = basePath.includes('?') ? '&' : '?';
-  const limit = 500;
+  // 2026-05-13: unified page size shrunk from 500 to 100. Zentao on this
+  // instance gets visibly slower as the SQL row scan/sort cost grows with
+  // limit (observed 4-24s wall variance at limit=500 vs ~3s at limit=100
+  // against /products/95/bugs?status=all). Smaller pages mean more round
+  // trips for large endpoints, but each one is far more reliable; we'd
+  // rather take MAX_PAGES=20 round trips than gamble on one big one.
+  const limit = 100;
   const sanitizedPath = basePath.replace(/\/products\/\d+|\/projects\/\d+|\/executions\/\d+/, (m) => m.replace(/\d+/, '*'));
   const out = [];
 
@@ -312,7 +318,7 @@ async function loadUserMap() {
 // Falls back to a full paginate + client filter on transport failure,
 // preserving correctness if the order parameter is ever rejected.
 async function fetchClosedTodayStories(productId, date) {
-  const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=500&page=1`;
+  const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=100&page=1`;
   const r = await ztFetch(url);
   if (!r.ok) {
     // 2026-05-12: fallback to full paginate burns 200-400s pulling 540+ rows
@@ -344,7 +350,7 @@ async function fetchClosedTodayStories(productId, date) {
 // Note on the Zentao bugs API: status=active|resolved|closed all return 0;
 // only status=all and status=unclosed (= active + resolved) are accepted.
 async function fetchTodayClosedBugs(productId, date) {
-  const url = `/products/${productId}/bugs?status=all&order=closedDate_desc&limit=500&page=1`;
+  const url = `/products/${productId}/bugs?status=all&order=closedDate_desc&limit=100&page=1`;
   const r = await ztFetch(url);
   if (!r.ok) return null;
   const items = r.body.bugs || [];
@@ -727,25 +733,8 @@ async function main() {
   let wallClockEarlyExit = false;
   const tPhase2Start = Date.now();
   if (projectsResp.ok) {
-    const allProjects = projectsResp.body.projects || [];
-    // 2026-05-12: /products/95/projects returns every project whose `products`
-    // array contains 95, including iPaaS / aPaaS / 基础引擎 / 犇犇 — where VOC
-    // is a referenced product but not the project's primary scope. Those
-    // projects ship Q1-Q4 sprint executions with hundreds of tasks unrelated
-    // to VOC, and their tasks endpoint is the slow path that hung phase2 for
-    // 5+ minutes. Hard-coded blacklist keeps scope tight without a second
-    // round-trip; override via EXP_COMPASS_PROJECT_BLACKLIST=2359,2119,...
-    const DEFAULT_NON_VOC_PROJECT_IDS = [2359, 2119, 441, 2434];
-    const blacklistEnv = process.env.EXP_COMPASS_PROJECT_BLACKLIST || '';
-    const projectBlacklist = new Set(
-      (blacklistEnv ? blacklistEnv.split(',') : DEFAULT_NON_VOC_PROJECT_IDS.map(String))
-        .map((s) => String(s).trim())
-        .filter(Boolean)
-        .map(Number),
-    );
-    const projects = allProjects.filter((p) => !projectBlacklist.has(Number(p.id)));
-    const droppedIds = allProjects.filter((p) => projectBlacklist.has(Number(p.id))).map((p) => p.id);
-    trace(`fetch projects done (${projects.length}/${allProjects.length}; dropped non-VOC: [${droppedIds.join(',')}])`);
+    const projects = projectsResp.body.projects || [];
+    trace(`fetch projects done (${projects.length})`);
     const execResults = await Promise.all(
       projects.map(async (proj) => {
         const r = await ztFetch(`/projects/${proj.id}/executions`);
@@ -774,6 +763,15 @@ async function main() {
     const TASK_CONCURRENCY = 5;
     const BUDGET_RESERVE_MS = 60_000;
     const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
+    // Per-batch hard cap. 2026-05-12: a single 5-execution batch of slow
+    // cross-team sprints (iPaaS / aPaaS) hung phase2 for 5+ minutes, blowing
+    // the 600s hard timeout before the wall-clock check at the top of this
+    // loop could trip. Race the batch against a fixed deadline so any hung
+    // request gets abandoned and the loop moves on — downstream scope filter
+    // already drops cross-product tasks by storyID, so a few skipped batches
+    // only cost loose-task coverage for those sprints, not the daily report.
+    const BATCH_TIMEOUT_MS = 60_000;
+    const BATCH_TIMEOUT_SENTINEL = Symbol('batch-timeout');
     for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
       const elapsedMs = Date.now() - TRACE_T0;
       if (elapsedMs > wallDeadlineMs) {
@@ -789,13 +787,27 @@ async function main() {
       }
       const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
       trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
-      const results = await Promise.all(
+      const batchPromise = Promise.all(
         batch.map(async (ex) => ({
           id: ex.id,
           tasks: await ztPaginate(`/executions/${ex.id}/tasks`, 'tasks'),
         })),
       );
-      for (const r of results) {
+      const timeoutPromise = new Promise((resolve) => {
+        setTimeout(() => resolve(BATCH_TIMEOUT_SENTINEL), BATCH_TIMEOUT_MS);
+      });
+      const raceResult = await Promise.race([batchPromise, timeoutPromise]);
+      if (raceResult === BATCH_TIMEOUT_SENTINEL) {
+        const batchIds = batch.map((e) => e.id);
+        trace(`WARN: batch [${batchIds.join(',')}] exceeded ${BATCH_TIMEOUT_MS / 1000}s; skipping (partial)`);
+        STATE.skipped.push({
+          path: '/executions/*/tasks',
+          reason: 'batch-timeout',
+          executions: batchIds,
+        });
+        continue;
+      }
+      for (const r of raceResult) {
         trace(`fetch execution=${r.id} tasks done (${r.tasks.length})`);
         rawTasks.push(...r.tasks);
       }
