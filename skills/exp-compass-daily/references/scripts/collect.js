@@ -778,22 +778,33 @@ async function main() {
       }
     }
     trace(`total executions to fetch tasks: ${allExecs.length}; VOC-owned executions: ${vocOwnedExecutionIds.size}`);
-    // Cross-project flat batching: 5 concurrent task fetches at any time,
-    // independent of which project owns each execution. This is the main
-    // win over the previous per-project 5-way batching, which idled the
-    // pool whenever a project had < 5 executions.
-    const TASK_CONCURRENCY = 5;
+    // 2026-05-13: VOC-owned executions go first. If the wall-clock budget
+    // ever runs out, non-VOC sprints (cross-team borrows) get sacrificed
+    // before the core daily-report data.
+    allExecs.sort((a, b) => {
+      const av = vocOwnedExecutionIds.has(Number(a.id)) ? 0 : 1;
+      const bv = vocOwnedExecutionIds.has(Number(b.id)) ? 0 : 1;
+      return av - bv;
+    });
+    // Cross-project flat batching with per-execution timeout.
+    //
+    // 2026-05-12: introduced whole-batch race (Promise.race(Promise.all([5
+    // execs]), 60s)) to keep slow cross-team sprints from hanging phase2
+    // past the 600s hard timeout.
+    //
+    // 2026-05-13: redesigned to per-execution race. The whole-batch design
+    // dropped *all* sibling exec results in a batch when any single exec
+    // exceeded the deadline. On 2026-05-13 a slow exec=2028 (VOC 班牛
+    // sprint, 1576 cumulative tasks, page1=14s, total ≥70s) killed batch
+    // [2127, 2121, 2102, 2085, 2028]; rawTasks lost the only active VOC
+    // task T44013 (storyID 21311) and summary.task.* fell to 0. Each exec
+    // now races itself against EXEC_TIMEOUT_MS independently — a slow exec
+    // only loses its own data, siblings' tasks are preserved.
+    const TASK_CONCURRENCY = 3;
     const BUDGET_RESERVE_MS = 60_000;
     const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
-    // Per-batch hard cap. 2026-05-12: a single 5-execution batch of slow
-    // cross-team sprints (iPaaS / aPaaS) hung phase2 for 5+ minutes, blowing
-    // the 600s hard timeout before the wall-clock check at the top of this
-    // loop could trip. Race the batch against a fixed deadline so any hung
-    // request gets abandoned and the loop moves on — downstream scope filter
-    // already drops cross-product tasks by storyID, so a few skipped batches
-    // only cost loose-task coverage for those sprints, not the daily report.
-    const BATCH_TIMEOUT_MS = 60_000;
-    const BATCH_TIMEOUT_SENTINEL = Symbol('batch-timeout');
+    const EXEC_TIMEOUT_MS = 90_000;
+    const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
     for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
       const elapsedMs = Date.now() - TRACE_T0;
       if (elapsedMs > wallDeadlineMs) {
@@ -809,29 +820,28 @@ async function main() {
       }
       const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
       trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
-      const batchPromise = Promise.all(
-        batch.map(async (ex) => ({
-          id: ex.id,
-          tasks: await ztPaginate(`/executions/${ex.id}/tasks`, 'tasks'),
-        })),
+      const batchResults = await Promise.all(
+        batch.map(async (ex) => {
+          const tasksPromise = ztPaginate(`/executions/${ex.id}/tasks`, 'tasks');
+          const timeoutPromise = new Promise((resolve) => {
+            setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), EXEC_TIMEOUT_MS);
+          });
+          const result = await Promise.race([tasksPromise, timeoutPromise]);
+          return { id: ex.id, result };
+        }),
       );
-      const timeoutPromise = new Promise((resolve) => {
-        setTimeout(() => resolve(BATCH_TIMEOUT_SENTINEL), BATCH_TIMEOUT_MS);
-      });
-      const raceResult = await Promise.race([batchPromise, timeoutPromise]);
-      if (raceResult === BATCH_TIMEOUT_SENTINEL) {
-        const batchIds = batch.map((e) => e.id);
-        trace(`WARN: batch [${batchIds.join(',')}] exceeded ${BATCH_TIMEOUT_MS / 1000}s; skipping (partial)`);
-        STATE.skipped.push({
-          path: '/executions/*/tasks',
-          reason: 'batch-timeout',
-          executions: batchIds,
-        });
-        continue;
-      }
-      for (const r of raceResult) {
-        trace(`fetch execution=${r.id} tasks done (${r.tasks.length})`);
-        rawTasks.push(...r.tasks);
+      for (const { id, result } of batchResults) {
+        if (result === EXEC_TIMEOUT_SENTINEL) {
+          trace(`WARN: execution=${id} exceeded ${EXEC_TIMEOUT_MS / 1000}s; skipping`);
+          STATE.skipped.push({
+            path: '/executions/*/tasks',
+            reason: 'exec-timeout',
+            executions: [id],
+          });
+          continue;
+        }
+        trace(`fetch execution=${id} tasks done (${result.length})`);
+        rawTasks.push(...result);
       }
     }
   } else {
