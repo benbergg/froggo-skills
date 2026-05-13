@@ -375,6 +375,97 @@ async function fetchTodayClosedBugs(productId, date) {
   return out;
 }
 
+// 2026-05-13: scoped per-execution task fetch.
+//
+// Replaces the unfiltered /executions/{id}/tasks paginate (which on
+// accumulator sprints like exec 2028 — 1576 cumulative tasks across 16
+// pages × ~14s wall = 220s+) with three narrow order=...desc + client-side
+// early-exit queries running in parallel.
+//
+// Same pattern as fetchClosedTodayStories / fetchTodayClosedBugs above:
+// Zentao's server-side sort + a lookback cutoff lets us pull just the
+// recently active tasks (typically <100 across a 30-day window) instead of
+// every historical task ever created on the execution.
+//
+// Why three order-by-desc queries instead of one:
+//   - openedDate_desc      → covers today-new + recently-opened in-flight tasks
+//   - finishedDate_desc    → covers today-done + recently-finished tasks
+//                            (Zentao clusters null finishedDate at the tail
+//                            under this sort, so the first null marks end-of-window)
+//   - lastEditedDate_desc  → catch-all for tasks edited recently but neither
+//                            opened nor finished in the window (status flips,
+//                            reassignment, comments)
+//
+// Union by task id deduplicates the typical overlap. Falls back to ok:false
+// only when all three queries fail; partial failure (1-2 of 3) still returns
+// a usable union with reduced coverage logged in STATE.skipped.
+//
+// 2026-05-13 probe evidence (status= filters NOT used here):
+//   /executions/2028/tasks?status=doing             → total=7  but tasks[]=4 (raw-window post-filter quirk)
+//   /executions/2028/tasks?order=openedDate_desc    → server-sort honored, page1 starts with today
+//   /executions/2028/tasks?order=finishedDate_desc  → null clusters at tail (confirmed)
+async function fetchExecutionTasksScoped(execId, date, opts = {}) {
+  const { lookbackDays = 30, fetchFn = ztFetch, maxPages = 3 } = opts;
+
+  const lookback = new Date(`${date}T00:00:00Z`);
+  lookback.setUTCDate(lookback.getUTCDate() - lookbackDays);
+  const threshold = lookback.toISOString().slice(0, 10);
+
+  const base = `/executions/${execId}/tasks`;
+  const sanitizedPath = '/executions/*/tasks';
+
+  const fetchScoped = async (queryParam, dateField, { skipNullEarly }) => {
+    const items = [];
+    let reachedEnd = false;
+    for (let page = 1; page <= maxPages && !reachedEnd; page++) {
+      const url = `${base}?${queryParam}&limit=100&page=${page}`;
+      const r = await fetchFn(url);
+      if (!r.ok) {
+        STATE.skipped.push({ path: sanitizedPath, page, queryParam, reason: r.reason });
+        return { ok: false, items };
+      }
+      const rows = r.body.tasks || [];
+      if (rows.length === 0) break;
+      for (const t of rows) {
+        const v = t[dateField];
+        if (!v || String(v).startsWith('0000-')) {
+          if (skipNullEarly) {
+            reachedEnd = true;
+            break;
+          }
+          continue;
+        }
+        const day = String(v).slice(0, 10);
+        if (day < threshold) {
+          reachedEnd = true;
+          break;
+        }
+        items.push(t);
+      }
+      if (rows.length < 100) break;
+    }
+    return { ok: true, items };
+  };
+
+  const results = await Promise.all([
+    fetchScoped('order=openedDate_desc', 'openedDate', { skipNullEarly: false }),
+    fetchScoped('order=finishedDate_desc', 'finishedDate', { skipNullEarly: true }),
+    fetchScoped('order=lastEditedDate_desc', 'lastEditedDate', { skipNullEarly: false }),
+  ]);
+
+  if (results.every((r) => !r.ok)) {
+    return { ok: false, items: [] };
+  }
+
+  const byId = new Map();
+  for (const r of results) {
+    for (const t of r.items) {
+      if (!byId.has(t.id)) byId.set(t.id, t);
+    }
+  }
+  return { ok: true, items: Array.from(byId.values()) };
+}
+
 async function fetchBugsInScope(productId, date) {
   const [unclosed, closedTodayMaybe] = await Promise.all([
     ztPaginate(`/products/${productId}/bugs?status=unclosed`, 'bugs'),
@@ -822,11 +913,14 @@ async function main() {
       trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
       const batchResults = await Promise.all(
         batch.map(async (ex) => {
-          const tasksPromise = ztPaginate(`/executions/${ex.id}/tasks`, 'tasks');
+          // 2026-05-13: replaced unfiltered ztPaginate with scoped multi-order
+          // fetch. exec 2028 (1576 cum tasks) drops from 16 pages × ~14s to
+          // 3 parallel order=...desc queries with 30-day lookback early-exit.
+          const fetchPromise = fetchExecutionTasksScoped(ex.id, args.date);
           const timeoutPromise = new Promise((resolve) => {
             setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), EXEC_TIMEOUT_MS);
           });
-          const result = await Promise.race([tasksPromise, timeoutPromise]);
+          const result = await Promise.race([fetchPromise, timeoutPromise]);
           return { id: ex.id, result };
         }),
       );
@@ -840,8 +934,17 @@ async function main() {
           });
           continue;
         }
-        trace(`fetch execution=${id} tasks done (${result.length})`);
-        rawTasks.push(...result);
+        if (!result.ok) {
+          trace(`WARN: execution=${id} all scoped task queries failed; skipping`);
+          STATE.skipped.push({
+            path: '/executions/*/tasks',
+            reason: 'scoped-fetch-failed',
+            executions: [id],
+          });
+          continue;
+        }
+        trace(`fetch execution=${id} tasks done (${result.items.length})`);
+        rawTasks.push(...result.items);
       }
     }
   } else {
@@ -949,13 +1052,20 @@ async function main() {
   process.stdout.write(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} → ${args.out}\n`);
 }
 
-main()
-  .then(() => {
-    clearTimeout(_hardKill);
-    process.exit(0);
-  })
-  .catch((e) => {
-    clearTimeout(_hardKill);
-    console.error(`FATAL: ${sanitizeMessage(e.message)}`);
-    process.exit(1);
-  });
+if (require.main === module) {
+  main()
+    .then(() => {
+      clearTimeout(_hardKill);
+      process.exit(0);
+    })
+    .catch((e) => {
+      clearTimeout(_hardKill);
+      console.error(`FATAL: ${sanitizeMessage(e.message)}`);
+      process.exit(1);
+    });
+} else {
+  // Loaded via require() — typically a test. Cancel the hard-kill so we
+  // don't sigterm the test process, and expose narrow surface for testing.
+  clearTimeout(_hardKill);
+  module.exports = { fetchExecutionTasksScoped, STATE };
+}
