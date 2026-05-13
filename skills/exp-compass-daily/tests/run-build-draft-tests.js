@@ -115,6 +115,25 @@ test('T5: 概览段表格列数残缺 → 退化照搬原表格 + stderr WARN + 
   } finally { r.cleanup(); }
 });
 
+test('T5b: 第一列变体 (需求 Story / 任务 Task / Bug) 仍解析为 emoji 行', () => {
+  // 2026-05-13 regression: AI wrote '需求 Story', '任务 Task', 'Bug' instead
+  // of '需求', '任务', 'BUG'. Old regex required exact match + BUG all-caps and
+  // had a \b after the type word that never fires on CJK characters in JS regex.
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily-variant-headers.md'), '--date', '2026-05-13'],
+  });
+  try {
+    assert.equal(r.code, 0, `expected exit 0 got ${r.code}, stderr=${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /WARN: overview table parse failed/, 'should NOT degrade on variant headers');
+    const j = JSON.parse(r.stdout);
+    const overview = j.contents[0].content;
+    assert.match(overview, /^📋 \*\*需求\*\*:进行中 4 \/ 今日新增 0 \/ 今日完成 0 \/ 待处理 3$/m);
+    assert.match(overview, /^✅ \*\*任务\*\*:进行中 6 \/ 今日新增 1 \/ 今日完成 1 \/ 待处理 3$/m);
+    assert.match(overview, /^🐞 \*\*BUG\*\*:进行中 8 \/ 今日新增 9 \/ 今日完成 4 \/ 待处理 13$/m);
+    assert.doesNotMatch(overview, /\| (需求|任务|Bug) /, '概览段不应残留原表格 | 行');
+  } finally { r.cleanup(); }
+});
+
 test('T6: --out 文件输出与 stdout 一致', () => {
   const r = runCli({
     args: ['--md', FIXTURE('sample-daily.md'), '--date', '2026-05-11'],

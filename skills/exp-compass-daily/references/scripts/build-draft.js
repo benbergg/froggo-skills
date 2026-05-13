@@ -92,16 +92,28 @@ function injectDateQuote(content, date) {
 
 const ROW_EMOJI = { '需求': '📋', '任务': '✅', 'BUG': '🐞' };
 
+// Normalize first-column variants the AI tends to produce ('需求 Story',
+// '任务 Task', 'Bug', 'bug') back to the canonical key used by ROW_EMOJI.
+function normalizeRowType(raw) {
+  if (/^b/i.test(raw)) return 'BUG';
+  return raw;
+}
+
 // Returns { ok: true, text } when transformed; { ok: false } when malformed
 // (caller should fall back to original markdown).
 function transformOverviewTable(content) {
   const lines = content.split('\n');
   const rows = [];
   for (const line of lines) {
-    const m = line.match(/^\|\s*(需求|任务|BUG)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*$/);
+    // First column accepts a trailing English label (e.g. '需求 Story',
+    // '任务 Task') and Bug in any case. Any non-pipe trailer between the
+    // type word and the closing pipe is allowed. No \b after the type:
+    // JS regex word-boundary only fires on [A-Za-z0-9_], so it would never
+    // trigger after the CJK characters '需求' or '任务'.
+    const m = line.match(/^\|\s*(需求|任务|[Bb][Uu][Gg])[^|]*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*$/);
     if (m) {
-      const [, type, inProgress, todayNew, todayDone, todo] = m;
-      rows.push({ type, inProgress, todayNew, todayDone, todo });
+      const [, rawType, inProgress, todayNew, todayDone, todo] = m;
+      rows.push({ type: normalizeRowType(rawType), inProgress, todayNew, todayDone, todo });
     }
   }
   if (rows.length !== 3) return { ok: false };
