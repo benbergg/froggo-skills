@@ -404,24 +404,6 @@ async function fetchTodayClosedBugs(productId, date) {
 //   /executions/2028/tasks?status=doing             → total=7  but tasks[]=4 (raw-window post-filter quirk)
 //   /executions/2028/tasks?order=openedDate_desc    → server-sort honored, page1 starts with today
 //   /executions/2028/tasks?order=finishedDate_desc  → null clusters at tail (confirmed)
-
-// O1 filter (2026-05-14): "long closed" = status in {closed,suspended} AND
-// lastEditedDate strictly older than (today - lookbackDays). Skips ~80 stale
-// historical sprints from phase2 fetch. Recently-closed execs (≤ lookback)
-// are KEPT to cover the edge case where a sprint closed today still has
-// today-finished tasks worth counting. Conservative on missing/unknown
-// fields — KEEP rather than risk silently dropping live data.
-function isLongClosed(ex, today, lookbackDays = 30) {
-  const status = ex && ex.status;
-  if (status !== 'closed' && status !== 'suspended') return false;
-  const led = ex && ex.lastEditedDate;
-  if (!led || typeof led !== 'string' || led.length < 10) return false;
-  const cutoff = new Date(`${today}T00:00:00Z`);
-  cutoff.setUTCDate(cutoff.getUTCDate() - lookbackDays);
-  const cutoffStr = cutoff.toISOString().slice(0, 10);
-  return led.slice(0, 10) < cutoffStr;
-}
-
 async function fetchExecutionTasksScoped(execId, date, opts = {}) {
   const { lookbackDays = 30, fetchFn = ztFetch, maxPages = 3 } = opts;
 
@@ -887,30 +869,6 @@ async function main() {
       }
     }
     trace(`total executions to fetch tasks: ${allExecs.length}; VOC-owned executions: ${vocOwnedExecutionIds.size}`);
-    // 2026-05-14: O1 — drop long-closed/suspended execs before sort+fetch.
-    // ~80 historical sprints get re-pulled daily for ~0 new tasks. Filter
-    // keeps recently-closed (within 30d) execs to preserve today-finished
-    // task coverage when a sprint closes the same day.
-    const beforeFilter = allExecs.length;
-    const skippedLongClosed = [];
-    const keptExecs = [];
-    for (const ex of allExecs) {
-      if (isLongClosed(ex, args.date)) {
-        skippedLongClosed.push(Number(ex.id));
-      } else {
-        keptExecs.push(ex);
-      }
-    }
-    if (skippedLongClosed.length > 0) {
-      trace(`O1: skipped ${skippedLongClosed.length}/${beforeFilter} long-closed/suspended executions (lookback=30d)`);
-      STATE.skipped.push({
-        path: '/executions/*/tasks',
-        reason: 'long-closed-filter',
-        executions: skippedLongClosed,
-      });
-      allExecs.length = 0;
-      for (const ex of keptExecs) allExecs.push(ex);
-    }
     // 2026-05-13: VOC-owned executions go first. If the wall-clock budget
     // ever runs out, non-VOC sprints (cross-team borrows) get sacrificed
     // before the core daily-report data.
@@ -1109,5 +1067,5 @@ if (require.main === module) {
   // Loaded via require() — typically a test. Cancel the hard-kill so we
   // don't sigterm the test process, and expose narrow surface for testing.
   clearTimeout(_hardKill);
-  module.exports = { fetchExecutionTasksScoped, isLongClosed, STATE };
+  module.exports = { fetchExecutionTasksScoped, STATE };
 }
