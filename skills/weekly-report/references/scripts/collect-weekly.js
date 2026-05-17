@@ -66,18 +66,47 @@ const BUG_ROOT_CAUSE_KEYS = ['代码缺陷', '配置问题', '需求缺失', '�
 
 // ---- arg parsing --------------------------------------------------------
 
+// Default product scope for qingwa (VOC team). Verified across W18/W19/W20:
+// 100% of tasks and bugs landed in product=95 (VOC). Override via env
+// WEEKLY_PRODUCT_IDS=95,114 or CLI --products 95,114 when temporarily
+// borrowing into other products. This replaces the pre-V4 design that
+// walked user.profile.view.sprints (2228 entries) ∩ doing-status executions,
+// which was both wildly over-scoped and silently under-cut.
+const DEFAULT_PRODUCT_IDS = [95];
+
+function resolveProductIds(cliTokens) {
+  const tokens = (cliTokens && cliTokens.length > 0)
+    ? cliTokens
+    : (process.env.WEEKLY_PRODUCT_IDS ? [process.env.WEEKLY_PRODUCT_IDS] : []);
+  if (tokens.length === 0) return DEFAULT_PRODUCT_IDS.slice();
+  const out = [];
+  for (const raw of tokens) {
+    for (const t of String(raw).split(',')) {
+      const trimmed = t.trim();
+      if (!trimmed) continue;
+      if (!/^\d+$/.test(trimmed)) {
+        throw new Error(`WEEKLY_PRODUCT_IDS contains non-numeric token: ${trimmed}`);
+      }
+      out.push(Number(trimmed));
+    }
+  }
+  return out;
+}
+
 function parseArgs(argv) {
-  const out = { week: null, out: null, allowPartial: false };
+  const out = { week: null, out: null, allowPartial: false, productTokens: [] };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
     const v = argv[i + 1];
     if (k === '--week') { out.week = v; i++; }
     else if (k === '--out') { out.out = v; i++; }
+    else if (k === '--products') { out.productTokens.push(v); i++; }
     else if (k === '--allow-partial') { out.allowPartial = true; }
   }
   if (process.env.WEEKLY_ALLOW_PARTIAL === '1') out.allowPartial = true;
   if (!out.week) out.week = isoWeekOf(new Date());
   if (!out.out) out.out = `/tmp/weekly-${out.week}.json`;
+  out.productIds = resolveProductIds(out.productTokens);
   return out;
 }
 
@@ -194,13 +223,15 @@ const STATE = {
   baseUrl: '',
   token: '',
   apiCalls: 0,
-  // 2026-05-17: bumped 2000 → 6000 after dropping Phase 1's status=doing
-  // hard-filter (was cutting 2228 view.sprints to ~256, 88% silent loss).
-  // Full sprint scan × scoped multi-order fetch with 14d lookback early-exit
-  // averages ~3 api per sprint × 2228 sprint ≈ 6700 in the worst case;
-  // 6000 covers the typical case where most sprints are long-closed and
-  // exit on first row outside the lookback window.
-  budget: parseInt(process.env.WEEKLY_API_BUDGET || '6000', 10),
+  // V4 (2026-05-17): default 1500 covers product=[95] walk:
+  //   Phase 0:  /users (1-2 pages) + /user (1)                          = ~3
+  //   Phase 1:  /products/95/projects (1) + N projects × executions (~50)
+  //             + ~30-100 executions × 3 scoped queries × early-exit     = ~300
+  //   Phase 2:  /products/95/bugs?status=all (1146 rows / 500 = 3 pages) = ~3
+  //   parent-name fill                                                   = ~5
+  //   total ≈ 350, with headroom for env-overridden multi-product scope.
+  // Override via WEEKLY_API_BUDGET when adding products beyond [95].
+  budget: parseInt(process.env.WEEKLY_API_BUDGET || '1500', 10),
   budgetExceeded: false,
   skipped: [],
 };
@@ -485,103 +516,26 @@ function flattenChildren(t) {
 
 // ---- main collection ----------------------------------------------------
 
-// Phase 0.5 — coarse upstream filter to keep wall-clock under the hard
-// timeout when scanning user.view.sprints (typically 2000+ entries on this
-// instance).
-//
-// 2026-05-17: rationale: the 2026-05-17 first cut "no upstream filter"
-// design called fetchExecutionTasksScoped on all 2228 view.sprints, which
-// at ~1.1s/sprint averaged 40+ min wall-clock — way past the 15-min
-// hard timeout. This filter cuts that to a few hundred sprints while
-// preserving any sprint plausibly relevant to this week:
-//   - status ∈ {doing, wait, suspended}        — anything still in flight
-//   - status == closed AND closedDate ≥ wk_start - 180 days
-//                                              — recently closed, may
-//                                                still have follow-up tasks
-//                                                in this week
-//
-// 180d is intentionally generous (vs the old `status=doing` hard cut that
-// silently dropped 88% of sprints). See memory
-// [[feedback-read-downstream-before-upstream-filter]] — this *is* upstream
-// trimming, but the window is wide enough that it shouldn't recreate the
-// "silent over-cut" failure mode.
-async function gatherRecentActiveExecIds(wkStartIso) {
-  const ids = new Set();
-
-  const cutoffDate = new Date(`${wkStartIso.slice(0, 10)}T00:00:00Z`);
-  cutoffDate.setUTCDate(cutoffDate.getUTCDate() - 180);
-  const cutoff = cutoffDate.toISOString().slice(0, 10);
-
-  // Pull active-status execs (full pagination — these lists are bounded,
-  // observed: doing ~256, wait ~56, suspended ~0 on this instance).
-  for (const status of ['doing', 'wait', 'suspended']) {
-    let page = 1;
-    while (page <= 10) {
-      const r = await ztFetch(`/executions?status=${status}&limit=500&page=${page}`);
-      if (!r.ok) {
-        trace(`WARN /executions?status=${status} page=${page} failed: ${r.reason}`);
-        break;
-      }
-      const execs = r.body.executions || [];
-      for (const ex of execs) ids.add(String(ex.id));
-      if (execs.length < 500) break;
-      page++;
-    }
-  }
-
-  // Pull closed execs in closedDate-desc order with client-side early-exit
-  // at 180d cutoff. Mirrors exp-compass's fetchClosedTodayStories /
-  // fetchTodayClosedBugs pattern.
-  let page = 1;
-  let reachedCutoff = false;
-  while (page <= 30 && !reachedCutoff) {
-    const r = await ztFetch(`/executions?status=closed&order=closedDate_desc&limit=100&page=${page}`);
-    if (!r.ok) {
-      trace(`WARN /executions?status=closed&order=closedDate_desc page=${page} failed: ${r.reason}`);
-      break;
-    }
-    const execs = r.body.executions || [];
-    if (execs.length === 0) break;
-    for (const ex of execs) {
-      const cd = ex.closedDate && !String(ex.closedDate).startsWith('0000')
-        ? String(ex.closedDate).slice(0, 10) : null;
-      if (!cd) {
-        // Zentao sometimes returns null-closedDate rows at the tail of
-        // status=closed (corrupt rows, or status flipped without closedDate
-        // being set). Skip rather than break — order says they're past the
-        // window, not "stop scanning".
-        continue;
-      }
-      if (cd < cutoff) {
-        reachedCutoff = true;
-        break;
-      }
-      ids.add(String(ex.id));
-    }
-    if (execs.length < 100) break;
-    page++;
-  }
-
-  return ids;
-}
-
-async function fetchUserViews(me) {
+// V4 (2026-05-17): identity resolution only. The pre-V4 code also consumed
+// user.profile.view.sprints + view.products as the scanning frontier — but
+// on this Zentao instance qingwa's dev role is granted near-org-wide
+// visibility (view.sprints=2228, view.products=123), so those fields are
+// noise, not signal. V4 instead walks the explicitly configured product
+// scope (default [95], see DEFAULT_PRODUCT_IDS) → projects → executions →
+// scoped task fetch; this mirrors exp-compass-daily's architecture and is
+// 10-30× faster.
+async function resolveMe(explicitMe) {
+  if (explicitMe) return explicitMe;
   const r = await ztFetch('/user');
   if (!r.ok) {
     throw new Error(`/user fetch failed: ${r.reason || r.status}`);
   }
   const u = r.body || {};
-  const myAccount = me || (u.profile && u.profile.account) || (u.account) || '';
+  const myAccount = (u.profile && u.profile.account) || u.account || '';
   if (!myAccount) {
     throw new Error('cannot determine me (ZENTAO_ME unset and /user.profile.account missing)');
   }
-  const view = (u.profile && u.profile.view) || u.view || {};
-  const split = (v) => String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
-  return {
-    me: myAccount,
-    sprintIds: Array.from(new Set(split(view.sprints))),
-    productIds: Array.from(new Set(split(view.products))),
-  };
+  return myAccount;
 }
 
 function deriveTaskRecord(t, me, range, role) {
@@ -712,12 +666,12 @@ function trace(msg) {
   process.stdout.write(`[trace +${((Date.now() - TRACE_T0) / 1000).toFixed(1)}s] ${msg}\n`);
 }
 
-// 2026-05-17: bumped 10min → 15min after removing Phase 1's doing-only
-// upstream filter. Scanning all 2228 view.sprints × 3 scoped queries × ~1s
-// round-trip ÷ SPRINT_CONC=20 averages ~8 min wall-clock; 15min gives
-// headroom for the per-request slow tail without bumping into cron-style
-// outer wrappers. Override via WEEKLY_HARD_TIMEOUT_MS for tests.
-const HARD_TIMEOUT_MS = parseInt(process.env.WEEKLY_HARD_TIMEOUT_MS || String(15 * 60 * 1000), 10);
+// V4 (2026-05-17): 10min covers the expected ~60s server walk with 10x
+// headroom for network jitter / zentao slow tail. The pre-V4 15min was
+// needed because the view.sprints scan averaged 8min; V4's product walk
+// is bounded by the execution count of the configured products (~50-100
+// executions, not 2200).
+const HARD_TIMEOUT_MS = parseInt(process.env.WEEKLY_HARD_TIMEOUT_MS || String(10 * 60 * 1000), 10);
 const _hardKill = setTimeout(() => {
   console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
   process.exit(4);
@@ -761,96 +715,109 @@ async function main() {
   STATE.token = token;
   const t0 = Date.now();
 
-  // Phase 0: who am I + which sprints/products do I see
+  // Phase 0: who am I + user-realname map
   await loadUserMap();
-  const views = await fetchUserViews(process.env.ZENTAO_ME || null);
-  trace(`me=${views.me} sprints=${views.sprintIds.length} products=${views.productIds.length} users=${USER_MAP.size}`);
+  const me = await resolveMe(process.env.ZENTAO_ME || null);
+  trace(`me=${me} products=[${args.productIds.join(',')}] users=${USER_MAP.size}`);
 
-  // Phase 1: intersect view.sprints with the recently-active set
-  // (doing/wait/suspended/closed-within-180d). Replaces the old
-  // status=doing-only intersection that silently dropped 88% of sprints
-  // (2228 view.sprints → 256 doing). 180d is generous enough that the
-  // intersect doesn't recreate the silent-loss failure, while keeping
-  // wall-clock under the 15-min hard timeout.
-  const recentActive = await gatherRecentActiveExecIds(range.wk_start);
-  const mySprints = views.sprintIds.filter((sid) => recentActive.has(String(sid)));
-  trace(`mySprints=${mySprints.length} (∩ recently-active: doing/wait/suspended/closed-180d; pool=${recentActive.size}, view.sprints=${views.sprintIds.length})`);
+  // Phase 1: walk product → projects → executions → fetchExecutionTasksScoped.
+  //
+  // V4 (2026-05-17): replaced "scan user.profile.view.sprints (2228) ∩
+  // recently-active executions (~300)" with this explicit product walk.
+  // Rationale: qingwa's dev role has near-org-wide visibility (view.sprints
+  // ~2228), but empirically all of her work lives under product 95 (VOC).
+  // Walking products → projects → executions limits the frontier to ~30-100
+  // executions, mirrors exp-compass-daily's architecture, and is 10-30×
+  // faster end-to-end. Override scope via WEEKLY_PRODUCT_IDS or --products
+  // when temporarily borrowing into other products.
+  const sprintBaseDate = range.wk_end.slice(0, 10);
+  const SPRINT_CONC = 10;
+  const rawTasks = [];
+  const allExecs = [];
+  for (const pid of args.productIds) {
+    const projResp = await ztFetch(`/products/${pid}/projects`);
+    if (!projResp.ok) {
+      trace(`WARN /products/${pid}/projects failed: ${projResp.reason}`);
+      STATE.skipped.push({ path: `/products/*/projects`, reason: projResp.reason });
+      continue;
+    }
+    const projects = projResp.body.projects || [];
+    trace(`product=${pid} projects=${projects.length}`);
 
-  // Phase 2: pull tasks across mySprints with scoped multi-order fetch.
-  //
-  // 2026-05-17: replaced unfiltered ztPaginate('/executions/{id}/tasks')
-  // with fetchExecutionTasksScoped (14d lookback + 3 order=...desc queries
-  // with client-side early-exit). The base date is wk_end - 1 day (the
-  // ISO week's Sunday); the 14-day window covers the current week and a
-  // 1-week buffer for tasks whose only signal is a stale lastEditedDate
-  // from the prior week.
-  //
-  // SPRINT_CONC 5 → 20 to keep wall-clock reasonable now that we scan all
-  // 2228 view.sprints. Per-sprint cost is ~3 api (typical early-exit, ~1s
-  // each round-trip); 20-wide fan-out × 3 queries = 60 concurrent fetches,
-  // still tolerated by this zentao instance (no 429/503 observed in the
-  // 2026-05-17 verify run before timeout).
-  //
-  // Wall-clock budget reserve: stop enqueueing new sprint batches once
-  // we're within 60s of HARD_TIMEOUT_MS, so the downstream parent-name
-  // resolution + JSON write + writeFile path still has room to complete
-  // and emit a partial (not empty) JSON. Mirrors exp-compass's same fix
-  // (commit fc2e637 → reverted, then rebuilt in the eventual pipeline).
-  const SPRINT_CONC = 20;
+    const execResults = await Promise.all(
+      projects.map(async (proj) => {
+        const r = await ztFetch(`/projects/${proj.id}/executions`);
+        return {
+          projId: proj.id,
+          ok: r.ok,
+          execs: r.ok ? (r.body.executions || []) : [],
+          reason: r.ok ? null : r.reason,
+        };
+      }),
+    );
+    for (const er of execResults) {
+      if (!er.ok) {
+        trace(`WARN /projects/${er.projId}/executions failed: ${er.reason}`);
+        STATE.skipped.push({ path: '/projects/*/executions', reason: er.reason });
+        continue;
+      }
+      for (const ex of er.execs) allExecs.push(ex);
+    }
+  }
+  trace(`total executions to scan: ${allExecs.length}`);
+
+  // Per-execution scoped task fetch (3 order=...desc queries × early-exit).
+  // BUDGET_RESERVE_MS gates the loop so downstream parent-name fill +
+  // writeFile still complete even if Phase 1 runs unexpectedly long.
   const BUDGET_RESERVE_MS = 60_000;
   const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
-  const rawTasks = [];
-  const sprintBaseDate = range.wk_end.slice(0, 10);
   let wallClockEarlyExit = false;
-  for (let i = 0; i < mySprints.length; i += SPRINT_CONC) {
+  for (let i = 0; i < allExecs.length; i += SPRINT_CONC) {
     const elapsedMs = Date.now() - TRACE_T0;
     if (elapsedMs > wallDeadlineMs) {
-      const remaining = mySprints.length - i;
-      trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} sprints to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
-      STATE.skipped.push({
-        path: '/executions/*/tasks',
-        reason: 'wall-clock-budget',
-        remaining,
-      });
+      const remaining = allExecs.length - i;
+      trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} executions to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
+      STATE.skipped.push({ path: '/executions/*/tasks', reason: 'wall-clock-budget', remaining });
       wallClockEarlyExit = true;
       break;
     }
-    const batch = mySprints.slice(i, i + SPRINT_CONC);
+    const batch = allExecs.slice(i, i + SPRINT_CONC);
     const results = await Promise.all(
-      batch.map(async (sid) => {
-        const r = await fetchExecutionTasksScoped(sid, sprintBaseDate);
-        return { sid, ok: r.ok, list: r.items };
+      batch.map(async (ex) => {
+        const r = await fetchExecutionTasksScoped(ex.id, sprintBaseDate);
+        return { id: ex.id, ok: r.ok, list: r.items };
       }),
     );
     for (const r of results) {
       if (r.list.length > 0 || !r.ok) {
-        trace(`sprint=${r.sid} tasks=${r.list.length}${r.ok ? '' : ' (partial)'}`);
+        trace(`exec=${r.id} tasks=${r.list.length}${r.ok ? '' : ' (partial)'}`);
       }
       rawTasks.push(...r.list);
     }
   }
 
-  // Phase 3: pull bugs across products (two passes per product:
-  //   - resolved-this-week: needs ?status=all (closed bugs hidden by default)
-  //   - active-snapshot:    no ?status=all (default already returns active)
+  // Phase 2: pull bugs per product via single ?status=all query, then split
+  // client-side into resolved-this-week (R2) and active-snapshot (R3).
+  //
+  // V4 (2026-05-17): the pre-V4 design issued two queries per product
+  // (?status=all + default-active), doubling the Phase 3 cost. Since
+  // ?status=all already returns active + resolved + closed bugs with their
+  // status field intact, one fetch + client filter is equivalent and halves
+  // the work. Product scope is now args.productIds (default [95]) instead
+  // of view.products (~121), which is the main wall-clock win.
   const PRODUCT_CONC = 5;
-  const rawBugsAll = [];
-  const rawBugsActive = [];
-  for (let i = 0; i < views.productIds.length; i += PRODUCT_CONC) {
-    const batch = views.productIds.slice(i, i + PRODUCT_CONC);
-    const allResults = await Promise.all(
-      batch.map(async (pid) => ({ pid, list: await ztPaginate(`/products/${pid}/bugs?status=all`, 'bugs') })),
+  const rawBugs = [];
+  for (let i = 0; i < args.productIds.length; i += PRODUCT_CONC) {
+    const batch = args.productIds.slice(i, i + PRODUCT_CONC);
+    const results = await Promise.all(
+      batch.map(async (pid) => ({
+        pid,
+        list: await ztPaginate(`/products/${pid}/bugs?status=all`, 'bugs'),
+      })),
     );
-    const activeResults = await Promise.all(
-      batch.map(async (pid) => ({ pid, list: await ztPaginate(`/products/${pid}/bugs`, 'bugs') })),
-    );
-    for (const r of allResults) {
+    for (const r of results) {
       trace(`product=${r.pid} bugs(all)=${r.list.length}`);
-      rawBugsAll.push(...r.list);
-    }
-    for (const r of activeResults) {
-      trace(`product=${r.pid} bugs(active-snap)=${r.list.length}`);
-      rawBugsActive.push(...r.list);
+      rawBugs.push(...r.list);
     }
   }
 
@@ -867,7 +834,6 @@ async function main() {
   trace(`tasks: raw=${rawTasks.length} flat=${flat.length} dedup=${dedup.length}`);
 
   // Phase 5: classify into wk_role (完成 / 进行) and next-week
-  const me = views.me;
   const tasksDone = [];
   const tasksProgress = [];
   const tasksNextWeek = [];
@@ -901,27 +867,20 @@ async function main() {
   }
   trace(`R1 done=${tasksDone.length} progress=${tasksProgress.length} | R4 next=${tasksNextWeek.length}`);
 
-  // Phase 6: bugs filter
-  const seenBugAll = new Set();
-  const dedupBugAll = rawBugsAll.filter((b) => {
+  // Phase 6: bugs filter (V4: single rawBugs set from ?status=all)
+  const seenBug = new Set();
+  const dedupBugs = rawBugs.filter((b) => {
     const id = Number(b.id);
-    if (!id || seenBugAll.has(id)) return false;
-    seenBugAll.add(id);
-    return true;
-  });
-  const seenBugActive = new Set();
-  const dedupBugActive = rawBugsActive.filter((b) => {
-    const id = Number(b.id);
-    if (!id || seenBugActive.has(id)) return false;
-    seenBugActive.add(id);
+    if (!id || seenBug.has(id)) return false;
+    seenBug.add(id);
     return true;
   });
 
-  const bugsResolved = dedupBugAll
+  const bugsResolved = dedupBugs
     .filter((b) => pickAccount(b.resolvedBy) === me
       && dateInRange(b.resolvedDate, range.wk_start, range.wk_end))
     .map((b) => deriveBugRecord(b, me));
-  const bugsActive = dedupBugActive
+  const bugsActive = dedupBugs
     .filter((b) => pickAccount(b.assignedTo) === me && (b.status || 'active') === 'active')
     .map((b) => deriveBugRecord(b, me));
   trace(`R2 resolved=${bugsResolved.length} | R3 active=${bugsActive.length}`);
@@ -971,8 +930,8 @@ async function main() {
       duration_ms: Date.now() - t0,
       skipped: STATE.skipped,
       budget_exceeded: STATE.budgetExceeded,
-      sprint_count: mySprints.length,
-      product_count: views.productIds.length,
+      product_ids: args.productIds,
+      execution_count: allExecs.length,
       wall_clock_early_exit: wallClockEarlyExit,
     },
   };
@@ -1020,5 +979,5 @@ if (require.main === module) {
   // Loaded via require() — typically a test. Cancel the hard-kill so we
   // don't sigterm the test process, and expose narrow surface for testing.
   clearTimeout(_hardKill);
-  module.exports = { fetchExecutionTasksScoped, STATE };
+  module.exports = { fetchExecutionTasksScoped, resolveProductIds, STATE };
 }
