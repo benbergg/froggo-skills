@@ -194,11 +194,13 @@ const STATE = {
   baseUrl: '',
   token: '',
   apiCalls: 0,
-  // Weekly scope is much wider than daily: a typical user view may include
-  // 100+ products and 200+ sprints, each requiring 1-N paginated calls.
-  // 2000 covers ~150 products × (bugs/all + bugs/active default) + ~250
-  // sprints × tasks + small overhead. Override via WEEKLY_API_BUDGET.
-  budget: parseInt(process.env.WEEKLY_API_BUDGET || '2000', 10),
+  // 2026-05-17: bumped 2000 → 6000 after dropping Phase 1's status=doing
+  // hard-filter (was cutting 2228 view.sprints to ~256, 88% silent loss).
+  // Full sprint scan × scoped multi-order fetch with 14d lookback early-exit
+  // averages ~3 api per sprint × 2228 sprint ≈ 6700 in the worst case;
+  // 6000 covers the typical case where most sprints are long-closed and
+  // exit on first row outside the lookback window.
+  budget: parseInt(process.env.WEEKLY_API_BUDGET || '6000', 10),
   budgetExceeded: false,
   skipped: [],
 };
@@ -219,12 +221,16 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
   STATE.apiCalls++;
 
   const url = STATE.baseUrl + pathAndQuery;
-  const backoff = [1000, 2000, 4000, 8000];
+  // 2026-05-17: shrunk from 4 retries (1+2+4+8s) to 2 (1+2s) and per-request
+  // timeout from 30s to 15s. Same rationale as exp-compass 2026-05-12 fix:
+  // a single unresponsive endpoint could previously eat 4×30+15 = 135s of
+  // the 600s hard budget before failure, leaving no room for sibling work.
+  const backoff = [1000, 2000];
   let lastErr = null;
 
   for (let attempt = 0; attempt <= backoff.length; attempt++) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 30_000);
+    const timer = setTimeout(() => ctrl.abort(), 15_000);
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -279,6 +285,17 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
 
 async function ztPaginate(basePath, listKey) {
   const sep = basePath.includes('?') ? '&' : '?';
+  // 2026-05-17: kept at 500 (vs exp-compass 77f92d2 which uses 100).
+  // Trade-off rationale: weekly fans out across 121 products × bugs?status=all
+  // where some products have 1000+ rows (product 2: 3925, product 103: 2445);
+  // limit=100 would inflate that to 40+ sequential pages per product, blowing
+  // the 15-min hard timeout. The known limit=500 4-24s tail-latency
+  // ([[project-zentao-pagination-pitfalls]]) is acceptable here because
+  // weekly runs once on a relaxed schedule, not on the daily cron critical
+  // path. Phase 2's per-sprint task fetch uses fetchExecutionTasksScoped
+  // (hard-coded limit=100 + 3-page early-exit) which is the right shape
+  // for many-small-windows; ztPaginate is the right shape for
+  // few-large-bulks.
   const limit = 500;
   const sanitizedPath = basePath.replace(/\/products\/\d+|\/projects\/\d+|\/executions\/\d+/, (m) => m.replace(/\d+/, '*'));
   const out = [];
@@ -333,6 +350,95 @@ async function ztPaginate(basePath, listKey) {
   return out;
 }
 
+// 2026-05-17: scoped per-execution task fetch — ported from
+// exp-compass-daily commit abf74f3 (with weekly-tuned lookbackDays=14).
+//
+// Replaces the unfiltered /executions/{id}/tasks paginate (which on
+// accumulator sprints can pull 1500+ historical rows × 16 pages × ~14s
+// wall = 220s+) with three narrow order=...desc queries in parallel and
+// a client-side lookback early-exit.
+//
+// Why three order-by-desc queries instead of one:
+//   - openedDate_desc      → covers today-new + recently-opened in-flight tasks
+//   - finishedDate_desc    → covers today-done + recently-finished tasks
+//                            (Zentao clusters null finishedDate at the tail
+//                            under this sort, so the first null marks
+//                            end-of-window)
+//   - lastEditedDate_desc  → catch-all for tasks edited recently but neither
+//                            opened nor finished in the window (status flips,
+//                            reassignment, comments)
+//
+// Union by task id deduplicates the typical overlap. Falls back to ok:false
+// only when all three queries fail; partial failure (1-2 of 3) still returns
+// a usable union with reduced coverage logged in STATE.skipped.
+//
+// 2026-05-17 default lookback=14: covers the full ISO week + 1-week buffer
+// for tasks whose only relevant signal is a stale lastEditedDate set on
+// the previous Friday (carried into this week's R1-progress section). Daily
+// scope uses 30 because today_finished-style fields need only a few days,
+// but weekly's R1/R4 spans 7 days × 2 (current + next week deadline horizon).
+async function fetchExecutionTasksScoped(execId, date, opts = {}) {
+  const { lookbackDays = 14, fetchFn = ztFetch, maxPages = 3 } = opts;
+
+  const lookback = new Date(`${date}T00:00:00Z`);
+  lookback.setUTCDate(lookback.getUTCDate() - lookbackDays);
+  const threshold = lookback.toISOString().slice(0, 10);
+
+  const base = `/executions/${execId}/tasks`;
+  const sanitizedPath = '/executions/*/tasks';
+
+  const fetchScoped = async (queryParam, dateField, { skipNullEarly }) => {
+    const items = [];
+    let reachedEnd = false;
+    for (let page = 1; page <= maxPages && !reachedEnd; page++) {
+      const url = `${base}?${queryParam}&limit=100&page=${page}`;
+      const r = await fetchFn(url);
+      if (!r.ok) {
+        STATE.skipped.push({ path: sanitizedPath, page, queryParam, reason: r.reason });
+        return { ok: false, items };
+      }
+      const rows = r.body.tasks || [];
+      if (rows.length === 0) break;
+      for (const t of rows) {
+        const v = t[dateField];
+        if (!v || String(v).startsWith('0000-')) {
+          if (skipNullEarly) {
+            reachedEnd = true;
+            break;
+          }
+          continue;
+        }
+        const day = String(v).slice(0, 10);
+        if (day < threshold) {
+          reachedEnd = true;
+          break;
+        }
+        items.push(t);
+      }
+      if (rows.length < 100) break;
+    }
+    return { ok: true, items };
+  };
+
+  const results = await Promise.all([
+    fetchScoped('order=openedDate_desc', 'openedDate', { skipNullEarly: false }),
+    fetchScoped('order=finishedDate_desc', 'finishedDate', { skipNullEarly: true }),
+    fetchScoped('order=lastEditedDate_desc', 'lastEditedDate', { skipNullEarly: false }),
+  ]);
+
+  if (results.every((r) => !r.ok)) {
+    return { ok: false, items: [] };
+  }
+
+  const byId = new Map();
+  for (const r of results) {
+    for (const t of r.items) {
+      if (!byId.has(t.id)) byId.set(t.id, t);
+    }
+  }
+  return { ok: true, items: Array.from(byId.values()) };
+}
+
 // ---- field helpers ------------------------------------------------------
 
 const USER_MAP = new Map();
@@ -378,6 +484,86 @@ function flattenChildren(t) {
 }
 
 // ---- main collection ----------------------------------------------------
+
+// Phase 0.5 — coarse upstream filter to keep wall-clock under the hard
+// timeout when scanning user.view.sprints (typically 2000+ entries on this
+// instance).
+//
+// 2026-05-17: rationale: the 2026-05-17 first cut "no upstream filter"
+// design called fetchExecutionTasksScoped on all 2228 view.sprints, which
+// at ~1.1s/sprint averaged 40+ min wall-clock — way past the 15-min
+// hard timeout. This filter cuts that to a few hundred sprints while
+// preserving any sprint plausibly relevant to this week:
+//   - status ∈ {doing, wait, suspended}        — anything still in flight
+//   - status == closed AND closedDate ≥ wk_start - 180 days
+//                                              — recently closed, may
+//                                                still have follow-up tasks
+//                                                in this week
+//
+// 180d is intentionally generous (vs the old `status=doing` hard cut that
+// silently dropped 88% of sprints). See memory
+// [[feedback-read-downstream-before-upstream-filter]] — this *is* upstream
+// trimming, but the window is wide enough that it shouldn't recreate the
+// "silent over-cut" failure mode.
+async function gatherRecentActiveExecIds(wkStartIso) {
+  const ids = new Set();
+
+  const cutoffDate = new Date(`${wkStartIso.slice(0, 10)}T00:00:00Z`);
+  cutoffDate.setUTCDate(cutoffDate.getUTCDate() - 180);
+  const cutoff = cutoffDate.toISOString().slice(0, 10);
+
+  // Pull active-status execs (full pagination — these lists are bounded,
+  // observed: doing ~256, wait ~56, suspended ~0 on this instance).
+  for (const status of ['doing', 'wait', 'suspended']) {
+    let page = 1;
+    while (page <= 10) {
+      const r = await ztFetch(`/executions?status=${status}&limit=500&page=${page}`);
+      if (!r.ok) {
+        trace(`WARN /executions?status=${status} page=${page} failed: ${r.reason}`);
+        break;
+      }
+      const execs = r.body.executions || [];
+      for (const ex of execs) ids.add(String(ex.id));
+      if (execs.length < 500) break;
+      page++;
+    }
+  }
+
+  // Pull closed execs in closedDate-desc order with client-side early-exit
+  // at 180d cutoff. Mirrors exp-compass's fetchClosedTodayStories /
+  // fetchTodayClosedBugs pattern.
+  let page = 1;
+  let reachedCutoff = false;
+  while (page <= 30 && !reachedCutoff) {
+    const r = await ztFetch(`/executions?status=closed&order=closedDate_desc&limit=100&page=${page}`);
+    if (!r.ok) {
+      trace(`WARN /executions?status=closed&order=closedDate_desc page=${page} failed: ${r.reason}`);
+      break;
+    }
+    const execs = r.body.executions || [];
+    if (execs.length === 0) break;
+    for (const ex of execs) {
+      const cd = ex.closedDate && !String(ex.closedDate).startsWith('0000')
+        ? String(ex.closedDate).slice(0, 10) : null;
+      if (!cd) {
+        // Zentao sometimes returns null-closedDate rows at the tail of
+        // status=closed (corrupt rows, or status flipped without closedDate
+        // being set). Skip rather than break — order says they're past the
+        // window, not "stop scanning".
+        continue;
+      }
+      if (cd < cutoff) {
+        reachedCutoff = true;
+        break;
+      }
+      ids.add(String(ex.id));
+    }
+    if (execs.length < 100) break;
+    page++;
+  }
+
+  return ids;
+}
 
 async function fetchUserViews(me) {
   const r = await ztFetch('/user');
@@ -526,7 +712,12 @@ function trace(msg) {
   process.stdout.write(`[trace +${((Date.now() - TRACE_T0) / 1000).toFixed(1)}s] ${msg}\n`);
 }
 
-const HARD_TIMEOUT_MS = parseInt(process.env.WEEKLY_HARD_TIMEOUT_MS || String(10 * 60 * 1000), 10);
+// 2026-05-17: bumped 10min → 15min after removing Phase 1's doing-only
+// upstream filter. Scanning all 2228 view.sprints × 3 scoped queries × ~1s
+// round-trip ÷ SPRINT_CONC=20 averages ~8 min wall-clock; 15min gives
+// headroom for the per-request slow tail without bumping into cron-style
+// outer wrappers. Override via WEEKLY_HARD_TIMEOUT_MS for tests.
+const HARD_TIMEOUT_MS = parseInt(process.env.WEEKLY_HARD_TIMEOUT_MS || String(15 * 60 * 1000), 10);
 const _hardKill = setTimeout(() => {
   console.error(`FATAL: hard timeout (${HARD_TIMEOUT_MS}ms) reached, aborting`);
   process.exit(4);
@@ -575,31 +766,66 @@ async function main() {
   const views = await fetchUserViews(process.env.ZENTAO_ME || null);
   trace(`me=${views.me} sprints=${views.sprintIds.length} products=${views.productIds.length} users=${USER_MAP.size}`);
 
-  // Phase 1: filter sprints to those currently doing (avoid pulling closed
-  // sprints which can flood the task fan-out with stale data). Mirrors V1
-  // bash: comm -12 user_view_sprints doing_executions.
-  const doingExecResp = await ztFetch('/executions?status=doing&limit=500');
-  const doingExecIds = new Set();
-  if (doingExecResp.ok) {
-    for (const ex of (doingExecResp.body.executions || [])) {
-      doingExecIds.add(String(ex.id));
-    }
-  } else {
-    trace(`WARN /executions?status=doing failed: ${doingExecResp.reason}`);
-  }
-  const mySprints = views.sprintIds.filter((sid) => doingExecIds.has(String(sid)));
-  trace(`mySprints=${mySprints.length} (intersected with status=doing)`);
+  // Phase 1: intersect view.sprints with the recently-active set
+  // (doing/wait/suspended/closed-within-180d). Replaces the old
+  // status=doing-only intersection that silently dropped 88% of sprints
+  // (2228 view.sprints → 256 doing). 180d is generous enough that the
+  // intersect doesn't recreate the silent-loss failure, while keeping
+  // wall-clock under the 15-min hard timeout.
+  const recentActive = await gatherRecentActiveExecIds(range.wk_start);
+  const mySprints = views.sprintIds.filter((sid) => recentActive.has(String(sid)));
+  trace(`mySprints=${mySprints.length} (∩ recently-active: doing/wait/suspended/closed-180d; pool=${recentActive.size}, view.sprints=${views.sprintIds.length})`);
 
-  // Phase 2: pull tasks across mySprints (parallel, batched)
-  const SPRINT_CONC = 5;
+  // Phase 2: pull tasks across mySprints with scoped multi-order fetch.
+  //
+  // 2026-05-17: replaced unfiltered ztPaginate('/executions/{id}/tasks')
+  // with fetchExecutionTasksScoped (14d lookback + 3 order=...desc queries
+  // with client-side early-exit). The base date is wk_end - 1 day (the
+  // ISO week's Sunday); the 14-day window covers the current week and a
+  // 1-week buffer for tasks whose only signal is a stale lastEditedDate
+  // from the prior week.
+  //
+  // SPRINT_CONC 5 → 20 to keep wall-clock reasonable now that we scan all
+  // 2228 view.sprints. Per-sprint cost is ~3 api (typical early-exit, ~1s
+  // each round-trip); 20-wide fan-out × 3 queries = 60 concurrent fetches,
+  // still tolerated by this zentao instance (no 429/503 observed in the
+  // 2026-05-17 verify run before timeout).
+  //
+  // Wall-clock budget reserve: stop enqueueing new sprint batches once
+  // we're within 60s of HARD_TIMEOUT_MS, so the downstream parent-name
+  // resolution + JSON write + writeFile path still has room to complete
+  // and emit a partial (not empty) JSON. Mirrors exp-compass's same fix
+  // (commit fc2e637 → reverted, then rebuilt in the eventual pipeline).
+  const SPRINT_CONC = 20;
+  const BUDGET_RESERVE_MS = 60_000;
+  const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
   const rawTasks = [];
+  const sprintBaseDate = range.wk_end.slice(0, 10);
+  let wallClockEarlyExit = false;
   for (let i = 0; i < mySprints.length; i += SPRINT_CONC) {
+    const elapsedMs = Date.now() - TRACE_T0;
+    if (elapsedMs > wallDeadlineMs) {
+      const remaining = mySprints.length - i;
+      trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} sprints to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
+      STATE.skipped.push({
+        path: '/executions/*/tasks',
+        reason: 'wall-clock-budget',
+        remaining,
+      });
+      wallClockEarlyExit = true;
+      break;
+    }
     const batch = mySprints.slice(i, i + SPRINT_CONC);
     const results = await Promise.all(
-      batch.map(async (sid) => ({ sid, list: await ztPaginate(`/executions/${sid}/tasks`, 'tasks') })),
+      batch.map(async (sid) => {
+        const r = await fetchExecutionTasksScoped(sid, sprintBaseDate);
+        return { sid, ok: r.ok, list: r.items };
+      }),
     );
     for (const r of results) {
-      trace(`sprint=${r.sid} tasks=${r.list.length}`);
+      if (r.list.length > 0 || !r.ok) {
+        trace(`sprint=${r.sid} tasks=${r.list.length}${r.ok ? '' : ' (partial)'}`);
+      }
       rawTasks.push(...r.list);
     }
   }
@@ -747,6 +973,7 @@ async function main() {
       budget_exceeded: STATE.budgetExceeded,
       sprint_count: mySprints.length,
       product_count: views.productIds.length,
+      wall_clock_early_exit: wallClockEarlyExit,
     },
   };
 
@@ -776,15 +1003,22 @@ async function main() {
   process.stdout.write(`OK week=${args.week} me=${me} api_calls=${STATE.apiCalls} done=${summary.task_done} progress=${summary.task_progress} bug_resolved=${summary.bug_resolved} bug_active=${summary.bug_active} next=${summary.next_planned} → ${args.out}\n`);
 }
 
-main()
-  .then(() => {
-    clearTimeout(_hardKill);
-    // Normal-path exit. Hard-fail paths (budget_exceeded, missing token, etc.)
-    // already called process.exit() with their own non-zero code.
-    process.exit(0);
-  })
-  .catch((e) => {
-    clearTimeout(_hardKill);
-    console.error(`FATAL: ${sanitizeMessage(e.message)}`);
-    process.exit(1);
-  });
+if (require.main === module) {
+  main()
+    .then(() => {
+      clearTimeout(_hardKill);
+      // Normal-path exit. Hard-fail paths (budget_exceeded, missing token, etc.)
+      // already called process.exit() with their own non-zero code.
+      process.exit(0);
+    })
+    .catch((e) => {
+      clearTimeout(_hardKill);
+      console.error(`FATAL: ${sanitizeMessage(e.message)}`);
+      process.exit(1);
+    });
+} else {
+  // Loaded via require() — typically a test. Cancel the hard-kill so we
+  // don't sigterm the test process, and expose narrow surface for testing.
+  clearTimeout(_hardKill);
+  module.exports = { fetchExecutionTasksScoped, STATE };
+}
