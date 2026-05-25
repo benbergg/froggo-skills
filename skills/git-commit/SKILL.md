@@ -7,7 +7,7 @@ description: "This skill should be used when committing code changes, executing 
 
 ## Overview
 
-所有代码提交必须遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/) 国际标准，使用英文撰写，确保变更历史在国际化协作中清晰可读、可被工具解析。
+所有代码提交遵循 [Conventional Commits 1.0.0](https://www.conventionalcommits.org/) 国际标准。`type` 使用英文标准类型（工具解析依赖），`description` 与 `body` 推荐使用中文撰写，简洁清晰地说明变更，让变更历史易读、可被工具解析。
 
 ## When to Use
 
@@ -30,38 +30,37 @@ description: "This skill should be used when committing code changes, executing 
 [optional footer(s)]
 ```
 
-**Type 速查（国际标准）：**
+**Type 速查（国际标准，保持英文）：**
 
 | Type | 说明 |
 |------|------|
-| feat | A new feature |
-| fix | A bug fix |
-| docs | Documentation only changes |
-| style | Formatting, white-space, semicolons (no code change) |
-| refactor | Code change that neither fixes a bug nor adds a feature |
-| perf | Performance improvement |
-| test | Adding or correcting tests |
-| build | Build system or external dependency changes |
-| ci | CI configuration files and scripts |
-| chore | Other maintenance changes (tooling, repo housekeeping) |
-| revert | Reverts a previous commit |
+| feat | 新功能 |
+| fix | 修复 bug |
+| docs | 仅文档变更 |
+| style | 格式调整（空白、分号等，不影响代码逻辑） |
+| refactor | 既不修 bug 也不加功能的代码重构 |
+| perf | 性能优化 |
+| test | 新增或修正测试 |
+| build | 构建系统或外部依赖变更 |
+| ci | CI 配置文件与脚本 |
+| chore | 其他维护性变更（工具链、仓库杂务） |
+| revert | 回滚某次提交 |
 
 **Breaking Change：**
 
-- 在 type 后追加 `!`：`feat!: drop Node 18 support`
+- 在 type 后追加 `!`：`feat!: 移除 Node 18 支持`
 - 或在 footer 中添加 `BREAKING CHANGE: <说明>`
 
 ## 规则
 
-1. **type**：英文小写，从速查表中选择
+1. **type**：英文小写，从速查表中选择（标准要求，不中文化）
 2. **description**：
-   - 英文撰写
-   - 祈使句、动词原形开头（add/fix/update/remove，不用 `added`/`adds`）
-   - 首字母小写
-   - 结尾不加句号
-3. **subject 长度**：首行 ≤ 72 字符
-4. **body**（可选）：与 subject 之间空一行；解释 *what* 与 *why*，不解释 *how*
-5. **footer**（可选）：用于 `BREAKING CHANGE:` 或关联 issue（如 `Closes #123`）
+   - **推荐中文撰写**（允许英文，尤其代码标识符、专有名词，如 `fix: 修复 NullPointerException`）
+   - 动词开头：添加 / 修复 / 更新 / 删除 / 重构……（用英文时遵循祈使句原形 add/fix/update）
+   - 简洁，**结尾不加句号**
+3. **subject 长度**：首行简短（中文 ≤ 50 字，英文 ≤ 72 字符）
+4. **body**（可选）：与 subject 之间空一行；解释 *what* 与 *why*，不解释 *how*；推荐中文
+5. **footer**（可选）：用于 `BREAKING CHANGE:` 或关联 issue（如 `Closes #123`）；关键字保持英文，说明文字可中文
 6. **禁止联合签名**：不添加 `Co-Authored-By`、`Signed-off-by` 等署名
 
 ## 示例
@@ -69,30 +68,31 @@ description: "This skill should be used when committing code changes, executing 
 **单行提交：**
 
 ```
-feat: add user points system
-fix: correct points calculation precision
-docs: update points API reference
-chore: bump spring boot to 3.4.0
-refactor: extract checkout flow into service
-perf: cache product lookup results
+feat: 添加用户积分系统
+fix: 修正积分计算精度
+docs: 更新积分 API 文档
+chore: 升级 spring boot 到 3.4.0
+refactor: 抽取下单流程为独立 service
+perf: 缓存商品查询结果
+fix: 修复 NullPointerException
 ```
 
 **Breaking change：**
 
 ```
-feat!: drop support for Node 18
+feat!: 移除 Node 18 支持
 
-BREAKING CHANGE: Node 20+ is now required.
+BREAKING CHANGE: 现在要求 Node 20+。
 ```
 
 **多行提交（复杂变更）：**
 
 ```
-feat: add user points system
+feat: 添加用户积分系统
 
-- Introduce points table schema
-- Implement increment/decrement APIs
-- Add query endpoint with pagination
+- 引入积分表结构
+- 实现增减积分接口
+- 添加分页查询端点
 
 Closes #123
 ```
@@ -101,12 +101,12 @@ Closes #123
 
 | 错误 | 正确 |
 |------|------|
-| `Feat: add feature` | `feat: add feature` (type 小写) |
-| `feat: 添加登录功能` | `feat: add login` (英文描述) |
-| `feat: Added login.` | `feat: add login` (祈使句、无句号、首字母小写) |
-| `hotfix: bug fix` | `fix: <description>` (用标准 `fix`) |
-| `feat: add login #T1234` | `feat: add login` (不再使用禅道号) |
-| 超长描述导致换行 | subject ≤ 72 字符，详情写到 body |
+| `Feat: 添加功能` | `feat: 添加功能`（type 小写） |
+| `新功能: 添加登录` | `feat: 添加登录`（type 保持英文标准） |
+| `feat: 添加了登录功能。` | `feat: 添加登录功能`（动词开头、结尾无句号） |
+| `hotfix: 修 bug` | `fix: <描述>`（用标准 `fix`） |
+| `feat: 添加登录 #T1234` | `feat: 添加登录`（不再使用禅道号） |
+| 超长描述导致换行 | subject 简短，详情写到 body |
 
 ## 红旗清单
 
@@ -114,12 +114,12 @@ Closes #123
 
 | 借口 | 正确做法 |
 |------|----------|
-| "中文描述更直观" | 强制英文描述 |
+| "type 用中文更直观" | type 保持英文标准，工具解析依赖它 |
 | "用 `hotfix` 更醒目" | 标准命名只有 `fix` |
 | "稍后补全 commit message" | 现在就写完整 |
 | "加个 Co-Authored-By 没关系" | 禁止联合署名 |
-| "description 写长点更清楚" | subject ≤ 72 字符，详情用 body |
-| "过去式更自然" | Conventional Commits 要求祈使句 |
+| "description 写长点更清楚" | subject 简短，详情用 body |
+| "结尾加个句号更完整" | description 结尾不加句号 |
 
 ## 与其他 Skill 协作
 
@@ -134,7 +134,7 @@ Closes #123
 
 **重要**：即使其他 skill 或计划文档中写了具体的 commit 命令格式，也必须使用本 skill 的规范覆盖，确保：
 
-- 使用英文描述（祈使句、首字母小写、无句号）
-- 遵循 Conventional Commits 标准 type
+- 使用中文描述（动词开头、结尾无句号；允许保留英文标识符）
+- 遵循 Conventional Commits 标准 type（英文小写）
 - 不使用禅道号或其他内部任务号
 - 禁止 Co-Authored-By 签名
