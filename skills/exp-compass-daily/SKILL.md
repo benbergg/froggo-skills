@@ -1,6 +1,6 @@
 ---
 name: exp-compass-daily
-description: "体验罗盘-每日研发进度播报。从禅道采集单产品(默认 95 VOC)的需求/任务/Bug,AI 在对话内按 4 段模板撰写日报,跑 6 项数据自检,通过 create-report 广播到钉钉模板的默认接收群。模板名固化在 skill,运行时按名查 template_id 并缓存。触发词:体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理。"
+description: "体验罗盘-每日研发进度播报。从禅道采集单产品(默认 95 VOC)的需求/任务/Bug,AI 在对话内按 4 段模板撰写日报,跑 7 项数据自检,通过 create-report 广播到钉钉模板的默认接收群。模板名固化在 skill,运行时按名查 template_id 并缓存。触发词:体验罗盘、体验罗盘日报、研发进度播报、每日播报、daily compass、研发日报、产研日报、daily report、禅道日报、今日进度、今日 Bug、今日需求、当日处理。"
 ---
 
 # 体验罗盘-每日研发进度播报
@@ -107,10 +107,10 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.j
 
 ### Step 3 AI 自检(必须跑)
 
-按 § 自检 checklist 跑 C1-C6,最多 3 轮:
+按 § 自检 checklist 跑 C1-C7,最多 3 轮:
 - 全过 → 进入 Step 4
 - 有失败 → 在对话中列出失败项 + 改写 MD + 再跑
-- 3 轮全失败 → 仍写 MD + 推广播日志,stderr 列瑕疵清单(C1-C6 失败项),run log 标 WARN
+- 3 轮全失败 → 仍写 MD + 推广播日志,stderr 列瑕疵清单(C1-C7 失败项),run log 标 WARN
 
 每轮失败原因都要 echo 给用户看(透明)。
 
@@ -121,7 +121,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.j
 ~/Knowledge-Library/05-Reports/daily/{DATE}.md
 ```
 
-无论自检全过 还是 3 轮失败,都写入。3 轮失败时,stderr 列出瑕疵清单(C1-C6 失败项),但流程继续。
+无论自检全过 还是 3 轮失败,都写入。3 轮失败时,stderr 列出瑕疵清单(C1-C7 失败项),但流程继续。
 
 ### Step 5 build-draft 切片 + 友好化
 
@@ -258,7 +258,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 
 ---
 
-## 自检 checklist(6 项 cross-check,3 轮上限)
+## 自检 checklist(7 项 cross-check,3 轮上限)
 
 写完 MD 后必须自跑。任一失败 → 改写 → 再跑。
 
@@ -270,6 +270,24 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 | **C4** | 进度数字一致 | 每个 `进度 N%` 在 MD 中的 N 等于 `story.progress_pct` |
 | **C5** | 逾期标记 | MD 中"⚠️ 逾期"的 task id 集合 == `tasks.filter(is_overdue).map(.id)` |
 | **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |
+| **C7** | 人名白名单 | 抽 MD 中所有人名 token(二段子任务表第 3 列、三段 `[xxx]` / `[a, b]` / `[产品@x / 开发@y / 测试@z]` 内的人名、四段所有 `@xxx`),对每个 token 跑 `grep -F -- "$name" /tmp/exp-compass-{DATE}.json`,任一 token 在 JSON 中 grep 不到 → ✗(锚定撰写约束 #5,专杀"AI 凭空写人名"的幻觉,例如把"青蛙"写成"冯日红") |
+
+### C7 参考实现
+
+```bash
+DATE=$(date +%Y-%m-%d)
+JSON=/tmp/exp-compass-$DATE.json
+MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
+
+# 1. 抽 MD 中候选人名 token(三类来源,合并去重)
+#    a) 二段子任务表第 3 列:awk -F'|' '/^\| T[0-9]+ \|/ { gsub(/^ +| +$/,"",$4); print $4 }' "$MD"
+#    b) 三段 [xxx] / [a, b] / [产品@x / 开发@y]:grep -oE '\[[^]]+\]' "$MD" 后剥 [] 与 角色前缀 / 分隔符
+#    c) 四段 @xxx:grep -oE '@[^ /、,，\[\]|·]+' "$MD" 后剥 @
+# 2. 对每个 token: grep -qF -- "$token" "$JSON" || echo "C7 ✗ - '$token' 不在 JSON 中"
+# 3. 同时排除明显非人名 token(空串、纯数字、单字符、纯标点 / "-" 占位符)
+```
+
+实际执行时,AI 可以直接对每个候选名在 `$JSON` 中 `grep -F` 校验;能命中 = 该名字曾经以字符串字面出现在数据源中,不是凭空捏造。
 
 ### 自检反馈格式
 
@@ -283,6 +301,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
   C4 ✓
   C5 ✗ - T43314 is_overdue=true 但 MD 中未标 ⚠️
   C6 ✓
+  C7 ✗ - '冯日红' 不在 JSON 中(疑似 AI 编造,应替换为 T44444.display_handler="青蛙")
 ```
 
 失败 → 改写指定段 → 进入下一轮。3 轮上限。
