@@ -6,14 +6,14 @@
   },
   "metadata": {
     "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）",
-    "version": "1.34.0"
+    "version": "1.35.0"
   },
   "plugins": [
     {
       "name": "froggo-skills",
       "source": "./",
       "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）",
-      "version": "1.34.0",
+      "version": "1.35.0",
       "author": {
         "name": "benbergg"
       },
