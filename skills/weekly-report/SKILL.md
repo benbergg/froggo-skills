@@ -156,11 +156,16 @@ aliases:
 
 ### 1. 本周完成与推进的任务
 
-- {display_path} 【{status_cn}】
+**已完成:**
+- {tasks_done[*].display_path} 【已完成】
+- ...
+
+**进行中:**
+- {tasks_progress[*].display_path} 【进行中】
 - ...
 
 完成情况说明:
-{2~3 句业务归纳,见 § 叙述风格 §1}
+{2~3 句业务归纳,涵盖完成 + 推进,见 § 叙述风格 §1}
 
 ### 2. 本周处理的 Bug
 
@@ -247,10 +252,11 @@ aliases:
 1. **关键数据行 4 个数字必须直接用 JSON `summary.{task_done, task_progress, bug_resolved, bug_active}`**,严禁自己重数。
 
 2. **任务列表段**:
-   - 每行使用 `tasks_done[*].display_path` 或 `tasks_progress[*].display_path`(已拼好父子前缀,直接用)
-   - 行尾必须带状态后缀 `【{status_cn}】`,字段直接来自 JSON
-   - 父子去重已在 collect 内消化,**不再展示父任务行**(渲染层不需做额外处理)
-   - 完成与推进**不分两个子段**,状态在行末统一显示
+   - **拆「已完成」「进行中」两个子段**:`tasks_done[*]` 进"**已完成:**"子段,`tasks_progress[*]` 进"**进行中:**"子段
+   - 每行使用对应数组的 `display_path`(已拼好父子前缀,直接用)
+   - 行尾带状态后缀:已完成段 `【已完成】`,进行中段 `【进行中】`(字段来自 JSON `status_cn`)
+   - 父子去重已在 collect 内消化(含跨段:子任务完成的父任务不会再出现在进行中),**渲染层不需做额外处理**
+   - 某子段为空时写"本周暂无"(如 `tasks_progress` 为空则"**进行中:** 本周暂无")
 
 3. **Bug 段**:
    - "已解决"列表 id 集合 == `bugs_resolved.map(.id)`
