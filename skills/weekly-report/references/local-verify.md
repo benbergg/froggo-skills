@@ -4,17 +4,16 @@
 
 ## 0. 前提
 
-凭据与 `WEEKLY_REPORT_DIR` 通过 shell 全局环境变量提供(配置在 `~/.zshrc` / `~/.profile`),脚本只读 `process.env`。知识库根目录按所在环境的全局规则解析(Claude Code 读 `CLAUDE.md`、openclaw 读 `AGENTS.md`),不经环境变量传入。
+凭据(`ZENTAO_*`)通过 shell 全局环境变量提供(配置在 `~/.zshrc` / `~/.profile`),脚本只读 `process.env`。本机 dry-run 直接 node 跑脚本,用下方 `SKILL_DIR` 本地变量定位(非全局环境变量,按你 clone 的仓库位置设置或用默认值)。知识库根目录按所在环境的全局规则解析(Claude Code 读 `CLAUDE.md`、openclaw 读 `AGENTS.md`),不经环境变量传入。
 
 ```bash
 # 0.1 凭据 + 知识库路径:加到 ~/.zshrc 或 ~/.profile,然后 source 或新开终端
 #   export ZENTAO_BASE_URL=https://chandao.bytenew.com/zentao/api.php/v1
 #   export ZENTAO_ACCOUNT=<你的账号>
 #   export ZENTAO_PASSWORD=<你的密码>
-#   export WEEKLY_REPORT_DIR=<weekly-report skill 根目录>
 
 # 0.2 校验必填环境变量已注入
-for v in WEEKLY_REPORT_DIR ZENTAO_BASE_URL ZENTAO_ACCOUNT ZENTAO_PASSWORD; do
+for v in ZENTAO_BASE_URL ZENTAO_ACCOUNT ZENTAO_PASSWORD; do
   [ -n "${!v}" ] || { echo "FATAL: env $v 未设置(请加到 ~/.zshrc 或 ~/.profile)" >&2; exit 1; }
 done
 
@@ -28,7 +27,7 @@ which jq >/dev/null && echo "✓ jq OK"
 ```bash
 # 改过 ~/.zshrc / ~/.profile 后,source 一次或新开终端
 source ~/.zshrc 2>/dev/null || source ~/.profile 2>/dev/null || true
-echo "check: ZENTAO_ACCOUNT=$ZENTAO_ACCOUNT WEEKLY_REPORT_DIR=$WEEKLY_REPORT_DIR"
+echo "check: ZENTAO_ACCOUNT=$ZENTAO_ACCOUNT SKILL_DIR=$SKILL_DIR"
 ```
 
 `collect-weekly.js` 只读 `process.env`,不再 source 任何 `.env` 文件,所以变量必须先 export 到当前 shell(或写进 shell rc)。
@@ -36,7 +35,9 @@ echo "check: ZENTAO_ACCOUNT=$ZENTAO_ACCOUNT WEEKLY_REPORT_DIR=$WEEKLY_REPORT_DIR
 ## 2. 跑数据采集
 
 ```bash
-SCRIPT="$WEEKLY_REPORT_DIR/references/scripts/collect-weekly.js"
+# SKILL_DIR = 本机 froggo-skills 仓库里的 skill 目录(本地变量,非全局 env;按需覆盖)
+SKILL_DIR="${SKILL_DIR:-$HOME/workspace/froggo-skills/skills/weekly-report}"
+SCRIPT="$SKILL_DIR/references/scripts/collect-weekly.js"
 
 # 本周(默认):
 node "$SCRIPT" --out /tmp/weekly-current.json
@@ -88,7 +89,7 @@ DRAFT="/tmp/weekly-${WK_NUM}.md"
 ## 5. 跑 7 项断言自检
 
 ```bash
-bash "$WEEKLY_REPORT_DIR/references/scripts/check-weekly.sh" \
+bash "$SKILL_DIR/references/scripts/check-weekly.sh" \
   "$DRAFT" "/tmp/weekly-${WK_NUM}.json"
 ```
 
