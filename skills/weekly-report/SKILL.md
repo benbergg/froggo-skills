@@ -154,7 +154,7 @@ aliases:
 
 ## 本周OKR完成情况
 
-### 1. 本周完成的任务
+### 1. 本周完成与推进的任务
 
 - {display_path} 【{status_cn}】
 - ...
@@ -250,7 +250,7 @@ aliases:
    - 每行使用 `tasks_done[*].display_path` 或 `tasks_progress[*].display_path`(已拼好父子前缀,直接用)
    - 行尾必须带状态后缀 `【{status_cn}】`,字段直接来自 JSON
    - 父子去重已在 collect 内消化,**不再展示父任务行**(渲染层不需做额外处理)
-   - 完成与进行**不分两个子段**,状态在行末统一显示
+   - 完成与推进**不分两个子段**,状态在行末统一显示
 
 3. **Bug 段**:
    - "已解决"列表 id 集合 == `bugs_resolved.map(.id)`
@@ -335,7 +335,7 @@ RESULT: 5/7 FAIL
 ## 数据筛选硬约束(collect-weekly.js 已实现,此处仅作行为契约)
 
 - **只统计本人**(`_account_assigned == me` 或 `_account_finished == me` / `_account_resolved == me`)
-- **时间窗严格**:`tasks_done` 用 `finishedDate ∈ [wk_start, wk_end)`;`tasks_progress` 用 `lastEditedDate || assignedDate ∈ [wk_start, wk_end)`;`bugs_resolved` 用 `resolvedDate ∈ [wk_start, wk_end)`
+- **时间窗严格**:`tasks_done` 用 `finishedDate ∈ [wk_start, wk_end)`;`tasks_progress` 用编辑时间 `∈ [wk_start, wk_end)`——**`wait` 任务仅认 `lastEditedDate`**(本周仅被指派而未编辑的"已派未动"任务**不计入**推进,仍归 `tasks_next_week`),`doing`/`pause` 用 `lastEditedDate || assignedDate`;`bugs_resolved` 用 `resolvedDate ∈ [wk_start, wk_end)`
 - **`bugs_resolved` 必须 `?status=all`**,否则 closed bug 静默漏掉
 - **`bugs_active` 不加 `?status=all`**,默认已只返活跃
 - **父子去重**:某 task id 出现在其他 task 的 `parent_id` 中 → 该父 task 行被 collect 剔除

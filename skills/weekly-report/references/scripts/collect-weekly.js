@@ -519,6 +519,42 @@ async function resolveMe(explicitMe) {
   return myAccount;
 }
 
+// classifyTask: 判定一个原始 task 属于本周完成 / 推进 / 下周计划。
+// 返回 { done, progress, nextWeek }(done 与 progress 互斥,完成优先;
+// nextWeek 独立,可与其它叠加)。
+//
+// 关键规则(2026-05-31):wait 任务必须本周真编辑过(lastEditedDate ∈ 本周)
+// 才算"推进"——仅本周被指派(assignedDate)而一次没动的"已派未动"任务不算,
+// 否则会让周报"本周完成与推进的任务"段混入未开始任务。doing/pause 维持
+// lastEditedDate || assignedDate(被动指派也视作本周有动作)。
+function classifyTask(t, me, range) {
+  const status = t.status || 'wait';
+  const aAcc = pickAccount(t.assignedTo);
+  const fAcc = pickAccount(t.finishedBy);
+  const finishedDate = t.finishedDate && !String(t.finishedDate).startsWith('0000') ? String(t.finishedDate).slice(0, 10) : null;
+  const lastEditedDate = t.lastEditedDate && !String(t.lastEditedDate).startsWith('0000') ? String(t.lastEditedDate).slice(0, 10) : null;
+  const assignedDate = t.assignedDate && !String(t.assignedDate).startsWith('0000') ? String(t.assignedDate).slice(0, 10) : null;
+  const deadline = t.deadline && t.deadline !== '0000-00-00' ? String(t.deadline).slice(0, 10) : null;
+
+  // R1-完成: finishedBy == me && finishedDate ∈ [wk_start, wk_end)
+  const done = fAcc === me && dateInRange(finishedDate, range.wk_start, range.wk_end);
+
+  // R1-进行: assignedTo == me && status ∈ {doing,wait,pause} && editAt ∈ 本周。
+  //   wait 的 editAt 只看 lastEditedDate(指派≠推进);doing/pause 用 lastEditedDate || assignedDate。
+  let progress = false;
+  if (!done && aAcc === me && (status === 'doing' || status === 'wait' || status === 'pause')) {
+    const editAt = status === 'wait' ? lastEditedDate : (lastEditedDate || assignedDate);
+    progress = dateInRange(editAt, range.wk_start, range.wk_end);
+  }
+
+  // R4-下周: assignedTo == me && status ∈ {wait,doing} && deadline ∈ [next_s, next_e)
+  //   排除 done(保持原 main 循环 continue 语义:本周完成的任务不再列入下周计划)。
+  const nextWeek = !done && aAcc === me && (status === 'wait' || status === 'doing')
+    && dateInRange(deadline, range.next_s, range.next_e);
+
+  return { done, progress, nextWeek };
+}
+
 function deriveTaskRecord(t, me, range, role) {
   const status = t.status || 'wait';
   const finishedBy = pickName(t.finishedBy);
@@ -819,32 +855,10 @@ async function main() {
   const tasksProgress = [];
   const tasksNextWeek = [];
   for (const t of dedup) {
-    const status = t.status || 'wait';
-    const aAcc = pickAccount(t.assignedTo);
-    const fAcc = pickAccount(t.finishedBy);
-    const finishedDate = t.finishedDate && !String(t.finishedDate).startsWith('0000') ? String(t.finishedDate).slice(0, 10) : null;
-    const lastEditedDate = t.lastEditedDate && !String(t.lastEditedDate).startsWith('0000') ? String(t.lastEditedDate).slice(0, 10) : null;
-    const assignedDate = t.assignedDate && !String(t.assignedDate).startsWith('0000') ? String(t.assignedDate).slice(0, 10) : null;
-    const deadline = t.deadline && t.deadline !== '0000-00-00' ? String(t.deadline).slice(0, 10) : null;
-
-    // R1-完成: finishedBy == me && finishedDate ∈ [wk_start, wk_end)
-    if (fAcc === me && dateInRange(finishedDate, range.wk_start, range.wk_end)) {
-      tasksDone.push(deriveTaskRecord(t, me, range, '完成'));
-      continue;
-    }
-    // R1-进行: assignedTo == me && status ∈ {doing,wait,pause}
-    //   && (lastEditedDate || assignedDate) ∈ [wk_start, wk_end)
-    if (aAcc === me && (status === 'doing' || status === 'wait' || status === 'pause')) {
-      const editAt = lastEditedDate || assignedDate;
-      if (dateInRange(editAt, range.wk_start, range.wk_end)) {
-        tasksProgress.push(deriveTaskRecord(t, me, range, '进行'));
-      }
-    }
-    // R4-下周: assignedTo == me && status ∈ {wait,doing} && deadline ∈ [next_s, next_e)
-    if (aAcc === me && (status === 'wait' || status === 'doing')
-        && dateInRange(deadline, range.next_s, range.next_e)) {
-      tasksNextWeek.push(deriveTaskRecord(t, me, range, null));
-    }
+    const cls = classifyTask(t, me, range);
+    if (cls.done) tasksDone.push(deriveTaskRecord(t, me, range, '完成'));
+    else if (cls.progress) tasksProgress.push(deriveTaskRecord(t, me, range, '进行'));
+    if (cls.nextWeek) tasksNextWeek.push(deriveTaskRecord(t, me, range, null));
   }
   trace(`R1 done=${tasksDone.length} progress=${tasksProgress.length} | R4 next=${tasksNextWeek.length}`);
 
@@ -960,5 +974,5 @@ if (require.main === module) {
   // Loaded via require() — typically a test. Cancel the hard-kill so we
   // don't sigterm the test process, and expose narrow surface for testing.
   clearTimeout(_hardKill);
-  module.exports = { fetchExecutionTasksScoped, resolveProductIds, STATE };
+  module.exports = { fetchExecutionTasksScoped, resolveProductIds, classifyTask, STATE };
 }
