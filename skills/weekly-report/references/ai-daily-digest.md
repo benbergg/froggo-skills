@@ -5,11 +5,11 @@
 ## 输入
 
 ```bash
-AI_DAILY_DIR="${AI_DAILY_DIR:-$KNOWLEDGE_LIB/08-Research/AI-Daily/Daily}"
+AI_DAILY_DIR="${AI_DAILY_DIR:-<知识库根目录>/08-Research/AI-Daily/Daily}"
 ls "$AI_DAILY_DIR"
 ```
 
-> 前提:`KNOWLEDGE_LIB` 已由 `.env` 设置(必填,无 default)。
+> 前提:已知知识库根目录(按所在环境的全局规则解析——Claude Code 读 `CLAUDE.md`、openclaw 读 `AGENTS.md`),替换上面的 `<知识库根目录>`。
 
 文件命名:`YYYY-MM-DD-ai-daily.md`,frontmatter 含 `created` 字段。
 

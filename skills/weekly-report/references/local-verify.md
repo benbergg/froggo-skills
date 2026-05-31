@@ -1,38 +1,42 @@
 # Local Verify — V2 本机 dry-run 流程
 
-> 部署到 openclaw / 写入知识库之前,在本机跑通完整流程并通过 7 项断言自检,**不动**生产 Knowledge-Library。
+> 写入知识库之前,在本机跑通完整流程并通过 7 项断言自检,**不动**知识库正式目录。
 
 ## 0. 前提
 
-```bash
-# 0.1 凭据(本机 ~/.zentao.env;生产 ~/.openclaw/.env)
-cat > ~/.zentao.env <<'EOF'
-ZENTAO_BASE_URL=https://chandao.bytenew.com/zentao/api.php/v1
-ZENTAO_ACCOUNT=<你的账号>
-ZENTAO_PASSWORD=<你的密码>
-EOF
-chmod 600 ~/.zentao.env
+凭据与 `WEEKLY_REPORT_DIR` 通过 shell 全局环境变量提供(配置在 `~/.zshrc` / `~/.profile`),脚本只读 `process.env`。知识库根目录按所在环境的全局规则解析(Claude Code 读 `CLAUDE.md`、openclaw 读 `AGENTS.md`),不经环境变量传入。
 
-# 0.2 知识库(必填,本机与服务器路径不同)
-[ -n "$KNOWLEDGE_LIB" ] || { echo "FATAL: KNOWLEDGE_LIB not set; add to ~/.zentao.env (本机) 或 ~/.openclaw/.env (服务器)" >&2; exit 1; }
+```bash
+# 0.1 凭据 + 知识库路径:加到 ~/.zshrc 或 ~/.profile,然后 source 或新开终端
+#   export ZENTAO_BASE_URL=https://chandao.bytenew.com/zentao/api.php/v1
+#   export ZENTAO_ACCOUNT=<你的账号>
+#   export ZENTAO_PASSWORD=<你的密码>
+#   export WEEKLY_REPORT_DIR=<weekly-report skill 根目录>
+
+# 0.2 校验必填环境变量已注入
+for v in WEEKLY_REPORT_DIR ZENTAO_BASE_URL ZENTAO_ACCOUNT ZENTAO_PASSWORD; do
+  [ -n "${!v}" ] || { echo "FATAL: env $v 未设置(请加到 ~/.zshrc 或 ~/.profile)" >&2; exit 1; }
+done
 
 # 0.3 工具(node 18+ 与 jq)
 node --version | grep -E 'v(1[89]|2[0-9])' >/dev/null && echo "✓ node OK"
 which jq >/dev/null && echo "✓ jq OK"
 ```
 
-## 1. 加载凭据
+## 1. 确认凭据已加载
 
 ```bash
-set -a; source ~/.zentao.env; set +a
+# 改过 ~/.zshrc / ~/.profile 后,source 一次或新开终端
+source ~/.zshrc 2>/dev/null || source ~/.profile 2>/dev/null || true
+echo "check: ZENTAO_ACCOUNT=$ZENTAO_ACCOUNT WEEKLY_REPORT_DIR=$WEEKLY_REPORT_DIR"
 ```
 
-`collect-weekly.js` 会自动 source `~/.openclaw/.env` 与 `~/.zentao.env`(脚本内置 loadEnvFile),即使 shell 没 export 也能跑。
+`collect-weekly.js` 只读 `process.env`,不再 source 任何 `.env` 文件,所以变量必须先 export 到当前 shell(或写进 shell rc)。
 
 ## 2. 跑数据采集
 
 ```bash
-SCRIPT=/Users/lg/workspace/froggo-skills/skills/weekly-report/references/scripts/collect-weekly.js
+SCRIPT="$WEEKLY_REPORT_DIR/references/scripts/collect-weekly.js"
 
 # 本周(默认):
 node "$SCRIPT" --out /tmp/weekly-current.json
@@ -47,7 +51,7 @@ OK week=2026-W19 me=qingwa api_calls=87 done=5 progress=3 bug_resolved=6 bug_act
 ```
 
 **异常分流**(按 exit code):
-- `exit 1` `FATAL: env ZENTAO_BASE_URL is required` → `~/.zentao.env` 没 source
+- `exit 1` `FATAL: env ZENTAO_BASE_URL is required` → 环境变量未注入(检查 `~/.zshrc` / `~/.profile` 是否 export 并已 source)
 - `exit 1` `FATAL: failed to acquire token via zentao-api bridge` → `rm ~/.cache/zentao/token.json` 后再跑;还失败 → 检查账号密码
 - `exit 4` `FATAL: hard timeout (600000ms) reached` → 单次跑超 10 分钟,看 `_meta.skipped` 哪些 endpoint 卡住,可调 `WEEKLY_HARD_TIMEOUT_MS`
 - **`exit 5` `FATAL: WEEKLY_API_BUDGET=N exhausted`** → API 预算触顶导致数据残缺。`/tmp/weekly-{WK}.json` **已写盘可看**但 `_meta.budget_exceeded=true`、bugs 几乎全 0。**正确处理**:`WEEKLY_API_BUDGET=4000 node collect-weekly.js ...` 重跑(或更高,看 stderr 推荐值)。**调试场景**可加 `--allow-partial` 或 `WEEKLY_ALLOW_PARTIAL=1` 绕过(用于排查 budget 之外的字段映射 bug)
@@ -84,7 +88,7 @@ DRAFT="/tmp/weekly-${WK_NUM}.md"
 ## 5. 跑 7 项断言自检
 
 ```bash
-bash /Users/lg/workspace/froggo-skills/skills/weekly-report/references/scripts/check-weekly.sh \
+bash "$WEEKLY_REPORT_DIR/references/scripts/check-weekly.sh" \
   "$DRAFT" "/tmp/weekly-${WK_NUM}.json"
 ```
 
@@ -95,12 +99,14 @@ bash /Users/lg/workspace/froggo-skills/skills/weekly-report/references/scripts/c
 ## 6. 跟上周报告 diff(回归检查)
 
 ```bash
-LAST_WK_FILE=$(ls "$KNOWLEDGE_LIB/05-Reports/weekly/" 2>/dev/null \
+# KL = 知识库根目录,按所在环境的全局规则解析(Claude Code 读 `CLAUDE.md`、openclaw 读 `AGENTS.md`)后填入
+KL="<知识库根目录>"
+LAST_WK_FILE=$(ls "$KL/05-Reports/weekly/" 2>/dev/null \
   | grep -E '^[0-9]{4}-W[0-9]{2}-工作周报\.md$' | sort | tail -1)
 
 if [ -n "$LAST_WK_FILE" ]; then
   echo "上周: $LAST_WK_FILE"
-  diff -u "$KNOWLEDGE_LIB/05-Reports/weekly/$LAST_WK_FILE" "$DRAFT" | head -100
+  diff -u "$KL/05-Reports/weekly/$LAST_WK_FILE" "$DRAFT" | head -100
 fi
 ```
 
@@ -134,7 +140,7 @@ jq -r '.bugs_active[:3] | .[] | "B\(.id) status=\(.status) assignedTo=\(.assigne
 
 | 症状 | 原因 | 修法 |
 |---|---|---|
-| `FATAL: zt_acquire_token failed` | 密码错/账号锁 | 改 `~/.zentao.env`,重 source |
+| `FATAL: zt_acquire_token failed` | 密码错/账号锁 | 改 `~/.zshrc` / `~/.profile` 中的凭据后重 source |
 | `summary.bug_resolved` 与 `bugs_resolved.length` 不一致 | 不可能(脚本同步生成) | 检查脚本是否被改坏 |
 | `bug_root_cause` 各 key 之和 ≠ `bug_resolved` | 同上 | 同上 |
 | `done=0` 但你完成了任务 | view.sprints ∩ status=doing 为空 | 看 stdout `mySprints=N` trace,N=0 时让管理员加迭代 |

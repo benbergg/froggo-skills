@@ -20,29 +20,10 @@ const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
 
-// ---- env autoloading ----------------------------------------------------
-function loadEnvFile(file) {
-  if (!fs.existsSync(file)) return;
-  const text = fs.readFileSync(file, 'utf-8');
-  for (const raw of text.split('\n')) {
-    const line = raw.trim();
-    if (!line || line.startsWith('#')) continue;
-    const eq = line.indexOf('=');
-    if (eq < 0) continue;
-    const key = line.slice(0, eq).trim();
-    let val = line.slice(eq + 1).trim();
-    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) {
-      val = val.slice(1, -1);
-    }
-    if (key && process.env[key] === undefined) process.env[key] = val;
-  }
-}
-for (const f of [
-  path.join(process.env.HOME || '', '.openclaw/.env'),
-  path.join(process.env.HOME || '', '.zentao.env'),
-]) {
-  loadEnvFile(f);
-}
+// ---- env ----------------------------------------------------------------
+// This script trusts process.env only. The caller is responsible for injecting
+// the env: shell rc (~/.zshrc / ~/.profile) for local runs, EnvironmentFile for
+// scheduled runs. No .env file is sourced here.
 
 // ---- constants ----------------------------------------------------------
 
