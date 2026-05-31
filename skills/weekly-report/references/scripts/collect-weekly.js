@@ -657,6 +657,19 @@ function dedupParents(records) {
   return records.filter((r) => !childParentIds.has(r.id));
 }
 
+// 跨段父任务去重:若某 progress 任务的 id 是任一 done 任务的 parent_id,
+// 则从 progress 剔除。子任务本周完成(done)、父任务本周未完成(progress)
+// 时,子行已带"父名/子名"前缀,父行在"完成与推进"段是冗余的重复显示。
+// dedupParents 只做段内去重,碰不到这种父子跨段的情况。
+// 只清 progress,不动 tasks_next_week(父任务下周继续做是另一段叙事)。
+function dropProgressParentsOfDone(progress, done) {
+  const doneParentIds = new Set();
+  for (const d of done) {
+    if (d.parent_id > 0) doneParentIds.add(d.parent_id);
+  }
+  return progress.filter((p) => !doneParentIds.has(p.id));
+}
+
 function buildBugRootCause(bugsResolved) {
   const acc = { '代码缺陷': 0, '配置问题': 0, '需求缺失': 0, '非缺陷类': 0 };
   for (const b of bugsResolved) {
@@ -891,7 +904,10 @@ async function main() {
   // because a child shows up in tasks_next_week — they belong to different
   // narrative segments.
   const tasksDoneFinal = stripInternal(dedupParents(tasksDone));
-  const tasksProgressFinal = stripInternal(dedupParents(tasksProgress));
+  // 段内去重后,再做跨段去重:剔除 progress 里"子任务已在 done 完成"的父任务。
+  const tasksProgressFinal = stripInternal(
+    dropProgressParentsOfDone(dedupParents(tasksProgress), tasksDoneFinal),
+  );
   const tasksNextWeekFinal = stripInternal(dedupParents(tasksNextWeek));
   const bugsResolvedFinal = stripInternal(bugsResolved);
   const bugsActiveFinal = stripInternal(bugsActive);
@@ -974,5 +990,5 @@ if (require.main === module) {
   // Loaded via require() — typically a test. Cancel the hard-kill so we
   // don't sigterm the test process, and expose narrow surface for testing.
   clearTimeout(_hardKill);
-  module.exports = { fetchExecutionTasksScoped, resolveProductIds, classifyTask, STATE };
+  module.exports = { fetchExecutionTasksScoped, resolveProductIds, classifyTask, dropProgressParentsOfDone, STATE };
 }
