@@ -5,15 +5,15 @@
     "email": "nicofroggo@gmai.com"
   },
   "metadata": {
-    "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）",
-    "version": "1.36.0"
+    "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）、电商防风控（工具无关：引导大模型像真人一样访问京东/淘宝/天猫，强制前置自检回路 + 反人类行为对照表）",
+    "version": "1.37.0"
   },
   "plugins": [
     {
       "name": "froggo-skills",
       "source": "./",
-      "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）",
-      "version": "1.36.0",
+      "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）、电商防风控（工具无关：引导大模型像真人一样访问京东/淘宝/天猫，强制前置自检回路 + 反人类行为对照表）",
+      "version": "1.37.0",
       "author": {
         "name": "benbergg"
       },
