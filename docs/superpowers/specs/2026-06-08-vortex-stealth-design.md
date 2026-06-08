@@ -24,16 +24,16 @@
 
 ## 2. 形态与文件结构
 
-纯 markdown，零脚本、零外部依赖。Claude（Claude Code 或 opencode）在用 vortex 访问目标站点时读取并遵循。
+纯 markdown，**单文件**，零脚本、零外部依赖、零 references。Claude（Claude Code 或 opencode）在用 vortex 访问目标站点时读取并遵循。
 
 ```
 froggo-skills/skills/vortex-stealth/
-├── SKILL.md                       # 核心：总原则 + 反人类行为对照表 + 进站 SOP + 工具映射表
-└── references/
-    └── signals-and-recovery.md    # 风控信号识别签名 + 退避决策树 + 站点差异附录（三合一）
+└── SKILL.md     # 全部内容：总原则 + 反人类行为对照表 + 进站 SOP + 工具映射表 + 信号识别 + 退避决策树 + 站点附录
 ```
 
-**平台不分开:** 京东 / 淘宝 / 天猫的风控判断逻辑本质一致（都在检测"不像真人"），playbook 保持平台无关；站点具体差异（入口 URL、商品卡 selector、403 签名）作为 `signals-and-recovery.md` 末尾的轻量附录，而非独立平台 playbook。
+**单文件原则:** 内容总量精炼，一个 SKILL.md 即可一屏到底读完照做，无需渐进式披露。
+
+**平台不分开:** 京东 / 淘宝 / 天猫的风控判断逻辑本质一致（都在检测"不像真人"），playbook 保持平台无关；站点具体差异（入口 URL、商品卡 selector、403 签名）作为 SKILL.md 末尾的轻量附录段，而非独立平台 playbook。
 
 ---
 
@@ -91,7 +91,7 @@ description: Use when driving vortex MCP to access 京东(JD)/淘宝(Taobao)/天
 2. 从搜索页进入（L1）→ navigate s.taobao.com/search?q=<品类> 或 search.jd.com
 3. wait_for idle（L2）等页面真稳定
 4. observe 拿商品卡 ref → mouse_drag 真实点击进详情（L1）
-5. 每步后 debug_read 扫 403/滑块/验证码信号（L4）→ 命中走 recovery 决策树
+5. 每步后 debug_read 扫 403/滑块/验证码信号（L4）→ 命中走 §7 退避决策树
 6. 详情页数据用 extract / evaluate，动作间随机化停顿（L2）
 ```
 
@@ -116,9 +116,9 @@ description: Use when driving vortex MCP to access 京东(JD)/淘宝(Taobao)/天
 
 ---
 
-## 7. references/signals-and-recovery.md 大纲
+## 7. 信号识别 + 退避 + 站点附录（SKILL.md 末尾段）
 
-三合一，全部按"红旗信号 → 替代动作"同构组织：
+直接收进 SKILL.md，全部按"红旗信号 → 替代动作"同构组织：
 
 1. **风控信号识别签名**
    - 403 频控：network 出现 `pc-frequent-pro.pf.jd.com?reason=403` 或同类拦截 URL / 状态码
