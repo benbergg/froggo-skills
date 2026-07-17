@@ -1,7 +1,7 @@
 {
   "name": "froggo-skills",
-  "version": "1.38.0",
-  "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）、体验罗盘日报（AI 主导日报撰写，6 项数据自检 + 人工预览 + 钉钉 OA 日志推送）、钉钉日志 OpenAPI 封装（5 端点通用 CLI，token 自管缓存）、提示词工程模式（few-shot / CoT / ReAct 等生产级 prompt 模板）、电商防风控（工具无关：引导大模型像真人一样访问京东/淘宝/天猫，强制前置自检回路 + 反人类行为对照表）、拷问式方案评审（grill-me：逐分支一次一问 + 每问带推荐答案的设计压力测试，brainstorming 的收敛侧补充）",
+  "version": "1.38.1",
+  "description": "个人工作流增强技能：Conventional Commits Git 提交规范、禅道 API（读 + Task/Bug 全生命周期写入，禁止删除）、体验罗盘日报（AI 主导日报撰写，6 项数据自检 + 人工预览 + 钉钉 OA 日志推送）、钉钉日志 OpenAPI 封装（5 端点通用 CLI，token 自管缓存）、提示词工程模式（few-shot / CoT / ReAct 等生产级 prompt 模板）、电商防风控（工具无关：引导大模型像真人一样访问京东/淘宝/天猫，强制前置自检回路 + 反人类行为对照表）",
   "author": {
     "name": "benbergg"
   },
