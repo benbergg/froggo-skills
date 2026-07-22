@@ -842,7 +842,10 @@ function maybeDegrade(payload) {
 // [60s, 30min] so a stray 0 / negative / NaN env doesn't make the script
 // self-destruct on startup, and a too-large value can't blow past the
 // cron 1800s cap.
-const DEFAULT_HARD_TIMEOUT_MS = 10 * 60 * 1000;
+// 2026-07-23: 10min → 15min。executions 取齐后 phase2 87→112 个,禅道慢
+// 时段实测 phase2 需 ~650s(578s 时仍剩 7 个),600s 必撞 wall-clock。
+// cron 总超时 1800s,collect 900s + AI 写作/自检/push ~700s 仍有余量。
+const DEFAULT_HARD_TIMEOUT_MS = 15 * 60 * 1000;
 const MIN_HARD_TIMEOUT_MS = 60_000;
 const MAX_HARD_TIMEOUT_MS = 30 * 60 * 1000;
 const rawHardTimeoutMs = parseInt(process.env.EXP_COMPASS_HARD_TIMEOUT_MS || '', 10);
@@ -1045,7 +1048,10 @@ async function main() {
     const TASK_CONCURRENCY = 3;
     const BUDGET_RESERVE_MS = 60_000;
     const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
-    const EXEC_TIMEOUT_MS = 90_000;
+    // 2026-07-23: 90s → 120s。慢时段冷 execution(首次拉取无缓存)3 个
+    // scoped query 实测 >90s(3002/2786/2485 连环 exec-timeout);wall 预算
+    // 已扩到 840s,3 并发下容得起个别 120s 慢源。
+    const EXEC_TIMEOUT_MS = 120_000;
     const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
     for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
       const elapsedMs = Date.now() - TRACE_T0;

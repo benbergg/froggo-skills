@@ -37,7 +37,7 @@ description: "体验罗盘-每日研发进度播报。从禅道采集单产品(�
 | `DINGTALK_EXP_COMPASS_TEMPLATE_NAME` | ☐ | 钉钉日志模板名,**默认 `体验罗盘日报`**(固化在 skill);仅在切换模板时设置 |
 | `EXP_COMPASS_PRODUCTS` | ☐ | 禅道产品 id,默认 `95` |
 | `EXP_COMPASS_API_BUDGET` | ☐ | 禅道 API 调用预算,默认 `300` |
-| `EXP_COMPASS_HARD_TIMEOUT_MS` | ☐ | collect.js 硬超时,默认 `600000`(clamp 60s~30min) |
+| `EXP_COMPASS_HARD_TIMEOUT_MS` | ☐ | collect.js 硬超时,默认 `900000`(clamp 60s~30min) |
 
 **注意**:不再设 `DINGTALK_EXP_COMPASS_TEMPLATE_ID` / `_TO_CHAT` / `_TO_USERIDS` / `_TO_CIDS`。template_id 在 Step 0 由 `resolve-template.js` 按模板名查询并缓存到 `~/.cache/exp-compass-daily/template.json`;广播范围一律走模板的 `default_received_convs`。
 
