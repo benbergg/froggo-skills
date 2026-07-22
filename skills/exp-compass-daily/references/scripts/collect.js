@@ -204,12 +204,25 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
     } catch (e) {
       clearTimeout(timer);
       lastErr = e;
-      const isNetwork = e.code === 'ECONNREFUSED' || e.code === 'ETIMEDOUT' || e.name === 'AbortError';
+      // undici 在 DNS/连接重置/TLS 失败时抛裸 TypeError: fetch failed,真实 code 在 e.cause。
+      // 旧白名单只认 ECONNREFUSED/ETIMEDOUT/AbortError,会漏判这类瞬时抖动,导致整轮采集全部失败、日报归零。
+      // (backport 自 tencent-vm 线上热修,2026-07-22 部署 V4 时回传)
+      const causeCode = e.cause && e.cause.code;
+      const retryableCodes = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'EPIPE'];
+      const isNetwork =
+        retryableCodes.includes(e.code) ||
+        retryableCodes.includes(causeCode) ||
+        e.name === 'AbortError' ||
+        (typeof causeCode === 'string' && causeCode.startsWith('UND_ERR')) ||
+        e.message === 'fetch failed';
       if (isNetwork && attempt < backoff.length) {
         await sleep(backoff[attempt]);
         continue;
       }
-      return { ok: false, status: 0, body: null, reason: sanitizeMessage(e.message) };
+      // 保留 e.cause 的真实原因,避免日志里只剩无信息量的 "fetch failed"。
+      const detail = causeCode || (e.cause && e.cause.message) || e.code;
+      const reason = detail ? e.message + ' (' + detail + ')' : e.message;
+      return { ok: false, status: 0, body: null, reason: sanitizeMessage(reason) };
     }
   }
   return { ok: false, status: 0, body: null, reason: lastErr ? sanitizeMessage(lastErr.message) : 'unknown' };
