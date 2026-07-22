@@ -195,7 +195,9 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 
 (... 排序:含逾期的需求(标⚠️) → 研发中 → 有当日动态的研发完毕/测试完毕;组内 id desc ...)
 
-⏸ 已研发完毕待推进 ({n}):S{id}、S{id}、…、S{id}(滞{stale_days}天)
+⏸ 已研发完毕待推进 ({n}):
+- S{id} {title}(滞{stale_days}天)
+- S{id} {title}
 
 ## 存量风险
 - 🔴 待验收超期:B{id} {display_title} [修@{resolvedBy} 待验@{assignedTo}] 已解决 {resolved_age_days} 天未验收
@@ -245,7 +247,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
    - 排序:含逾期任务的需求置顶(标题行前加 ⚠️)→ 研发中 → 有当日动态的研发完毕/测试完毕;组内 id desc
    - 进度:`progress_source=工时` → `进度 {pct}%`;`=任务` → `进度 {pct}%(按任务)`;`=阶段` → `进度 ~{pct}%(估)`
    - "状态"列:`is_overdue → ⚠️ 逾期 {overdue_days} 天 ({deadline})`;`is_today_finished → ✅ 今日完成`;否则 `status_cn`
-   - `is_active=false` 的需求收敛为一行 `⏸ 已研发完毕待推进 ({n}):…`,按 `stale_days` desc 排列,`stale_days ≥ 7` 的追 `(滞{n}天)`;不显示进度
+   - `is_active=false` 的需求收敛为清单:标题行 `⏸ 已研发完毕待推进 ({n}):` + 每需求一行 `- S{id} {title}`(带标题,只给 id 不友好),按 `stale_days` desc 排列,`stale_days ≥ 7` 的行尾追 `(滞{n}天)`;不显示进度、不出任务表
 
 3. **存量风险子段(二段末尾 `## 存量风险`,三类,每类为空省略该行,三类全空写 `- (无)`)**:
 
