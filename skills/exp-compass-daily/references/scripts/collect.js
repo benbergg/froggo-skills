@@ -998,21 +998,17 @@ async function main() {
     trace(`fetch projects done (${projects.length})`);
     const execResults = await Promise.all(
       projects.map(async (proj) => {
-        const r = await ztFetch(`/projects/${proj.id}/executions`);
-        return {
-          projId: proj.id,
-          ok: r.ok,
-          execs: r.ok ? (r.body.executions || []) : [],
-          reason: r.ok ? null : r.reason,
-        };
+        // 2026-07-23: 必须走 ztPaginate。此前单次 ztFetch 不带分页参数,
+        // 禅道 v1 默认 limit=20,项目 3084/2353/1845 实测 total 29/30/26,
+        // 25 个 execution 被静默截断 → 其下任务全部丢失且不进 skipped
+        // (collect exit 0"成功"漏任务)。ztPaginate 翻页取齐,page1 失败
+        // 也会 push STATE.skipped → fatal 可见,不再静默丢整个项目。
+        const execs = await ztPaginate(`/projects/${proj.id}/executions`, 'executions');
+        return { projId: proj.id, execs };
       }),
     );
     const allExecs = [];
     for (const er of execResults) {
-      if (!er.ok) {
-        trace(`fetch project=${er.projId} executions failed: ${er.reason}`);
-        continue;
-      }
       trace(`fetch project=${er.projId} executions done (${er.execs.length})`);
       for (const ex of er.execs) allExecs.push(ex);
       if (vocOwnedProjectIds.has(Number(er.projId))) {
