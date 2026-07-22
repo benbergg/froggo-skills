@@ -22,7 +22,7 @@
 
 ```jsonc
 {
-  "story": { "in_progress": 8, "today_new": 3, "today_done": 5, "todo": 2 },
+  "story": { "in_progress": 8, "active": 5, "stale": 3, "today_new": 3, "today_done": 5, "todo": 2 },
   "task":  { "in_progress": 17, "today_new": 14, "today_done": 21, "todo": 3 },
   "bug":   { "in_progress": 6, "today_new": 8, "today_done": 9, "todo": 5 }
 }
@@ -30,18 +30,20 @@
 
 | 字段 | 算法 |
 |---|---|
-| `story.in_progress` | `count(stage ∈ {developing, developed, tested})` |
+| `story.in_progress` | `count(stage ∈ {developing, developed, tested})`(== active + stale,兼容保留) |
+| `story.active` | **V4** `count(stage ∈ 进行中 && is_active)`,概览需求行渲染 `{active} (另滞留 {stale})` |
+| `story.stale` | **V4** `count(stage ∈ 进行中 && !is_active)` |
 | `story.today_new` | `count(is_today_opened)` |
 | `story.today_done` | `count(is_today_done)` |
 | `story.todo` | `count(stage ∈ {wait, planned, projected, draft})` |
 | `task.in_progress` | `count(status == doing)` over **`stories[].tasks ∪ loose_tasks`** |
 | `task.today_new` | `count(is_today_created)` 同上范围 |
-| `task.today_done` | `count(is_today_finished)` 同上范围 |
+| `task.today_done` | `count(is_today_finished && !is_aggregate_parent)` 同上范围 |
 | `task.todo` | `count(status ∈ {wait, pause, blocked})` 同上范围 |
-| `bug.in_progress` | `count(status == resolved)`(已解决待验) |
+| `bug.in_progress` | **V4 重映射** `count(status == active)`(修复中;V3 曾是 resolved,列语义与需求/任务行相反被纠正) |
 | `bug.today_new` | `count(is_today_opened)` |
 | `bug.today_done` | `count(is_today_closed)` |
-| `bug.todo` | `count(status == active)` |
+| `bug.todo` | **V4 重映射** `count(status == resolved)`(已解决待验证;概览表下须配 `ℹ️ BUG 行口径` 脚注) |
 
 > **task 计数范围注释**:概览表是产品全景视图,task 4 列覆盖 JSON 中所有出现的 task(无论其所属 story 是否在"进行中"维度)。这与"需求推进"段仅显示 `stage∈{developing,developed,tested}` 不矛盾——前者宏观,后者微观。
 
@@ -60,7 +62,11 @@
   "closedBy": null,
   "closedDate": null,
   "is_today_opened": false,
-  "is_today_done": false,         // stage∈{closed,released,verified} && (closedDate || lastEditedDate) 是今天
+  "is_today_done": false,          // V4 拓宽:closed→closedDate 当天;released/verified→lastEditedDate 当天近似
+  "is_active": true,               // V4:developing 恒 true;developed/tested 需「当日任务动态 ∨ 未完成任务 ∨ 逾期」;其余 false
+  "last_activity_date": "2026-06-18T10:00:00Z",  // V4:max(tasks[].finishedDate ∪ tasks[].openedDate ∪ story.openedDate)
+  "stale_days": 33,                // V4:date − last_activity_date 的整天数,滞留行 `(滞N天)` 用
+  "is_today_tested": false,        // V4:stage=tested && 存在 type=test 且 is_today_finished 的任务("今日测试完毕"段)
   "tasks": [/* see tasks[] schema */]
 }
 ```
@@ -87,6 +93,7 @@
   "display_handler": "虹猫",        // 派生:status∈{done,closed} ? finishedBy : assignedTo
   "deadline": "2026-05-10",        // null 表示无截止
   "is_overdue": false,             // 派生:deadline && deadline < today && status not in {done,closed}
+  "overdue_days": 0,               // V4:is_overdue ? (date − deadline) 整天数 : 0
   "is_normal": true,               // !is_overdue
   "consumed": 8,                   // 工时(小时)
   "left": 0,
@@ -114,6 +121,7 @@
 {
   "id": 53188,
   "title": "...",
+  "display_title": "...",            // V4:去开头【…】前缀(客服日期戳)、trim、超 40 字截断加 …;渲染一律用它
   "status": "resolved",
   "status_cn": "已解决待验",         // active→待处理 / resolved→已解决待验 / closed→已关闭
   "severity": 3,
@@ -124,7 +132,9 @@
   "closedBy": null,
   "closedDate": null,
   "assignedTo": "huanghu",
-  "display_handlers": ["huanghu"],   // 派生:resolvedBy + closedBy 去重(顺序保留),空数组表示无人处理。AI 在"修复 Bug"段直接渲染此数组。
+  "display_handlers": ["huanghu"],   // 派生:resolvedBy + closedBy 去重(顺序保留),空数组表示无人处理。V4 渲染改用 [修@resolvedBy 验@closedBy] 角色拆显,此数组保留兼容。
+  "display_reporter": "黄虎",         // V4:openedBy 为机器人账号且有 assignedTo 时 → "{assignedTo}·机器人录入",否则 openedBy("新增 Bug"段用)
+  "resolved_age_days": 0,            // V4:status=resolved ? (date − resolvedDate) 整天数 : 0(存量风险·待验收超期,阈值 >3 天)
   "is_today_opened": true,
   "is_today_resolved": true,
   "is_today_closed": false
@@ -162,6 +172,14 @@
 | `display_handlers`(bug,数组) | `[resolvedBy, closedBy]` 去重,空字符串/null 跳过;空数组表示无人处理 |
 | `is_overdue` | `deadline && deadline < today && !["done","closed"].includes(status)` |
 | `is_today_*` | 字段日期 `startsWith(date)`(`openedDate.startsWith("2026-05-07")` 等) |
+| `overdue_days`(task,V4) | `is_overdue ? max(0, floor((date − deadline)/86400s)) : 0` |
+| `resolved_age_days`(bug,V4) | `status=resolved ? max(0, floor((date − resolvedDate)/86400s)) : 0` |
+| `display_title`(bug,V4) | 去开头连续 `【…】` 前缀 → trim → 超 40 字(码点)截断加 `…` |
+| `display_reporter`(bug,V4) | `ROBOT_ACCOUNTS.includes(openedBy) && assignedTo ? "{assignedTo}·机器人录入" : openedBy` |
+| `is_active`(story,V4) | `developing → true;developed/tested → tasks.some(is_today_* ∨ status∈{doing,wait,pause,blocked} ∨ is_overdue);其余 → false` |
+| `last_activity_date`(story,V4) | `max(tasks[].finishedDate ∪ tasks[].openedDate ∪ story.openedDate)` |
+| `stale_days`(story,V4) | `max(0, floor((date − last_activity_date)/86400s))` |
+| `is_today_tested`(story,V4) | `stage=tested && tasks.some(type=test && is_today_finished)` |
 
 ### account → realname 映射(V2 实测后补丁)
 

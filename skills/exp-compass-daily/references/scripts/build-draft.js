@@ -104,16 +104,24 @@ function normalizeRowType(raw) {
 function transformOverviewTable(content) {
   const lines = content.split('\n');
   const rows = [];
+  const extras = [];
   for (const line of lines) {
     // First column accepts a trailing English label (e.g. '需求 Story',
     // '任务 Task') and Bug in any case. Any non-pipe trailer between the
     // type word and the closing pipe is allowed. No \b after the type:
     // JS regex word-boundary only fires on [A-Za-z0-9_], so it would never
     // trigger after the CJK characters '需求' or '任务'.
-    const m = line.match(/^\|\s*(需求|任务|[Bb][Uu][Gg])[^|]*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*$/);
+    // V4: 第 2 列(进行中)允许非纯数字 — 需求行渲染 `6 (另滞留 13)`。
+    // 后 3 列仍必须纯数字,保证残缺表格照旧走 fallback。
+    const m = line.match(/^\|\s*(需求|任务|[Bb][Uu][Gg])[^|]*\|\s*([^|]*?)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*$/);
     if (m) {
       const [, rawType, inProgress, todayNew, todayDone, todo] = m;
+      if (!inProgress) return { ok: false };
       rows.push({ type: normalizeRowType(rawType), inProgress, todayNew, todayDone, todo });
+    } else if (line.trim() && !line.trimStart().startsWith('|')) {
+      // V4: 表格外的说明行(如 `ℹ️ BUG 行口径:…` 脚注)在转换后保留,
+      // 排在 emoji 行之后。表头/分隔行以 | 开头,自然丢弃。
+      extras.push(line.trim());
     }
   }
   if (rows.length !== 3) return { ok: false };
@@ -124,7 +132,10 @@ function transformOverviewTable(content) {
   const listLines = rows.map((r) =>
     `${ROW_EMOJI[r.type]} **${r.type}**:进行中 ${r.inProgress} / 今日新增 ${r.todayNew} / 今日完成 ${r.todayDone} / 待处理 ${r.todo}`
   );
-  return { ok: true, text: listLines.join('\n') };
+  const text = extras.length
+    ? `${listLines.join('\n')}\n\n${extras.join('\n')}`
+    : listLines.join('\n');
+  return { ok: true, text };
 }
 
 function main() {

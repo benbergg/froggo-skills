@@ -496,6 +496,19 @@ function startsWithDate(iso, date) {
   return String(iso).slice(0, 10) === date;
 }
 
+// 整天差:date(YYYY-MM-DD) − iso 的日期部分,负数截断为 0。
+// V4 派生 overdue_days / resolved_age_days / stale_days 共用。
+function daysBetween(date, iso) {
+  if (!iso) return 0;
+  const a = Date.parse(`${date}T00:00:00Z`);
+  const b = Date.parse(`${String(iso).slice(0, 10)}T00:00:00Z`);
+  if (Number.isNaN(a) || Number.isNaN(b)) return 0;
+  return Math.max(0, Math.floor((a - b) / 86400000));
+}
+
+// 新增 Bug 段的创建人显示:机器人录入时换显 assignedTo(V4,设计文档 B5)。
+const ROBOT_ACCOUNTS = ['bug录入机器人'];
+
 function flattenChildren(t) {
   // Tree of tasks: include parent's children as separate task records when present.
   // The function returns a flat list including the parent itself + all descendants.
@@ -554,6 +567,7 @@ function deriveTask(t, date) {
     display_handler: isDone ? (finishedBy || assignedTo) : (assignedTo || finishedBy),
     deadline,
     is_overdue: isOverdue,
+    overdue_days: isOverdue ? daysBetween(date, deadline) : 0,
     is_normal: !isOverdue,
     consumed: Number(t.consumed || 0),
     left: Number(t.left || 0),
@@ -564,10 +578,28 @@ function deriveTask(t, date) {
   };
 }
 
+// display_title:去开头【…】前缀(客服录入的日期戳)、trim、超 40 字截断加 …(V4,B4)
+function cleanBugTitle(title) {
+  let t = String(title || '');
+  t = t.replace(/^(?:\s*【[^】]*】)+\s*/, '').trim();
+  const chars = Array.from(t);
+  if (chars.length > 40) t = chars.slice(0, 40).join('') + '…';
+  return t;
+}
+
 function deriveBug(b, date) {
   const status = b.status || 'active';
   const resolvedBy = pickName(b.resolvedBy);
   const closedBy = pickName(b.closedBy);
+  const openedBy = pickName(b.openedBy);
+  const assignedTo = pickName(b.assignedTo);
+  // display_reporter:机器人录入且有真人 assignedTo 时换显执行侧(V4,B5)。
+  // assignedTo 也是机器人时回退 openedBy(2026-07-22 回放实证 B56899,
+  // 否则产出"bug录入机器人·机器人录入")。
+  const displayReporter = ROBOT_ACCOUNTS.includes(openedBy)
+      && assignedTo && !ROBOT_ACCOUNTS.includes(assignedTo)
+    ? `${assignedTo}·机器人录入`
+    : openedBy;
   // display_handlers: ordered, deduplicated list of "who acted on this bug".
   // Used by AI when rendering the "修复 Bug" section to show all relevant handlers
   // (resolver + closer) instead of picking just one.
@@ -577,20 +609,24 @@ function deriveBug(b, date) {
   return {
     id: b.id,
     title: b.title,
+    display_title: cleanBugTitle(b.title),
     status,
     status_cn: status === 'active' ? '待处理'
       : status === 'resolved' ? '已解决待验'
       : status === 'closed' ? '已关闭'
       : status,
     severity: Number(b.severity || 0),
-    openedBy: pickName(b.openedBy),
+    openedBy,
+    display_reporter: displayReporter,
     openedDate: b.openedDate || null,
     resolvedBy,
     resolvedDate: b.resolvedDate || null,
     closedBy,
     closedDate: b.closedDate || null,
-    assignedTo: pickName(b.assignedTo),
+    assignedTo,
     display_handlers: handlers,
+    // resolved_age_days:已解决待验挂了几天(V4,存量风险·待验收超期)
+    resolved_age_days: status === 'resolved' ? daysBetween(date, b.resolvedDate) : 0,
     is_today_opened: startsWithDate(b.openedDate, date),
     is_today_resolved: startsWithDate(b.resolvedDate, date),
     is_today_closed: startsWithDate(b.closedDate, date),
@@ -600,17 +636,44 @@ function deriveBug(b, date) {
 function deriveStory(s, tasksOfStory, date) {
   const stage = s.stage || 'wait';
   const closedDate = s.closedDate && s.closedDate !== '0000-00-00 00:00:00' ? s.closedDate : null;
-  // story.is_today_done — single authoritative signal (per user decision A):
-  //   stage=closed AND closedDate today  →  formally closed today
-  // Earlier we also accepted B (stage∈{tested,released,verified} with task
-  // today_finished) as "test passed today", but tested-stage stories are
-  // still in flight (closedDate=null) — they belong in "需求推进" only,
-  // not "今日完成的需求".
-  const isTodayDone = stage === 'closed' && startsWithDate(closedDate, date);
+  // story.is_today_done — V4 拓宽(设计文档 E4):
+  //   stage=closed → closedDate 当天(原信号保留)
+  //   stage=released/verified → closedDate 常为空,用 lastEditedDate 当天近似
+  //     "今日发布/验收"。V2 曾因 lastEditedDate 噪音弃用,V4 重启的差别是仅
+  //     对 released/verified 生效(本团队极少用这两个 stage,噪音面可控),
+  //     closed 仍锚定 closedDate。
+  const isTodayDone = STAGE_DONE.includes(stage)
+    && (startsWithDate(closedDate, date)
+      || (stage !== 'closed' && startsWithDate(s.lastEditedDate, date)));
 
   // progress is computed only over leaf tasks of this story.
   const leaves = tasksOfStory.filter((t) => !tasksOfStory.some((c) => c.parent === t.id));
   const prog = computeProgress(leaves, stage);
+
+  // ---- V4 活跃度派生(设计文档 §6) ----
+  // is_active:developing 恒活跃;developed/tested 需「当日任务动态 ∨ 未完成
+  // 任务 ∨ 逾期」;其余 stage 一律 false(不进需求推进段)。
+  const hasLiveSignal = tasksOfStory.some((t) => t.is_today_created
+    || t.is_today_finished
+    || t.status === 'doing'
+    || TASK_TODO_STATUSES.includes(t.status)
+    || t.is_overdue);
+  const isActive = stage === 'developing'
+    ? true
+    : (stage === 'developed' || stage === 'tested') ? hasLiveSignal : false;
+
+  // last_activity_date:max(任务完成/创建时间 ∪ story 创建时间),滞留天数的锚点
+  let lastActivity = s.openedDate || null;
+  for (const t of tasksOfStory) {
+    for (const d of [t.finishedDate, t.openedDate]) {
+      if (d && (!lastActivity || Date.parse(d) > Date.parse(lastActivity))) lastActivity = d;
+    }
+  }
+
+  // is_today_tested:禅道拿不到 stage 变更时间,用「测试任务当日完成」近似
+  // "今日测试完毕"(设计文档 §10 开放问题 1)。
+  const isTodayTested = stage === 'tested'
+    && tasksOfStory.some((t) => t.type === 'test' && t.is_today_finished);
 
   return {
     id: s.id,
@@ -625,6 +688,10 @@ function deriveStory(s, tasksOfStory, date) {
     closedDate,
     is_today_opened: startsWithDate(s.openedDate, date),
     is_today_done: isTodayDone,
+    is_active: isActive,
+    last_activity_date: lastActivity,
+    stale_days: daysBetween(date, lastActivity),
+    is_today_tested: isTodayTested,
     tasks: tasksOfStory,
   };
 }
@@ -647,9 +714,12 @@ async function fetchProductName(productId) {
 function inScopeStory(s, date) {
   const stage = s.stage || 'wait';
   if (STAGE_IN_PROGRESS.includes(stage) || STAGE_TODO.includes(stage)) return true;
-  // Closed/released/verified stories: only today-closed are in scope.
-  // (lastEditedDate dropped — too noisy; rawStories merge already filters this.)
-  if (STAGE_DONE.includes(stage)) return startsWithDate(s.closedDate, date);
+  // Closed: today-closed only. Released/verified: closedDate 常为空,补
+  // lastEditedDate 当天(V4 拓宽,与 deriveStory.is_today_done 同口径)。
+  if (STAGE_DONE.includes(stage)) {
+    return startsWithDate(s.closedDate, date)
+      || (stage !== 'closed' && startsWithDate(s.lastEditedDate, date));
+  }
   return false;
 }
 
@@ -670,6 +740,10 @@ function buildSummary(stories, allTasks, bugs) {
   return {
     story: {
       in_progress: cntStory((s) => STAGE_IN_PROGRESS.includes(s.stage)),
+      // V4:进行中拆 活跃/滞留(active + stale == in_progress),概览需求行
+      // 渲染 `{active} (另滞留 {stale})`。
+      active: cntStory((s) => STAGE_IN_PROGRESS.includes(s.stage) && s.is_active),
+      stale: cntStory((s) => STAGE_IN_PROGRESS.includes(s.stage) && !s.is_active),
       today_new: cntStory((s) => s.is_today_opened),
       today_done: cntStory((s) => s.is_today_done),
       todo: cntStory((s) => STAGE_TODO.includes(s.stage)),
@@ -684,10 +758,13 @@ function buildSummary(stories, allTasks, bugs) {
       todo: cntTask((t) => TASK_TODO_STATUSES.includes(t.status)),
     },
     bug: {
-      in_progress: cntBug((b) => b.status === 'resolved'),
+      // V4 重映射(设计文档 A2):进行中=修复中(active)、待处理=已解决待验
+      // (resolved)。V3 的映射与需求/任务行同名列语义相反,读者按字面必错。
+      // 概览表下配脚注「ℹ️ BUG 行口径:…」。
+      in_progress: cntBug((b) => b.status === 'active'),
       today_new: cntBug((b) => b.is_today_opened),
       today_done: cntBug((b) => b.is_today_closed),
-      todo: cntBug((b) => b.status === 'active'),
+      todo: cntBug((b) => b.status === 'resolved'),
     },
   };
 }
@@ -1067,5 +1144,9 @@ if (require.main === module) {
   // Loaded via require() — typically a test. Cancel the hard-kill so we
   // don't sigterm the test process, and expose narrow surface for testing.
   clearTimeout(_hardKill);
-  module.exports = { fetchExecutionTasksScoped, STATE };
+  module.exports = {
+    fetchExecutionTasksScoped, STATE,
+    // V4 派生函数(tests/run-derive-v4-tests.js)
+    deriveTask, deriveBug, deriveStory, buildSummary, inScopeStory,
+  };
 }

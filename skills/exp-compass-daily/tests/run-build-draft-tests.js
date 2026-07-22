@@ -153,3 +153,54 @@ test('T6: --out 文件输出与 stdout 一致', () => {
     } finally { r2.cleanup(); }
   } finally { r.cleanup(); }
 });
+
+// ---- V4(2026-07-22 设计文档) ---------------------------------------------
+
+test('T7: V4 概览需求行 "6 (另滞留 13)" 仍解析为 emoji 行', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily-v4.md'), '--date', '2026-07-21'],
+  });
+  try {
+    assert.equal(r.code, 0, `stderr=${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /WARN: overview table parse failed/, 'V4 需求行不应退化');
+    const j = JSON.parse(r.stdout);
+    const overview = j.contents[0].content;
+    assert.match(overview, /^📋 \*\*需求\*\*:进行中 6 \(另滞留 13\) \/ 今日新增 0 \/ 今日完成 0 \/ 待处理 9$/m);
+    assert.match(overview, /^🐞 \*\*BUG\*\*:进行中 2 \/ 今日新增 4 \/ 今日完成 11 \/ 待处理 2$/m);
+    assert.doesNotMatch(overview, /\| 需求 \|/);
+  } finally { r.cleanup(); }
+});
+
+test('T7b: V4 概览脚注(ℹ️ 行)在表格转 emoji 后保留', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily-v4.md'), '--date', '2026-07-21'],
+  });
+  try {
+    const j = JSON.parse(r.stdout);
+    const overview = j.contents[0].content;
+    assert.match(overview, /ℹ️ BUG 行口径:进行中=修复中\(active\),待处理=已解决待验证\(resolved\)/);
+    // 脚注应在 emoji 行之后
+    assert.ok(
+      overview.indexOf('🐞') < overview.indexOf('ℹ️'),
+      '脚注应排在 emoji 行之后',
+    );
+  } finally { r.cleanup(); }
+});
+
+test('T7c: V4 二段新结构(⚠️ 标题 / └ 表尾 / ⏸ 滞留行 / ## 存量风险)原样透传', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('sample-daily-v4.md'), '--date', '2026-07-21'],
+  });
+  try {
+    const j = JSON.parse(r.stdout);
+    const sec2 = j.contents[1].content;
+    assert.match(sec2, /^### ⚠️ S22176 /m);
+    assert.match(sec2, /^└ 另有 3 个任务已完成$/m);
+    assert.match(sec2, /^⏸ 已研发完毕待推进 \(13\)/m);
+    assert.match(sec2, /^## 存量风险$/m);
+    // H2 子段不得泄漏到三段
+    assert.doesNotMatch(j.contents[2].content, /存量风险/);
+    // 三段的"今日测试完毕"新子段在三段内
+    assert.match(j.contents[2].content, /^## 今日测试完毕$/m);
+  } finally { r.cleanup(); }
+});

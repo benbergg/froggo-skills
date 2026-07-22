@@ -168,7 +168,9 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 
 ---
 
-## 模板原文(撰写时严格遵循)
+## 模板原文(V4,撰写时严格遵循)
+
+> V4 设计依据 [[20260722-体验罗盘日报-V4-设计文档]]:需求推进分层(活跃详情 + 滞留一行)、存量风险子段、执行人口径统一。
 
 ```markdown
 体验罗盘-每日研发进度播报(YYYY-MM-DD)
@@ -176,101 +178,131 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 # 一、研发概览
 | 类型 | 进行中 | 今日新增 | 今日完成 | 待处理 |
 |---|---|---|---|---|
-| 需求 | {N1} | {N2} | {N3} | {N4} |
+| 需求 | {active} (另滞留 {stale}) | {N2} | {N3} | {N4} |
 | 任务 | {N5} | {N6} | {N7} | {N8} |
 | BUG | {N9} | {N10} | {N11} | {N12} |
 
+ℹ️ BUG 行口径:进行中=修复中(active),待处理=已解决待验证(resolved)
+
 # 二、需求推进
 
-### S{id} {title} · {stage_cn} · 进度 {pct}%
-| 任务ID | 任务名称 | 处理人 | 是否正常 |
+### ⚠️ S{id} {title} · {stage_cn} · 进度 {pct}%
+| 任务ID | 任务名称 | 处理人 | 状态 |
 |---|---|---|---|
-| T{id} | {name} | {display_handler} | 正常 / ⚠️ 逾期 ({deadline}) |
+| T{id} | {name} | {display_handler} | ⚠️ 逾期 {overdue_days} 天 ({deadline}) |
+| T{id} | {name} | {display_handler} | 进行中 / 未开始 / ✅ 今日完成 |
+└ 另有 {n_hidden} 个任务已完成
 
-(... 按 stage 排序:研发中 → 研发完毕 → 测试完毕,组内 id desc ...)
+(... 排序:含逾期的需求(标⚠️) → 研发中 → 有当日动态的研发完毕/测试完毕;组内 id desc ...)
+
+⏸ 已研发完毕待推进 ({n}):S{id}、S{id}、…、S{id}(滞{stale_days}天)
+
+## 存量风险
+- 🔴 待验收超期:B{id} {display_title} [修@{resolvedBy} 待验@{assignedTo}] 已解决 {resolved_age_days} 天未验收
+- ⚠️ 隐形逾期:T{id} {name} [{assignedTo}] 逾期 {overdue_days} 天(所属需求 S{id} {stage_cn})
+- 待修复 Bug ({n}):B{id}({assignedTo})、B{id}({assignedTo})
 
 # 三、今日产出
 
 ## 完成的需求
 - S{id} {title} [产品@{name} / 开发@{name} / 测试@{name}]
 
+## 今日测试完毕
+- S{id} {title} [测@{name}]
+
 ## 完成任务
 - T{id} {name} [{finishedBy}]
 
 ## 修复 Bug
-- B{id} {title} [{closedBy ?? resolvedBy}]
+- {🔴?}B{id} {display_title} [修@{resolvedBy} 验@{closedBy}] {⚡当日闭环?}
 
 ## 新增需求
 - S{id} {title} [{openedBy}]
 
 ## 新增 Bug
-- B{id} {title} [{openedBy}]
+- {🔴?}B{id} {display_title} [{display_reporter}]
 
 ## 新增任务
-- T{id} {name} [{openedBy}]
+- T{id} {name} [{display_handler}]
 
 # 四、今日总结
 {2-4 句具体陈述,必须含 ≥3 个 S/T/B id 引用,字数 80~200。
-覆盖三维度:关键产出 / Bug 风险 / 逾期任务。
-严禁泛泛话术(推进顺利、节奏稳定等)。}
+四维度至少覆盖三:关键产出 / Bug 风险 / 逾期任务 / 滞留与存量。
+归因只能引用条目自身字段,严禁推断。严禁泛泛话术(推进顺利、节奏稳定等)。}
 ```
+
+**注意**:概览脚注行用 `ℹ️` 前缀,**禁用 `>` blockquote**(钉钉渲染器把 `>` 变 `&g` 乱码,V3 实证);`build-draft.js` 表格转 emoji 行后会保留该脚注。
 
 ---
 
-## 撰写约束(6 条硬规则,严格遵守)
+## 撰写约束(V4,8 条硬规则,严格遵守)
 
-1. **概览表 4 列数字必须直接用 `summary.{story|task|bug}.{in_progress|today_new|today_done|todo}` 字段值**,严禁自己重数。
+1. **概览表数字必须直接用 `summary.*` 字段值**,严禁自己重数。需求行"进行中"渲染 `{summary.story.active} (另滞留 {summary.story.stale})`,`stale=0` 时只写 `{active}`。BUG 行 V4 口径:进行中=`summary.bug.in_progress`(active 修复中)、待处理=`summary.bug.todo`(resolved 待验),脚本已按新口径计数,照抄即可。
 
-2. **需求推进段**:
-   - 仅列 `stage ∈ {developing, developed, tested}` 的需求
-   - 排序:研发中 → 研发完毕 → 测试完毕,组内按 id desc
-   - 进度% 必须等于 `story.progress_pct`
-   - 子任务表"处理人"列直接用 `task.display_handler`(脚本已根据 status 选好 finishedBy 或 assignedTo)
-   - 子任务表"是否正常"列:`is_normal=true → 正常`,`false → ⚠️ 逾期 ({deadline:YYYY-MM-DD})`
+2. **需求推进段——活跃/滞留分层**:
+   - 详情表仅列 `story.is_active=true` 的需求(脚本已派生:developing 恒活跃;developed/tested 需「当日任务动态 ∨ 未完成任务 ∨ 逾期」)
+   - 任务行仅列 `status ∈ {doing,wait,pause,blocked} ∨ is_overdue ∨ is_today_created ∨ is_today_finished`;被隐藏的 done 任务数 >0 时表尾追 `└ 另有 N 个任务已完成`
+   - 排序:含逾期任务的需求置顶(标题行前加 ⚠️)→ 研发中 → 有当日动态的研发完毕/测试完毕;组内 id desc
+   - 进度:`progress_source=工时` → `进度 {pct}%`;`=阶段` → `进度 ~{pct}%(估)`
+   - "状态"列:`is_overdue → ⚠️ 逾期 {overdue_days} 天 ({deadline})`;`is_today_finished → ✅ 今日完成`;否则 `status_cn`
+   - `is_active=false` 的需求收敛为一行 `⏸ 已研发完毕待推进 ({n}):…`,按 `stale_days` desc 排列,`stale_days ≥ 7` 的追 `(滞{n}天)`;不显示进度
 
-3. **今日产出 6 段(必须按顺序、不可省略段、为空写 `- (无)`)**:
+3. **存量风险子段(二段末尾 `## 存量风险`,三类,每类为空省略该行,三类全空写 `- (无)`)**:
 
-   | 段 | 数据来源 | 处理人/创建人 |
+   | 类 | 数据来源 |
+   |---|---|
+   | 待验收超期 | `bugs.filter(status=resolved && resolved_age_days > 3)`,标 `[修@resolvedBy 待验@assignedTo]` |
+   | 隐形逾期 | `逾期任务全集 − 活跃详情表已展示的逾期任务`(挂在未开始/滞留需求下的),标 `[assignedTo]` + 所属需求 stage |
+   | 待修复 Bug | `bugs.filter(status=active)`,标 `(assignedTo)` |
+
+4. **今日产出 7 段(必须按顺序、不可省略段、为空写 `- (无)`)**:
+
+   | 段 | 数据来源 | 人(执行人口径) |
    |---|---|---|
-   | 完成的需求 | `stories.filter(stage ∈ {closed,released,verified} && is_today_done)` | 拆 3 组:产品@`story.openedBy`、开发@`tasks.filter(type ∈ {devel,design}).map(finishedBy ?? assignedTo)` 去重、测试@`tasks.filter(type==test).map(finishedBy ?? assignedTo)` 去重;某角色为空则省略该角色组 |
-   | 完成任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_finished && !is_aggregate_parent)` — `is_aggregate_parent=true` 表示该 parent 有 today-finished 的 child,跳过避免父+子重复 | `finishedBy` |
-   | 修复 Bug | `bugs.filter(is_today_closed \|\| is_today_resolved)` | 用 `bug.display_handlers` 数组(脚本已组合 resolvedBy + closedBy 去重),渲染为 `[张三, 李四]`;空数组写 `[-]` |
-   | 新增需求 | `stories.filter(is_today_opened)` | `openedBy` |
-   | 新增 Bug | `bugs.filter(is_today_opened)` | `openedBy` |
-   | 新增任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_created)` | `openedBy` |
+   | 完成的需求 | `stories.filter(is_today_done)`(V4 已拓宽:closed 当天关闭 ∨ released/verified 当天编辑) | 拆 3 组:产品@`story.openedBy`、开发@`tasks.filter(type ∈ {devel,design}).map(finishedBy)` 去重、测试@`tasks.filter(type==test).map(finishedBy)` 去重;**finishedBy 为空则跳过该人,禁止回退 assignedTo**(禅道完成后 assignedTo 流转回创建人) |
+   | 今日测试完毕 | `stories.filter(is_today_tested)` | 测@`tasks.filter(type==test && is_today_finished).map(finishedBy)` 去重 |
+   | 完成任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_finished && !is_aggregate_parent)` — `is_aggregate_parent=true` 跳过避免父+子重复 | `finishedBy` |
+   | 修复 Bug | `bugs.filter(is_today_closed \|\| is_today_resolved)` | `[修@resolvedBy 验@closedBy]`,同人合并为 `[修验@x]`,某角色空则省略;`is_today_opened` 同真时行尾加 `⚡当日闭环` |
+   | 新增需求 | `stories.filter(is_today_opened)` | `openedBy`(提出者语义,保留) |
+   | 新增 Bug | `bugs.filter(is_today_opened && !(is_today_closed \|\| is_today_resolved))`(当日闭环的已在修复段,不重复列) | `display_reporter`(脚本已派生:机器人录入换显 assignedTo) |
+   | 新增任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_created)` | **`display_handler`(执行人),不用 openedBy**(91% 任务由组长拆卡,创建人无信息量) |
 
-4. **今日总结**:
+   Bug 标题一律用 `display_title`(脚本已去【日期】前缀、截 40 字);`severity ≤ 2` 行首加 🔴。
+
+5. **今日总结**:
    - 必须**写出具体名字、id、数字**(如"@虹猫 完成 S21241")
-   - 至少覆盖三维度:**关键产出 / Bug 风险 / 逾期任务**
-   - 严禁泛泛话术
-   - 长度 80~200 字
-   - **必须含 ≥3 个 id 引用**(S/T/B 任意组合,正则 `[STB]\d+`)
+   - 四维度至少覆盖三:**关键产出 / Bug 风险 / 逾期任务 / 滞留与存量**
+   - 严禁泛泛话术;长度 80~200 字;**必须含 ≥3 个 id 引用**(正则 `[STB]\d+`)
+   - **归因铁律**:提到"某人做了某事"时,人名必须来自该条目自身的对应角色字段(完成→finishedBy,修复→resolvedBy,执行→assignedTo/display_handler,提出→openedBy);严禁"需 X 修复/建议 X 跟进"类推断——除非 X 是该条目的 assignedTo
 
-5. **任何提到的 id / 名字 / 数字必须在 JSON 中能找到**,严禁编造或推测。
+6. **任何提到的 id / 名字 / 数字必须在 JSON 中能找到**,严禁编造或推测。
 
-6. **4 段 H1 锚点字符级精确**:
+7. **4 段 H1 锚点字符级精确**:
    - `# 一、研发概览`
    - `# 二、需求推进`
    - `# 三、今日产出`
    - `# 四、今日总结`
 
-   不允许把"一、"改成"1.",不允许加 emoji 前缀,不允许前后多空格。`build-draft.js` 段切片依赖此精确匹配。
+   不允许把"一、"改成"1.",不允许加 emoji 前缀,不允许前后多空格。`build-draft.js` 段切片依赖此精确匹配。`## 存量风险`/`## 今日测试完毕` 是 H2 子段,不影响切片。
+
+8. **宁缺勿错**:任何角色字段为空时省略该角色/该人,禁止用相邻字段填补。
 
 ---
 
-## 自检 checklist(7 项 cross-check,3 轮上限)
+## 自检 checklist(V4,8 项 cross-check,3 轮上限)
 
 写完 MD 后必须自跑。任一失败 → 改写 → 再跑。
 
 | # | 检查项 | 验证方法 |
 |---|---|---|
-| **C1** | 概览表数字 | grep MD 中的 `\| 需求 \| ... \|` 等 3 行,共 12 个数字与 `summary.{story\|task\|bug}.{in_progress\|today_new\|today_done\|todo}` 严格相等 |
-| **C2** | 需求推进段覆盖 | MD 中 `### S{id}` 提到的 id 集合 == `stories.filter(stage ∈ {developing,developed,tested}).map(.id)` |
-| **C3** | 今日产出 6 段完整性 + 无编造 | 6 段中每段 id 集合 == JSON 对应 filter 结果(双向:既不漏 JSON 中应有的 id,也不出现 JSON 中没有的 id — 锚定撰写约束 #5;完成任务段:filter 含 `!is_aggregate_parent`) |
-| **C4** | 进度数字一致 | 每个 `进度 N%` 在 MD 中的 N 等于 `story.progress_pct` |
-| **C5** | 逾期标记 | MD 中"⚠️ 逾期"的 task id 集合 == `tasks.filter(is_overdue).map(.id)` |
+| **C1** | 概览表数字 | 12 个数字与 `summary.*` 严格相等;需求行拆 `active`/`stale` 两数核对;BUG 行按 V4 新口径(in_progress=active、todo=resolved) |
+| **C2** | 需求推进分层完备 | 详情表 `### S{id}` 集合 == `stories.filter(is_active).map(.id)`;滞留行 S 集合 == `stories.filter(stage∈{developing,developed,tested} && !is_active).map(.id)`;两集合并集 == stage filter 全集且无交集;滞留天数与 `stale_days` 相等 |
+| **C3** | 今日产出 7 段双向 | 每段 id 集合 == 撰写约束 #4 对应 filter 结果(双向:不漏也不多);新增 Bug 段须已剔除当日闭环;完成任务段含 `!is_aggregate_parent` |
+| **C4** | 进度数字与估值标注 | 每个 `进度 N%` 的 N == `story.progress_pct`;`progress_source=阶段` 必须带 `~`/`(估)` |
+| **C5** | 逾期全覆盖 | `JSON 逾期任务全集(含挂在未开始需求下的) ⊆ (二段详情表⚠️行 ∪ 存量风险·隐形逾期行)`,两处集合无交集、并集 == 全集 |
 | **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |
-| **C7** | 人名白名单 | 抽 MD 中所有人名 token(二段子任务表第 3 列、三段 `[xxx]` / `[a, b]` / `[产品@x / 开发@y / 测试@z]` 内的人名、四段所有 `@xxx`),对每个 token 跑 `grep -F -- "$name" /tmp/exp-compass-{DATE}.json`,任一 token 在 JSON 中 grep 不到 → ✗(锚定撰写约束 #5,专杀"AI 凭空写人名"的幻觉,例如把"青蛙"写成"冯日红") |
+| **C7** | 归因角色校验 | 对 MD 中每个"人名+条目"配对,人名必须命中**该条目自身**的对应角色字段(二段处理人→display_handler,完成任务→finishedBy,修@→resolvedBy,验@→closedBy,新增任务→display_handler,新增需求/Bug→openedBy/display_reporter,总结同规则),逐条 jq 核对;不再是全局 grep 存在性(全局存在挡不住张冠李戴) |
+| **C8** | 跨段一致性 | 概览数字与对应段条目数逐对核对:`story.today_done == 完成的需求条数`、`task.today_done == 完成任务条数`、`bug.today_done == 修复 Bug 中 is_today_closed 条数`、`bug.today_new == 新增 Bug 条数 + ⚡当日闭环条数`、`story.stale == 滞留行 S 数`;任一对不上 → ✗ 并列出差集 |
 
 ### C7 参考实现
 
@@ -279,15 +311,14 @@ DATE=$(date +%Y-%m-%d)
 JSON=/tmp/exp-compass-$DATE.json
 MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 
-# 1. 抽 MD 中候选人名 token(三类来源,合并去重)
-#    a) 二段子任务表第 3 列:awk -F'|' '/^\| T[0-9]+ \|/ { gsub(/^ +| +$/,"",$4); print $4 }' "$MD"
-#    b) 三段 [xxx] / [a, b] / [产品@x / 开发@y]:grep -oE '\[[^]]+\]' "$MD" 后剥 [] 与 角色前缀 / 分隔符
-#    c) 四段 @xxx:grep -oE '@[^ /、,，\[\]|·]+' "$MD" 后剥 @
-# 2. 对每个 token: grep -qF -- "$token" "$JSON" || echo "C7 ✗ - '$token' 不在 JSON 中"
-# 3. 同时排除明显非人名 token(空串、纯数字、单字符、纯标点 / "-" 占位符)
+# 对每个「人名 + 条目 id + 角色」三元组做条目级校验(V4,不再全局 grep):
+#   1. 抽配对:二段表行 (T{id}, 第3列人名, display_handler)、三段各行
+#      (id, [] 内人名, 对应角色字段)、四段 @人名 找其临近 id
+#   2. 逐对核对,如完成任务段 T45717 [黄虎]:
+#      jq -e --arg n "黄虎" '[.stories[].tasks[],.loose_tasks[]]
+#        | .[] | select(.id==45717) | .finishedBy == $n' "$JSON"
+#   3. 任一配对不命中 → C7 ✗,输出「'{名}' 不是 {id} 的 {角色}(实际: {实际值})」
 ```
-
-实际执行时,AI 可以直接对每个候选名在 `$JSON` 中 `grep -F` 校验;能命中 = 该名字曾经以字符串字面出现在数据源中,不是凭空捏造。
 
 ### 自检反馈格式
 
@@ -296,12 +327,13 @@ MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 ```
 自检 第N轮:
   C1 ✓
-  C2 ✗ - 漏列 S21015 (stage=developed 但 MD 中无 ### S21015 块)
+  C2 ✗ - S21925 is_active=false 但出现在详情表(应收进滞留行)
   C3 ✓
-  C4 ✓
-  C5 ✗ - T43314 is_overdue=true 但 MD 中未标 ⚠️
+  C4 ✗ - S21731 progress_source=阶段 但 MD 写"进度 80%"缺 (估) 标注
+  C5 ✗ - T45083 is_overdue=true 但详情表与存量风险段均未出现
   C6 ✓
-  C7 ✗ - '冯日红' 不在 JSON 中(疑似 AI 编造,应替换为 T44444.display_handler="青蛙")
+  C7 ✗ - '虹猫' 不是 T45717 的 finishedBy(实际: 黄虎,assignedTo 是流转回的创建人)
+  C8 ✗ - bug.today_new=4 但 新增Bug 2 条 + 当日闭环 1 条 = 3,少 1
 ```
 
 失败 → 改写指定段 → 进入下一轮。3 轮上限。
@@ -311,7 +343,8 @@ MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 - 措辞质量(C6 仅保底"具体性",文采由用户在钉钉 APP 我的日志查看后决定是否转发前最终判断)
 - 时间一致性(${DATE} 已硬性绑定,无需再查)
 - API 字段缺失(collect.js 已校验)
-- H1 锚点正确性(写入约束 #6 已规定;若错则 build-draft.js Step 5 exit 4 暴露)
+- H1 锚点正确性(写入约束 #7 已规定;若错则 build-draft.js Step 5 exit 4 暴露)
+- 存量风险阈值合理性(resolved>3 天、滞留≥7 天显示天数,为设计文档 §10 开放问题,观察期后调参)
 
 ---
 

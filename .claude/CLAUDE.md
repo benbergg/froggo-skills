@@ -126,6 +126,19 @@ prompt-engineering
 - **删除 env**:`_TEMPLATE_ID` / `_TO_CHAT` / `_TO_USERIDS` / `_TO_CIDS` 全部移除,广播范围由钉钉后台模板配置决定
 - **5-11 晚 sub-pivot 第 2 条**:钉钉 OpenAPI 实测 `to_chat=true` **单独不会** fanout 到 `default_received_convs`,**必须显式**把 `default_received_convs[].conversation_id` 注入 `--to-cids` 才会真触发群通知。Step 6 从 cache 读 cids 拼数组传给 dingtalk-log。这条规律也修正了 dingtalk-log SKILL.md 早期"to_chat=true 自动广播"的错描述
 
+### exp-compass-daily V4 (2026-07-22)
+
+详见 [[20260722-体验罗盘日报-V4-设计文档]],基于 7-21 报告 21 项问题实证的重构:
+- **需求推进分层**:详情表只列 `is_active` 需求(developing 恒活跃;developed/tested 需当日动态/未完任务/逾期),任务行过滤 + `└ 另有 N 个任务已完成` 表尾;其余收敛一行 `⏸ 已研发完毕待推进`(带滞留天数);逾期需求置顶标 ⚠️
+- **存量风险子段**(二段末尾 H2):待验收超期 bug(resolved>3 天)/隐形逾期任务(挂在未开始需求下)/待修复 bug——解决"概览数字无处 drill-down"
+- **执行人口径统一**:新增任务用 `display_handler` 不用 openedBy(91% 任务组长拆卡);完成需求拆组禁 `?? assignedTo` 回退(禅道完成后 assignedTo 流转回创建人,实证 T45717);修复 Bug `[修@x 验@y]` 角色拆显
+- **概览语义修正**:BUG 行重映射 in_progress=active/todo=resolved + `ℹ️` 脚注(禁 `>` blockquote,钉钉 `&gt;`→`&g` 乱码);需求行 `{active} (另滞留 {stale})`
+- **is_today_done 拓宽**:closed→closedDate 当天;released/verified→lastEditedDate 当天近似;新增"今日测试完毕"段(三段共 7 子段)
+- **自检 C1-C8**:C5 重定义为"逾期全集 ⊆ 详情表 ∪ 存量风险"(原规则严格不可满足);C7 从全局 grep 升级为条目级角色字段校验;新增 C8 跨段一致性
+- **collect.js 新派生**:story.is_active/stale_days/last_activity_date/is_today_tested、task.overdue_days、bug.resolved_age_days/display_title/display_reporter、summary.story.{active,stale}
+- build-draft.js:概览第 2 列允许非纯数字、表格外说明行(脚注)转换后保留
+- 测试:`tests/run-derive-v4-tests.js`(34 项)+ build-draft V4 3 项
+
 ## 版本管理
 
 版本号在 `.claude-plugin/plugin.json` 的 `version` 字段中维护。
