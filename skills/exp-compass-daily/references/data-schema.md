@@ -56,7 +56,7 @@
   "stage": "developing",
   "stage_cn": "研发中",
   "progress_pct": 100,           // 整数 0-100
-  "progress_source": "工时",      // "工时" | "阶段"(无工时数据时回退)
+  "progress_source": "工时",      // "工时" | "任务"(未完成任务缺工时时降级为任务计数) | "阶段"(无任务时回退)
   "openedBy": "鹿扬",             // 真实姓名优先,缺则 account
   "openedDate": "2026-04-20T09:00:00Z",
   "closedBy": null,
@@ -167,7 +167,7 @@
 |---|---|
 | `stage_cn` | `{wait/planned/projected/draft → 未开始, developing → 研发中, developed → 研发完毕, tested → 测试完毕, released → 已发布, verified → 已验收, closed → 已完成}` |
 | `status_cn` | `{wait → 未开始, doing → 进行中, done → 已完成, pause → 暂停, blocked → 阻塞, cancel → 取消, closed → 已关闭}` |
-| `progress_pct` | 工时优先:`Math.round(consumed / (consumed + left) * 100)` 累加所有 leaf task;无工时 → 阶段估值 `{wait:0, projected:20, developing:50, developed:80, tested:90, closed:100}` |
+| `progress_pct` | 三级口径(2026-07-22 修复):**工时**=`round(Σconsumed/(Σconsumed+Σleft)*100)`,仅当所有未完成 leaf 都有工时数据(否则未填预估的任务对分母隐形,S22290 实证 5 任务 1 完成算出 100%);**任务**=`round(done_leaf/total_leaf*100)`(工时不可信时降级);**阶段**=无任务时估值 `{wait:0, projected:20, developing:50, developed:80, tested:90, closed:100}` |
 | `display_handler`(task) | `["done","closed"].includes(status) ? finishedBy : assignedTo` |
 | `display_handlers`(bug,数组) | `[resolvedBy, closedBy]` 去重,空字符串/null 跳过;空数组表示无人处理 |
 | `is_overdue` | `deadline && deadline < today && !["done","closed"].includes(status)` |

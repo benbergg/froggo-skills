@@ -539,18 +539,28 @@ function flattenChildren(t) {
   return acc;
 }
 
-// progress: hours-priority, fallback to stage estimate
+// progress 三级口径:工时 → 任务计数 → 阶段估值。
+// 工时口径盲区(2026-07-22 实证 S22290):未完成任务没填预估(consumed+left=0)
+// 时完全不进分母,doing 任务没填 left 被当作已消耗完——5 任务 1 完成算出
+// 100%。因此工时口径仅在「所有未完成任务都有工时数据」时可信;否则降级为
+// 任务计数口径 done_leaf/total_leaf(source='任务');无任务再回退阶段估值。
 function computeProgress(taskList, stage) {
   let consumed = 0, left = 0, hasHours = false;
+  let unfinishedNoHours = false;
   for (const t of taskList) {
     const c = Number(t.consumed || 0);
     const l = Number(t.left || 0);
     if (c + l > 0) hasHours = true;
+    if (c + l === 0 && !TASK_DONE_STATUSES.includes(t.status)) unfinishedNoHours = true;
     consumed += c;
     left += l;
   }
-  if (hasHours && consumed + left > 0) {
+  if (hasHours && consumed + left > 0 && !unfinishedNoHours) {
     return { progress_pct: Math.round((consumed / (consumed + left)) * 100), progress_source: '工时' };
+  }
+  if (taskList.length > 0) {
+    const done = taskList.filter((t) => TASK_DONE_STATUSES.includes(t.status)).length;
+    return { progress_pct: Math.round((done / taskList.length) * 100), progress_source: '任务' };
   }
   const fb = STAGE_FALLBACK_PCT[stage] ?? 0;
   return { progress_pct: fb, progress_source: '阶段' };

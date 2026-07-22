@@ -243,7 +243,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
    - 详情表仅列 `story.is_active=true` 的需求(脚本已派生:developing 恒活跃;developed/tested 需「当日任务动态 ∨ 未完成任务 ∨ 逾期」)
    - 任务行仅列 `status ∈ {doing,wait,pause,blocked} ∨ is_overdue ∨ is_today_created ∨ is_today_finished`;被隐藏的 done 任务数 >0 时表尾追 `└ 另有 N 个任务已完成`
    - 排序:含逾期任务的需求置顶(标题行前加 ⚠️)→ 研发中 → 有当日动态的研发完毕/测试完毕;组内 id desc
-   - 进度:`progress_source=工时` → `进度 {pct}%`;`=阶段` → `进度 ~{pct}%(估)`
+   - 进度:`progress_source=工时` → `进度 {pct}%`;`=任务` → `进度 {pct}%(按任务)`;`=阶段` → `进度 ~{pct}%(估)`
    - "状态"列:`is_overdue → ⚠️ 逾期 {overdue_days} 天 ({deadline})`;`is_today_finished → ✅ 今日完成`;否则 `status_cn`
    - `is_active=false` 的需求收敛为一行 `⏸ 已研发完毕待推进 ({n}):…`,按 `stale_days` desc 排列,`stale_days ≥ 7` 的追 `(滞{n}天)`;不显示进度
 
@@ -298,7 +298,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 | **C1** | 概览表数字 | 12 个数字与 `summary.*` 严格相等;需求行拆 `active`/`stale` 两数核对;BUG 行按 V4 新口径(in_progress=active、todo=resolved) |
 | **C2** | 需求推进分层完备 | 详情表 `### S{id}` 集合 == `stories.filter(is_active).map(.id)`;滞留行 S 集合 == `stories.filter(stage∈{developing,developed,tested} && !is_active).map(.id)`;两集合并集 == stage filter 全集且无交集;滞留天数与 `stale_days` 相等 |
 | **C3** | 今日产出 7 段双向 | 每段 id 集合 == 撰写约束 #4 对应 filter 结果(双向:不漏也不多);新增 Bug 段须已剔除当日闭环;完成任务段含 `!is_aggregate_parent` |
-| **C4** | 进度数字与估值标注 | 每个 `进度 N%` 的 N == `story.progress_pct`;`progress_source=阶段` 必须带 `~`/`(估)` |
+| **C4** | 进度数字与口径标注 | 每个 `进度 N%` 的 N == `story.progress_pct`;`progress_source=任务` 必须带 `(按任务)`,`=阶段` 必须带 `~`/`(估)` |
 | **C5** | 逾期全覆盖 | `JSON 逾期任务全集(含挂在未开始需求下的) ⊆ (二段详情表⚠️行 ∪ 存量风险·隐形逾期行)`,两处集合无交集、并集 == 全集 |
 | **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |
 | **C7** | 归因角色校验 | 对 MD 中每个"人名+条目"配对,人名必须命中**该条目自身**的对应角色字段(二段处理人→display_handler,完成任务→finishedBy,修@→resolvedBy,验@→closedBy,新增任务→display_handler,新增需求/Bug→openedBy/display_reporter,总结同规则),逐条 jq 核对;不再是全局 grep 存在性(全局存在挡不住张冠李戴) |

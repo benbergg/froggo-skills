@@ -271,3 +271,45 @@ test('display_reporter: assignedTo 也是机器人 → 回退 openedBy(2026-07-2
   const b = deriveBug(B({ openedBy: 'bug录入机器人', assignedTo: 'bug录入机器人' }), DATE);
   assert.equal(b.display_reporter, 'bug录入机器人');
 });
+
+// ---- progress 工时盲区修复(2026-07-22 实证 S22290:5 任务 1 完成显示 100%) ----
+
+test('progress: 未完成任务缺工时(consumed+left=0) → 降级任务计数口径', () => {
+  // S22290 实况:done 6/0 + doing 6/0 + 3× wait 0/0 → 旧算法 12/12=100%,应为 1/5=20%
+  const tasks = [
+    deriveTask(T({ id: 1, status: 'done', finishedBy: 'x', consumed: 6, left: 0 }), DATE),
+    deriveTask(T({ id: 2, status: 'doing', consumed: 6, left: 0 }), DATE),
+    deriveTask(T({ id: 3, status: 'wait' }), DATE),
+    deriveTask(T({ id: 4, status: 'wait' }), DATE),
+    deriveTask(T({ id: 5, status: 'wait' }), DATE),
+  ];
+  const s = deriveStory(S({ stage: 'developing' }), tasks, DATE);
+  assert.equal(s.progress_pct, 20);
+  assert.equal(s.progress_source, '任务');
+});
+
+test('progress: 未完成任务都有工时数据 → 维持工时口径', () => {
+  const tasks = [
+    deriveTask(T({ id: 1, status: 'done', finishedBy: 'x', consumed: 6, left: 0 }), DATE),
+    deriveTask(T({ id: 2, status: 'doing', consumed: 2, left: 6 }), DATE),
+  ];
+  const s = deriveStory(S({ stage: 'developing' }), tasks, DATE);
+  assert.equal(s.progress_source, '工时');
+  assert.equal(s.progress_pct, 57); // 8/(8+6)
+});
+
+test('progress: 全部完成但无工时 → 任务计数 100%', () => {
+  const tasks = [
+    deriveTask(T({ id: 1, status: 'done', finishedBy: 'x' }), DATE),
+    deriveTask(T({ id: 2, status: 'done', finishedBy: 'y' }), DATE),
+  ];
+  const s = deriveStory(S({ stage: 'developed' }), tasks, DATE);
+  assert.equal(s.progress_pct, 100);
+  assert.equal(s.progress_source, '任务');
+});
+
+test('progress: 无任务 → 阶段估值回退不变', () => {
+  const s = deriveStory(S({ stage: 'developed' }), [], DATE);
+  assert.equal(s.progress_pct, 80);
+  assert.equal(s.progress_source, '阶段');
+});
