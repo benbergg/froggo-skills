@@ -137,7 +137,11 @@ const STATE = {
   baseUrl: '',
   token: '',
   apiCalls: 0,
-  budget: parseInt(process.env.EXP_COMPASS_API_BUDGET || '300', 10),
+  // 2026-07-23: 300 → 600。executions 分页取齐后集合 87→112,phase2 需
+  // 112×3=336 次 scoped 调用 + phase1 ~10 + executions 分页 ~15 ≈ 365,
+  // 300 必爆(实证 19 个 execution 因 budget skip → exit 2)。600 留
+  // ~1.6x 余量,仍能挡住失控循环。
+  budget: parseInt(process.env.EXP_COMPASS_API_BUDGET || '600', 10),
   budgetExceeded: false,
   skipped: [],
 };
