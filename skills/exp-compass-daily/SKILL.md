@@ -355,7 +355,9 @@ MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 
 | 异常 | 处理 |
 |---|---|
-| `collect.js` 退出非 0 | 中止主流程,echo stderr,提示检查 zentao 凭据 |
+| `collect.js` 退出非 0 | 中止主流程,echo stderr,提示检查 zentao 凭据。**严禁用任何残留 JSON 继续**(exit 2 时正式路径已被脚本删除,partial 数据只在 `*.json.partial`,仅供诊断) |
+| `collect.js` exit 2(source skipped) | 数据不完整,JSON 落 `/tmp/exp-compass-{DATE}.json.partial`,正式路径不存在 → Step 2+ 物理上无法继续。中止并在 announce 报失败 |
+| `collect.js` exit 5(phase1 超预算) | 禅道服务端抖动(phase1 > 硬超时 30%,常态 ~35s),提前止损未进 phase2。中止,建议错峰重跑 |
 | Token 401 自动刷新失败 | `collect.js` 已退出,提示用户在终端跑 `zt_init && zt_acquire_token` |
 | `summary` 字段缺失 | JSON 损坏,中止 Step 2,echo `cat /tmp/exp-compass-{DATE}.json \| jq .` |
 | 自检 3 轮不过 | 仍写 MD + 推广播日志,stderr 列瑕疵,run log 标 WARN |

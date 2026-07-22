@@ -851,6 +851,34 @@ const _hardKill = setTimeout(() => {
 }, HARD_TIMEOUT_MS);
 _hardKill.unref();
 
+// phase1 提前止损(2026-07-22 下午实证):禅道服务端抖动日 phase1 从常态
+// ~35s 涨到 323s,吃掉 wall-clock 预算一半后 phase2 的 87 个 executions
+// 注定跑不完(5 source skip → exit 2),不如在 phase1 结束时就 FATAL,
+// 省下白耗的 ~5 分钟。阈值取硬超时的 30%(600s → 180s),正常 35s 有
+// 5 倍余量,抖动 323s 稳触发。
+const PHASE1_FATAL_FRACTION = 0.3;
+function phase1BudgetExceeded(tPhase1Ms, hardTimeoutMs) {
+  return tPhase1Ms > hardTimeoutMs * PHASE1_FATAL_FRACTION;
+}
+
+// 落盘物理断路(2026-07-22 seq 83 事件):skipped>0 时 JSON 只写
+// `${out}.partial` 并删除正式路径旧文件。此前 partial JSON 写正式路径
+// "供诊断",结果 AI 无视 exit=2 直接读它把错误日报广播了出去;正式
+// 路径不存在时 Step 2+ 物理上跑不起来,不再依赖提示词约束。
+function finalizeOutput({ out, json, skippedCount }) {
+  const target = skippedCount > 0 ? `${out}.partial` : out;
+  fs.writeFileSync(target, json);
+  fs.chmodSync(target, 0o600);
+  if (skippedCount > 0) {
+    try {
+      fs.unlinkSync(out); // 防止残留的上一次完整 JSON 被后续步骤误用
+    } catch (e) {
+      if (e.code !== 'ENOENT') throw e;
+    }
+  }
+  return target;
+}
+
 // Progress signal goes to stdout so wrapping schedulers (openclaw helios
 // `process poll`, etc.) can observe it. stderr is reserved for FATAL/throw.
 // Always-on so silent stuck windows are observable without env tweaking.
@@ -915,6 +943,16 @@ async function main() {
   ]);
   const tPhase1Ms = Date.now() - tPhase1Start;
   trace(`phase1 done in ${tPhase1Ms}ms: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closedToday=${closedToday.length} bugs=${rawBugs.length}`);
+
+  // 禅道抖动日提前止损:phase1 超预算说明服务端整体变慢,phase2 注定
+  // 跑不完,与其耗满硬超时再 exit 2,不如现在就 FATAL(exit 5)。
+  if (phase1BudgetExceeded(tPhase1Ms, HARD_TIMEOUT_MS)) {
+    console.error(
+      `FATAL: phase1 took ${tPhase1Ms}ms > ${Math.round(HARD_TIMEOUT_MS * PHASE1_FATAL_FRACTION)}ms ` +
+      `(${PHASE1_FATAL_FRACTION * 100}% of hard timeout) — Zentao too slow, aborting before phase2`
+    );
+    process.exit(5);
+  }
 
   // Merge (active + today-closed). De-dup by id (active should never overlap
   // closed, but be safe).
@@ -1159,14 +1197,19 @@ async function main() {
 
   payload = maybeDegrade(payload);
 
-  fs.writeFileSync(args.out, JSON.stringify(payload, null, 2));
-  fs.chmodSync(args.out, 0o600);
-
   // skipped 非空 = 有数据源整页丢失(如 bugs?status=unclosed 401 被跳过),
   // JSON 结构合法但内容不完整。宁可不出报告也不广播错数据(2026-07-22
-  // B57142 事件:active bug 全丢,概览 BUG 行 0/0 照播)。文件保留供诊断。
+  // B57142 事件:active bug 全丢,概览 BUG 行 0/0 照播)。partial JSON 落
+  // `${out}.partial` 且正式路径被清空 —— 物理断路,后续步骤读不到正式
+  // 文件自然中止(2026-07-22 seq 83 事件:AI 无视 exit=2 照播 partial)。
+  const outTarget = finalizeOutput({
+    out: args.out,
+    json: JSON.stringify(payload, null, 2),
+    skippedCount: STATE.skipped.length,
+  });
+
   if (STATE.skipped.length > 0) {
-    console.error(`FATAL: ${STATE.skipped.length} source(s) skipped — JSON incomplete (kept at ${args.out} for diagnosis), aborting to prevent silent data loss:`);
+    console.error(`FATAL: ${STATE.skipped.length} source(s) skipped — JSON incomplete (kept at ${outTarget} for diagnosis only), aborting to prevent silent data loss:`);
     for (const s of STATE.skipped) console.error(`  - ${s.path} page=${s.page} reason=${s.reason}`);
     process.exit(2);
   }
@@ -1193,5 +1236,7 @@ if (require.main === module) {
     fetchExecutionTasksScoped, STATE,
     // V4 派生函数(tests/run-derive-v4-tests.js)
     deriveTask, deriveBug, deriveStory, buildSummary, inScopeStory,
+    // partial 防护(tests/run-partial-guard-tests.js)
+    finalizeOutput, phase1BudgetExceeded,
   };
 }
