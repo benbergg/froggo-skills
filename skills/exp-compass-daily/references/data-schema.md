@@ -122,6 +122,7 @@
   "id": 53188,
   "title": "...",
   "display_title": "...",            // V4:去开头【…】前缀(客服日期戳)、trim、超 40 字截断加 …;渲染一律用它
+  "url": "https://.../bug-view-53188.html",  // V4:禅道跟踪链接(ZENTAO_BASE_URL 去 api 尾巴派生),B id 渲染为 [B{id}]({url})
   "status": "resolved",
   "status_cn": "已解决待验",         // active→待处理 / resolved→已解决待验 / closed→已关闭
   "severity": 3,

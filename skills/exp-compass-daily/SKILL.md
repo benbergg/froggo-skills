@@ -200,9 +200,9 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 - S{id} {title}
 
 ## 存量风险
-- 🔴 待验收超期:B{id} {display_title} [修@{resolvedBy} 待验@{assignedTo}] 已解决 {resolved_age_days} 天未验收
+- 🔴 待验收超期:[B{id}]({url}) {display_title} [修@{resolvedBy} 待验@{assignedTo}] 已解决 {resolved_age_days} 天未验收
 - ⚠️ 隐形逾期:T{id} {name} [{assignedTo}] 逾期 {overdue_days} 天(所属需求 S{id} {stage_cn})
-- 待修复 Bug ({n}):B{id}({assignedTo})、B{id}({assignedTo})
+- 待修复 Bug ({n}):[B{id}]({url})({assignedTo})、[B{id}]({url})({assignedTo})
 
 # 三、今日产出
 
@@ -216,13 +216,14 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 - T{id} {name} [{finishedBy}]
 
 ## 修复 Bug
-- {🔴?}B{id} {display_title} [修@{resolvedBy} 验@{closedBy}] {⚡当日闭环?}
+- {🔴?}[B{id}]({url}) {display_title} [已关闭 修@{resolvedBy} 验@{closedBy}] {⚡当日闭环?}
+- {🔴?}[B{id}]({url}) {display_title} [待验证 修@{resolvedBy} 当前@{assignedTo}]
 
 ## 新增需求
 - S{id} {title} [{openedBy}]
 
 ## 新增 Bug
-- {🔴?}B{id} {display_title} [{display_reporter}]
+- {🔴?}[B{id}]({url}) {display_title} [提@{display_reporter} 当前@{assignedTo}]
 
 ## 新增任务
 - T{id} {name} [{display_handler}]
@@ -264,12 +265,12 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
    | 完成的需求 | `stories.filter(is_today_done)`(V4 已拓宽:closed 当天关闭 ∨ released/verified 当天编辑) | 拆 3 组:产品@`story.openedBy`、开发@`tasks.filter(type ∈ {devel,design}).map(finishedBy)` 去重、测试@`tasks.filter(type==test).map(finishedBy)` 去重;**finishedBy 为空则跳过该人,禁止回退 assignedTo**(禅道完成后 assignedTo 流转回创建人) |
    | 今日测试完毕 | `stories.filter(is_today_tested)` | 测@`tasks.filter(type==test && is_today_finished).map(finishedBy)` 去重 |
    | 完成任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_finished && !is_aggregate_parent)` — `is_aggregate_parent=true` 跳过避免父+子重复 | `finishedBy` |
-   | 修复 Bug | `bugs.filter(is_today_closed \|\| is_today_resolved)` | `[修@resolvedBy 验@closedBy]`,同人合并为 `[修验@x]`,某角色空则省略;`is_today_opened` 同真时行尾加 `⚡当日闭环` |
+   | 修复 Bug | `bugs.filter(is_today_closed \|\| is_today_resolved)` | 状态显式标注:`status=closed → [已关闭 修@resolvedBy 验@closedBy]`;`status=resolved(未关闭) → [待验证 修@resolvedBy 当前@assignedTo]`(当前处理人=待验人);同人合并为 `[已关闭 修验@x]`,某角色空则省略;`is_today_opened` 同真时行尾加 `⚡当日闭环` |
    | 新增需求 | `stories.filter(is_today_opened)` | `openedBy`(提出者语义,保留) |
-   | 新增 Bug | `bugs.filter(is_today_opened && !(is_today_closed \|\| is_today_resolved))`(当日闭环的已在修复段,不重复列) | `display_reporter`(脚本已派生:机器人录入换显 assignedTo) |
+   | 新增 Bug | `bugs.filter(is_today_opened && !(is_today_closed \|\| is_today_resolved))`(当日闭环的已在修复段,不重复列) | `[提@display_reporter 当前@assignedTo]`(assignedTo 空则省略 当前@) |
    | 新增任务 | `(stories[].tasks ∪ loose_tasks).filter(is_today_created)` | **`display_handler`(执行人),不用 openedBy**(91% 任务由组长拆卡,创建人无信息量) |
 
-   Bug 标题一律用 `display_title`(脚本已去【日期】前缀、截 40 字);`severity ≤ 2` 行首加 🔴。
+   Bug 标题一律用 `display_title`(脚本已去【日期】前缀、截 40 字);`severity ≤ 2` 行首加 🔴。**Bug id 一律渲染为跟踪链接** `[B{id}]({bug.url})`(适用于二段存量风险、三段修复/新增 Bug;四段总结用纯文本 id,避免链接刷屏)。
 
 5. **今日总结**:
    - 必须**写出具体名字、id、数字**(如"@虹猫 完成 S21241")
@@ -303,7 +304,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 | **C4** | 进度数字与口径标注 | 每个 `进度 N%` 的 N == `story.progress_pct`;`progress_source=任务` 必须带 `(按任务)`,`=阶段` 必须带 `~`/`(估)` |
 | **C5** | 逾期全覆盖 | `JSON 逾期任务全集(含挂在未开始需求下的) ⊆ (二段详情表⚠️行 ∪ 存量风险·隐形逾期行)`,两处集合无交集、并集 == 全集 |
 | **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |
-| **C7** | 归因角色校验 | 对 MD 中每个"人名+条目"配对,人名必须命中**该条目自身**的对应角色字段(二段处理人→display_handler,完成任务→finishedBy,修@→resolvedBy,验@→closedBy,新增任务→display_handler,新增需求/Bug→openedBy/display_reporter,总结同规则),逐条 jq 核对;不再是全局 grep 存在性(全局存在挡不住张冠李戴) |
+| **C7** | 归因角色校验 | 对 MD 中每个"人名+条目"配对,人名必须命中**该条目自身**的对应角色字段(二段处理人→display_handler,完成任务→finishedBy,修@→resolvedBy,验@→closedBy,当前@/待验@→assignedTo,提@→display_reporter,新增任务→display_handler,新增需求→openedBy,总结同规则),逐条 jq 核对;不再是全局 grep 存在性(全局存在挡不住张冠李戴) |
 | **C8** | 跨段一致性 | 概览数字与对应段条目数逐对核对:`story.today_done == 完成的需求条数`、`task.today_done == 完成任务条数`、`bug.today_done == 修复 Bug 中 is_today_closed 条数`、`bug.today_new == 新增 Bug 条数 + ⚡当日闭环条数`、`story.stale == 滞留行 S 数`;任一对不上 → ✗ 并列出差集 |
 
 ### C7 参考实现

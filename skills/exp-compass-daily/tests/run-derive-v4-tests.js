@@ -313,3 +313,10 @@ test('progress: 无任务 → 阶段估值回退不变', () => {
   assert.equal(s.progress_pct, 80);
   assert.equal(s.progress_source, '阶段');
 });
+
+test('bug.url: 由 ZENTAO_BASE_URL 去 api 尾巴派生跟踪链接', () => {
+  const base = String(process.env.ZENTAO_BASE_URL).replace(/\/api\.php.*$/, '');
+  const b = deriveBug(B({ id: 57142 }), DATE);
+  assert.equal(b.url, `${base}/bug-view-57142.html`);
+  assert.doesNotMatch(b.url, /api\.php/);
+});

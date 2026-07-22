@@ -115,13 +115,20 @@ function refreshTokenViaBash() {
   if (!fs.existsSync(zentaoFn)) {
     throw new Error(`zt-functions.sh not found at ${zentaoFn}`);
   }
-  const r = spawnSync('bash', ['-c', `source "${zentaoFn}" && zt_init && zt_acquire_token >/dev/null`], {
-    stdio: ['ignore', 'pipe', 'pipe'],
-    timeout: 30_000,
-  });
-  if (r.status !== 0) {
-    throw new Error(`zt_acquire_token failed: ${(r.stderr || '').toString().slice(0, 200)}`);
+  // 重试 3 次(间隔 5s):2026-07-22 实证 token 在跑到第 288 次调用时过期,
+  // zt_acquire_token 单次瞬时失败导致 bugs?status=unclosed 整页被 skip,
+  // 当天日报 active/resolved bug 全部静默丢失(B57142 事件)。
+  let lastErr = '';
+  for (let i = 0; i < 3; i++) {
+    const r = spawnSync('bash', ['-c', `source "${zentaoFn}" && zt_init && zt_acquire_token >/dev/null`], {
+      stdio: ['ignore', 'pipe', 'pipe'],
+      timeout: 30_000,
+    });
+    if (r.status === 0) return;
+    lastErr = (r.stderr || '').toString().slice(0, 200);
+    if (i < 2) spawnSync('sleep', ['5']);
   }
+  throw new Error(`zt_acquire_token failed after 3 attempts: ${lastErr}`);
 }
 
 // ---- HTTP layer ---------------------------------------------------------
@@ -522,6 +529,11 @@ function daysBetween(date, iso) {
 // 新增 Bug 段的创建人显示:机器人录入时换显 assignedTo(V4,设计文档 B5)。
 const ROBOT_ACCOUNTS = ['bug录入机器人'];
 
+// 禅道 Web 端 base(去掉 /api.php/v1 尾巴),bug.url 跟踪链接用。
+function zentaoWebBase() {
+  return String(process.env.ZENTAO_BASE_URL || '').replace(/\/api\.php.*$/, '');
+}
+
 function flattenChildren(t) {
   // Tree of tasks: include parent's children as separate task records when present.
   // The function returns a flat list including the parent itself + all descendants.
@@ -633,6 +645,7 @@ function deriveBug(b, date) {
     id: b.id,
     title: b.title,
     display_title: cleanBugTitle(b.title),
+    url: `${zentaoWebBase()}/bug-view-${b.id}.html`,
     status,
     status_cn: status === 'active' ? '待处理'
       : status === 'resolved' ? '已解决待验'
@@ -1148,6 +1161,15 @@ async function main() {
 
   fs.writeFileSync(args.out, JSON.stringify(payload, null, 2));
   fs.chmodSync(args.out, 0o600);
+
+  // skipped 非空 = 有数据源整页丢失(如 bugs?status=unclosed 401 被跳过),
+  // JSON 结构合法但内容不完整。宁可不出报告也不广播错数据(2026-07-22
+  // B57142 事件:active bug 全丢,概览 BUG 行 0/0 照播)。文件保留供诊断。
+  if (STATE.skipped.length > 0) {
+    console.error(`FATAL: ${STATE.skipped.length} source(s) skipped — JSON incomplete (kept at ${args.out} for diagnosis), aborting to prevent silent data loss:`);
+    for (const s of STATE.skipped) console.error(`  - ${s.path} page=${s.page} reason=${s.reason}`);
+    process.exit(2);
+  }
 
   process.stdout.write(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} → ${args.out}\n`);
 }
