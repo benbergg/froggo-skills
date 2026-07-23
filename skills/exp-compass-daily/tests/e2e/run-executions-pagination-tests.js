@@ -75,8 +75,8 @@ async function runCollectAgainstMock(scenario, { date = TEST_DATE } = {}) {
 function paginatedScenario() {
   const scenario = happyScenario();
   const routes = { ...scenario.routes };
-  const single = routes['GET /projects/3084/executions'];
-  delete routes['GET /projects/3084/executions'];
+  const single = routes['GET /projects/3084/executions?limit=100&page=1'];
+  delete routes['GET /projects/3084/executions?limit=100&page=1'];
   const [exec1001, exec1002] = single.executions;
   routes['GET /projects/3084/executions?limit=100&page=1'] = {
     executions: [exec1001], total: 101, limit: 100, page: 1,
@@ -132,17 +132,22 @@ test('P2 executions page1 失败: 进 skipped → exit 2 + 物理断路(无正�
 
 // happy fixture 上加一个非 VOC 项目(9999)及其 execution 8001。
 // EXP_COMPASS_VOC_PROJECT_IDS='3084' → 8001 非 VOC 所属。
+//
+// 2026-07-24 V5 适配:main() 不再查 /products/95/projects,project→execution
+// 遍历已被 story 反查取代。要让 exec 8001 进入 candidateExecIds(否则它永
+// 远不会被 fetch,P3/P4 的失败注入就测不到任何东西),story 100 需关联到
+// 8001 —— 与 V5-1 的借派 task 场景同一叙事:8001 是挂在 VOC story 下的
+// 跨部门(非白名单项目)execution。
 function withNonVocProject() {
   const scenario = happyScenario();
   const routes = { ...scenario.routes };
+  // vestigial:main() 已不再查此路由,保留仅为文档化"9999 是非白名单项目"
   routes['GET /products/95/projects'] = {
     projects: [{ id: 3084, name: 'VOC Project' }, { id: 9999, name: '借派 Project' }],
   };
-  // ztPaginate(b7e92e6 起)请求带 ?limit=100&page=1,happy fixture 的无
-  // query 路由匹配不上,需显式提供分页形式
-  const vocExecs = routes['GET /projects/3084/executions'];
-  routes['GET /projects/3084/executions?limit=100&page=1'] = {
-    executions: vocExecs.executions, total: vocExecs.executions.length, limit: 100, page: 1,
+  routes['GET /stories/100'] = {
+    id: 100,
+    executions: { 1001: { status: 'doing' }, 8001: { status: 'doing' } },
   };
   routes['GET /projects/9999/executions?limit=100&page=1'] = {
     executions: [{ id: 8001, name: '借派 Sprint', status: 'doing', products: [95] }],
@@ -189,4 +194,98 @@ test('P4 VOC exec 任务查询失败: 仍然 fatal → exit 2 + 物理断路', a
     `VOC exec failure must stay fatal; got exit ${result.exitCode}; stderr:\n${result.stderr}`);
   assert.equal(result.output, null, '正式路径不应有 JSON(物理断路)');
   assert.equal(result.partialExists, true, 'partial JSON 应落 *.partial');
+});
+
+// ---------------------------------------------------------------------------
+// 2026-07-24 V5 story-driven 端到端
+// ---------------------------------------------------------------------------
+
+// 在 happy 基础上加一个跨部门项目 9999 及其 exec 8001(挂 story 100 的借派
+// task 8501)。story 100 的详情 executions 含 8001 → story-driven 应命中 8001,
+// 且完全不遍历 project 9999 的 executions 列表(反向定位不查项目)。
+function crossTeamScenario() {
+  const scenario = happyScenario();
+  const routes = { ...scenario.routes };
+  // story 100 关联到跨部门 exec 8001(借派)
+  routes['GET /stories/100'] = { id: 100, executions: { 1001: { status: 'doing' }, 8001: { status: 'doing' } } };
+  // 跨部门 exec 8001 的 task(挂 VOC story 100)
+  const borrowed = { id: 8501, name: '借派 task', status: 'done', openedDate: '2026-05-13 09:00:00', finishedDate: '2026-05-20 11:00:00', story: 100, parent: 0, assignedTo: 'qingwa', lastEditedDate: '2026-05-20 11:00:00', execution: 8001 };
+  for (const order of ['openedDate_desc', 'finishedDate_desc', 'lastEditedDate_desc']) {
+    routes[`GET /executions/8001/tasks?limit=100&order=${order}&page=1`] = { tasks: [borrowed], total: 1 };
+  }
+  return { routes };
+}
+
+test('V5-1 借派 task:story 关联的跨部门 exec 8001 的 task 被捞到', async () => {
+  const result = await runCollectAgainstMock(crossTeamScenario());
+  assert.equal(result.exitCode, 0, `stderr:\n${result.stderr}`);
+  const taskIds = (result.output.stories.find((s) => s.id === 100)?.tasks || []).map((t) => t.id);
+  assert.ok(taskIds.includes(8501), `跨部门借派 task 8501 应被 story-driven 捞到,实际 ${taskIds}`);
+});
+
+test('V5-2 不遍历跨部门:未挂 story 的项目 executions 列表不被请求', async () => {
+  const result = await runCollectAgainstMock(crossTeamScenario());
+  // story-driven 不查任何 /projects/{非白名单}/executions
+  const projCalls = result.calls.filter((c) => /\/projects\/9999\/executions/.test(c));
+  assert.equal(projCalls.length, 0, `不应请求跨部门项目 executions 列表,实际:${projCalls}`);
+});
+
+test('V5-3 story 详情失败 → exit 2 + 物理断路(无正式 JSON)', async () => {
+  const scenario = crossTeamScenario();
+  scenario.inject = { 'GET /stories/100': { status: 503 } };
+  const result = await runCollectAgainstMock(scenario);
+  assert.equal(result.exitCode, 2, `story 详情失败必须 fatal,实际 exit ${result.exitCode};stderr:\n${result.stderr}`);
+  assert.equal(result.output, null, '正式路径不应有 JSON');
+  assert.equal(result.partialExists, true, 'partial JSON 应落 *.partial');
+});
+
+// loose task 场景:白名单含 project 7777(充当 2023 角色),其 doing exec 7001
+// 上有一个未挂 VOC story 的 loose task 7501(story=0)。没有任何 story.executions
+// 指向 7001 → 只能靠 loose 兜底(EXP_COMPASS_LOOSE_BACKFILL_PROJECT_ID=7777)命中。
+function looseBackfillScenario() {
+  const scenario = happyScenario();
+  const routes = { ...scenario.routes };
+  routes['GET /projects/7777/executions?limit=100&page=1'] = {
+    executions: [{ id: 7001, status: 'doing' }], total: 1, limit: 100, page: 1,
+  };
+  const loose = { id: 7501, name: 'loose 散活', status: 'doing', openedDate: '2026-05-20 09:00:00', finishedDate: null, story: 0, parent: 0, assignedTo: 'qingwa', lastEditedDate: '2026-05-20 10:00:00', execution: 7001 };
+  for (const order of ['openedDate_desc', 'finishedDate_desc', 'lastEditedDate_desc']) {
+    routes[`GET /executions/7001/tasks?limit=100&order=${order}&page=1`] = { tasks: [loose], total: 1 };
+  }
+  return { routes };
+}
+
+test('V5-4 loose 兜底:2023 角色项目的 doing exec 上的 loose task 被捞到', async () => {
+  // 注:brief 原稿用 spawnSync 起子进程 —— spawnSync 会同步阻塞父进程事件
+  // 循环,而 mock HTTP server 与测试跑在同一进程/同一事件循环上,阻塞期间
+  // server 无法响应任何请求,导致子进程的每个 ztFetch 都空等到 15s 超时后
+  // abort(实测 5 个源全部 "operation was aborted"、耗时 96s、exit 2)。这
+  // 不是 fixture 问题,是测试代码本身的阻塞 bug —— 改用文件内既有的异步
+  // spawnCollectAsync helper,自定义 env 覆盖白名单 + loose 兜底项目 id。
+  const mock = await startMockServer(looseBackfillScenario());
+  const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-compass-e2e-loose-'));
+  fs.writeFileSync(path.join(tmpDir, 'token.json'), JSON.stringify({ token: 'test-token' }));
+  const outFile = path.join(tmpDir, 'out-2026-05-20.json');
+  try {
+    const env = {
+      ...process.env,
+      ZENTAO_BASE_URL: mock.baseUrl,
+      ZENTAO_ACCOUNT: 'test',
+      ZENTAO_PASSWORD: 'test',
+      ZENTAO_CACHE_DIR: tmpDir,
+      EXP_COMPASS_VOC_PROJECT_IDS: '3084,7777',
+      EXP_COMPASS_LOOSE_BACKFILL_PROJECT_ID: '7777',
+    };
+    const proc = await spawnCollectAsync(
+      [COLLECT_JS, '--product', '95', '--date', '2026-05-20', '--out', outFile],
+      { env },
+    );
+    assert.equal(proc.status, 0, `stderr:\n${proc.stderr}`);
+    const out = JSON.parse(fs.readFileSync(outFile, 'utf-8'));
+    const looseIds = (out.loose_tasks || []).map((t) => t.id);
+    assert.ok(looseIds.includes(7501), `loose task 7501 应被兜底捞到,实际 loose_tasks=${looseIds}`);
+  } finally {
+    await mock.close();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  }
 });

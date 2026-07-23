@@ -64,15 +64,16 @@ function happyScenario(date = TEST_DATE) {
     bugs: [B903, { ...B901, closedDate: null }], // null at tail
     total: 2,
   };
-  // projects under product
-  routes['GET /products/95/projects'] = { projects: [{ id: 3084, name: 'VOC Project' }] };
-  // executions under project — only doing/wait per Zentao default
-  routes['GET /projects/3084/executions'] = {
-    executions: [
-      { id: 1001, name: 'Sprint A', status: 'doing', lastEditedDate: `${date} 14:00:00`, products: [95] },
-      { id: 1002, name: 'Sprint B', status: 'doing', lastEditedDate: `${date} 14:00:00`, products: [95] },
-    ],
+  // V5: projects 只用于 vocOwnedExecutionIds(白名单项目)。EXP_COMPASS_VOC_
+  // PROJECT_IDS 在 e2e 设为 '3084',故这里只需 3084。
+  routes['GET /projects/3084/executions?limit=100&page=1'] = {
+    executions: [{ id: 1001, status: 'doing' }, { id: 1002, status: 'doing' }],
+    total: 2, limit: 100, page: 1,
   };
+  // story 详情:executions map 让 story 反查命中 exec 1001/1002
+  routes['GET /stories/100'] = { id: 100, executions: { 1001: { status: 'doing' } } };
+  routes['GET /stories/200'] = { id: 200, executions: { 1002: { status: 'doing' } } };
+  routes['GET /stories/300'] = { id: 300, executions: { 1001: { status: 'doing' } } };
   // per-exec scoped tasks (3 desc queries each, all returning the same set)
   for (const [execId, tasks] of Object.entries(execTasks)) {
     for (const order of ['openedDate_desc', 'finishedDate_desc', 'lastEditedDate_desc']) {
