@@ -1011,13 +1011,15 @@ async function main() {
 
   const t0 = Date.now();
 
-  // Phase 1: kick off the six independent root endpoints in parallel. They
+  // Phase 1: kick off the five independent root endpoints in parallel. They
   // share no data dependency, so the wall-clock cost collapses from
-  // sum(loadUserMap, productName, activeStories, closedStories, bugs,
-  // projects) to max(...). Each ztPaginate now also fans out its own page-2+
-  // requests internally (see ztPaginate), so total in-flight fan-out can
-  // reach ~6 endpoints × up to 4 pages each — Zentao tolerates this in
-  // testing, and the 30s per-request timeout still bounds the worst case.
+  // sum(loadUserMap, productName, activeStories, closedStories, bugs) to
+  // max(...). Each ztPaginate now also fans out its own page-2+ requests
+  // internally (see ztPaginate), so total in-flight fan-out can reach ~5
+  // endpoints × up to 4 pages each — Zentao tolerates this in testing, and
+  // the 30s per-request timeout still bounds the worst case.
+  // 2026-07-24 V5: `/products/{id}/projects` 查询移除,project→execution
+  // 遍历改由 phase2 story-driven 反查取代(见下方 phase2 注释)。
   //
   // Stories on this Zentao instance need TWO queries:
   //   - `/products/{id}/stories` (no status) → activestory only (in-progress + todo)
@@ -1031,14 +1033,12 @@ async function main() {
     activeStories,
     closedToday,
     rawBugs,
-    projectsResp,
   ] = await Promise.all([
     loadUserMap(),
     fetchProductName(args.product),
     ztPaginate(`/products/${args.product}/stories`, 'stories'),
     fetchClosedTodayStories(args.product, args.date),
     fetchBugsInScope(args.product, args.date),
-    ztFetch(`/products/${args.product}/projects`),
   ]);
   const tPhase1Ms = Date.now() - tPhase1Start;
   trace(`phase1 done in ${tPhase1Ms}ms: users=${USER_MAP.size} product=${productName} active=${activeStories.length} closedToday=${closedToday.length} bugs=${rawBugs.length}`);
@@ -1087,120 +1087,109 @@ async function main() {
       .filter(Boolean)
       .map(Number),
   );
-  const vocOwnedExecutionIds = new Set();
+  // 2026-07-24 V5: phase2 查询方向反转(story-driven)。不再遍历 product 下
+  // 全部 13 项目 112 exec(88% 空遍历);改为从 in-scope story 反查其关联
+  // 的 execution 精确集合。见 20260724-体验罗盘日报-V5-设计文档。
+  const looseBackfillProjectId = Number(
+    process.env.EXP_COMPASS_LOOSE_BACKFILL_PROJECT_ID || DEFAULT_LOOSE_BACKFILL_PROJECT_ID,
+  );
+  const { vocOwnedExecutionIds, looseBackfillExecs } =
+    await fetchVocOwnedExecutions(vocOwnedProjectIds, looseBackfillProjectId);
+  trace(`VOC-owned executions: ${vocOwnedExecutionIds.size}; loose backfill: ${[...looseBackfillExecs].join(',') || '-'}`);
+
+  const { ok: storyExecOk, execIds: storyExecIds } =
+    await fetchStoryExecutionIds([...productStoryIds]);
+  trace(`story-driven exec ids (${storyExecIds.size}): ${[...storyExecIds].sort((a, b) => a - b).join(',')}`);
+
+  const candidateExecIds = new Set([...storyExecIds, ...looseBackfillExecs]);
+  const allExecs = [...candidateExecIds].map((id) => ({ id }));
+  trace(`total executions to fetch tasks: ${allExecs.length} (story ${storyExecIds.size} ∪ backfill ${looseBackfillExecs.size}); storyExecOk=${storyExecOk}`);
 
   const rawTasks = [];
   let wallClockEarlyExit = false;
   const tPhase2Start = Date.now();
-  if (projectsResp.ok) {
-    const projects = projectsResp.body.projects || [];
-    trace(`fetch projects done (${projects.length})`);
-    const execResults = await Promise.all(
-      projects.map(async (proj) => {
-        // 2026-07-23: 必须走 ztPaginate。此前单次 ztFetch 不带分页参数,
-        // 禅道 v1 默认 limit=20,项目 3084/2353/1845 实测 total 29/30/26,
-        // 25 个 execution 被静默截断 → 其下任务全部丢失且不进 skipped
-        // (collect exit 0"成功"漏任务)。ztPaginate 翻页取齐,page1 失败
-        // 也会 push STATE.skipped → fatal 可见,不再静默丢整个项目。
-        const execs = await ztPaginate(`/projects/${proj.id}/executions`, 'executions');
-        return { projId: proj.id, execs };
+  // 2026-05-13: VOC-owned executions go first. If the wall-clock budget
+  // ever runs out, non-VOC sprints (cross-team borrows) get sacrificed
+  // before the core daily-report data.
+  allExecs.sort((a, b) => {
+    const av = vocOwnedExecutionIds.has(Number(a.id)) ? 0 : 1;
+    const bv = vocOwnedExecutionIds.has(Number(b.id)) ? 0 : 1;
+    return av - bv;
+  });
+  // Cross-project flat batching with per-execution timeout.
+  //
+  // 2026-05-12: introduced whole-batch race (Promise.race(Promise.all([5
+  // execs]), 60s)) to keep slow cross-team sprints from hanging phase2
+  // past the 600s hard timeout.
+  //
+  // 2026-05-13: redesigned to per-execution race. The whole-batch design
+  // dropped *all* sibling exec results in a batch when any single exec
+  // exceeded the deadline. On 2026-05-13 a slow exec=2028 (VOC 班牛
+  // sprint, 1576 cumulative tasks, page1=14s, total ≥70s) killed batch
+  // [2127, 2121, 2102, 2085, 2028]; rawTasks lost the only active VOC
+  // task T44013 (storyID 21311) and summary.task.* fell to 0. Each exec
+  // now races itself against EXEC_TIMEOUT_MS independently — a slow exec
+  // only loses its own data, siblings' tasks are preserved.
+  const TASK_CONCURRENCY = 3;
+  const BUDGET_RESERVE_MS = 60_000;
+  const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
+  // 2026-07-23: 90s → 120s。慢时段冷 execution(首次拉取无缓存)3 个
+  // scoped query 实测 >90s(3002/2786/2485 连环 exec-timeout);wall 预算
+  // 已扩到 840s,3 并发下容得起个别 120s 慢源。
+  const EXEC_TIMEOUT_MS = 120_000;
+  const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
+  for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
+    const elapsedMs = Date.now() - TRACE_T0;
+    if (elapsedMs > wallDeadlineMs) {
+      const remaining = allExecs.length - i;
+      trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} executions to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
+      STATE.skipped.push({
+        path: '/executions/*/tasks',
+        reason: 'wall-clock-budget',
+        remaining,
+        // 2026-07-23: 记录被砍 execution id,fatal 判定需区分 VOC/非 VOC
+        executions: allExecs.slice(i).map((e) => Number(e.id)),
+      });
+      wallClockEarlyExit = true;
+      break;
+    }
+    const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
+    trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
+    const batchResults = await Promise.all(
+      batch.map(async (ex) => {
+        // 2026-05-13: replaced unfiltered ztPaginate with scoped multi-order
+        // fetch. exec 2028 (1576 cum tasks) drops from 16 pages × ~14s to
+        // 3 parallel order=...desc queries with 30-day lookback early-exit.
+        const fetchPromise = fetchExecutionTasksScoped(ex.id, args.date);
+        const timeoutPromise = new Promise((resolve) => {
+          setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), EXEC_TIMEOUT_MS);
+        });
+        const result = await Promise.race([fetchPromise, timeoutPromise]);
+        return { id: ex.id, result };
       }),
     );
-    const allExecs = [];
-    for (const er of execResults) {
-      trace(`fetch project=${er.projId} executions done (${er.execs.length})`);
-      for (const ex of er.execs) allExecs.push(ex);
-      if (vocOwnedProjectIds.has(Number(er.projId))) {
-        for (const ex of er.execs) vocOwnedExecutionIds.add(Number(ex.id));
-      }
-    }
-    trace(`total executions to fetch tasks: ${allExecs.length}; VOC-owned executions: ${vocOwnedExecutionIds.size}`);
-    // 2026-05-13: VOC-owned executions go first. If the wall-clock budget
-    // ever runs out, non-VOC sprints (cross-team borrows) get sacrificed
-    // before the core daily-report data.
-    allExecs.sort((a, b) => {
-      const av = vocOwnedExecutionIds.has(Number(a.id)) ? 0 : 1;
-      const bv = vocOwnedExecutionIds.has(Number(b.id)) ? 0 : 1;
-      return av - bv;
-    });
-    // Cross-project flat batching with per-execution timeout.
-    //
-    // 2026-05-12: introduced whole-batch race (Promise.race(Promise.all([5
-    // execs]), 60s)) to keep slow cross-team sprints from hanging phase2
-    // past the 600s hard timeout.
-    //
-    // 2026-05-13: redesigned to per-execution race. The whole-batch design
-    // dropped *all* sibling exec results in a batch when any single exec
-    // exceeded the deadline. On 2026-05-13 a slow exec=2028 (VOC 班牛
-    // sprint, 1576 cumulative tasks, page1=14s, total ≥70s) killed batch
-    // [2127, 2121, 2102, 2085, 2028]; rawTasks lost the only active VOC
-    // task T44013 (storyID 21311) and summary.task.* fell to 0. Each exec
-    // now races itself against EXEC_TIMEOUT_MS independently — a slow exec
-    // only loses its own data, siblings' tasks are preserved.
-    const TASK_CONCURRENCY = 3;
-    const BUDGET_RESERVE_MS = 60_000;
-    const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
-    // 2026-07-23: 90s → 120s。慢时段冷 execution(首次拉取无缓存)3 个
-    // scoped query 实测 >90s(3002/2786/2485 连环 exec-timeout);wall 预算
-    // 已扩到 840s,3 并发下容得起个别 120s 慢源。
-    const EXEC_TIMEOUT_MS = 120_000;
-    const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
-    for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
-      const elapsedMs = Date.now() - TRACE_T0;
-      if (elapsedMs > wallDeadlineMs) {
-        const remaining = allExecs.length - i;
-        trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} executions to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
+    for (const { id, result } of batchResults) {
+      if (result === EXEC_TIMEOUT_SENTINEL) {
+        trace(`WARN: execution=${id} exceeded ${EXEC_TIMEOUT_MS / 1000}s; skipping`);
         STATE.skipped.push({
           path: '/executions/*/tasks',
-          reason: 'wall-clock-budget',
-          remaining,
-          // 2026-07-23: 记录被砍 execution id,fatal 判定需区分 VOC/非 VOC
-          executions: allExecs.slice(i).map((e) => Number(e.id)),
+          reason: 'exec-timeout',
+          executions: [id],
         });
-        wallClockEarlyExit = true;
-        break;
+        continue;
       }
-      const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
-      trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
-      const batchResults = await Promise.all(
-        batch.map(async (ex) => {
-          // 2026-05-13: replaced unfiltered ztPaginate with scoped multi-order
-          // fetch. exec 2028 (1576 cum tasks) drops from 16 pages × ~14s to
-          // 3 parallel order=...desc queries with 30-day lookback early-exit.
-          const fetchPromise = fetchExecutionTasksScoped(ex.id, args.date);
-          const timeoutPromise = new Promise((resolve) => {
-            setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), EXEC_TIMEOUT_MS);
-          });
-          const result = await Promise.race([fetchPromise, timeoutPromise]);
-          return { id: ex.id, result };
-        }),
-      );
-      for (const { id, result } of batchResults) {
-        if (result === EXEC_TIMEOUT_SENTINEL) {
-          trace(`WARN: execution=${id} exceeded ${EXEC_TIMEOUT_MS / 1000}s; skipping`);
-          STATE.skipped.push({
-            path: '/executions/*/tasks',
-            reason: 'exec-timeout',
-            executions: [id],
-          });
-          continue;
-        }
-        if (!result.ok) {
-          trace(`WARN: execution=${id} all scoped task queries failed; skipping`);
-          STATE.skipped.push({
-            path: '/executions/*/tasks',
-            reason: 'scoped-fetch-failed',
-            executions: [id],
-          });
-          continue;
-        }
-        trace(`fetch execution=${id} tasks done (${result.items.length})`);
-        rawTasks.push(...result.items);
+      if (!result.ok) {
+        trace(`WARN: execution=${id} all scoped task queries failed; skipping`);
+        STATE.skipped.push({
+          path: '/executions/*/tasks',
+          reason: 'scoped-fetch-failed',
+          executions: [id],
+        });
+        continue;
       }
+      trace(`fetch execution=${id} tasks done (${result.items.length})`);
+      rawTasks.push(...result.items);
     }
-  } else {
-    trace(`fetch projects failed: ${projectsResp.reason}`);
-    STATE.skipped.push({ path: `/products/*/projects`, reason: projectsResp.reason });
   }
   const tPhase2Ms = Date.now() - tPhase2Start;
   trace(`phase2 done in ${tPhase2Ms}ms (rawTasks=${rawTasks.length}${wallClockEarlyExit ? ', partial' : ''})`);
