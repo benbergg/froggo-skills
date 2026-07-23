@@ -60,6 +60,10 @@ const TASK_DONE_STATUSES = ['done', 'closed'];
 // an execution outside this list must have a VOC-scoped storyID to be kept.
 // Override via EXP_COMPASS_VOC_PROJECT_IDS=3084,2353,...
 const DEFAULT_VOC_OWNED_PROJECT_IDS = [3084, 2353, 1829, 1845, 2023];
+// 2026-07-24 V5: loose task(忘关联 story 的 VOC 散活)兜底项目。VOC 标品
+// 日常迭代(当前 exec=2028)几乎是 loose task 唯一来源;仅并入该项目的
+// doing exec,避免退化回全遍历(project 3084 有 28 个 doing exec)。
+const DEFAULT_LOOSE_BACKFILL_PROJECT_ID = 2023;
 
 // ---- arg parsing --------------------------------------------------------
 
@@ -525,6 +529,36 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
   }
   return { ok: true, items: Array.from(byId.values()) };
 }
+
+// 2026-07-24 V5: 查白名单项目的 executions,构建 vocOwnedExecutionIds
+// (loose task 判定用)。同时记录 looseBackfillProjectId 下 status=doing 的
+// exec → looseBackfillExecs(candidate 兜底,防某 VOC 日常 exec 无 story 关联
+// 导致其 loose task 漏)。project exec 列表查询失败时 ztPaginate 会自行
+// push STATE.skipped(page1 失败),path=/projects/*/executions 为 critical。
+async function fetchVocOwnedExecutions(vocProjectIds, looseBackfillProjectId, opts = {}) {
+  const { paginateFn = ztPaginate } = opts;
+  const vocOwnedExecutionIds = new Set();
+  const looseBackfillExecs = new Set();
+  const results = await Promise.all(
+    [...vocProjectIds].map(async (pid) => ({
+      pid: Number(pid),
+      execs: await paginateFn(`/projects/${pid}/executions`, 'executions'),
+    })),
+  );
+  for (const { pid, execs } of results) {
+    for (const ex of execs) {
+      vocOwnedExecutionIds.add(Number(ex.id));
+      if (pid === Number(looseBackfillProjectId) && ex.status === 'doing') {
+        looseBackfillExecs.add(Number(ex.id));
+      }
+    }
+  }
+  return { vocOwnedExecutionIds, looseBackfillExecs };
+}
+
+// 2026-07-24 V5: Task 2 占位 —— 真实实现(查 story 关联 exec)由 Task 2 补齐。
+// 现在仅让 require() 不因缺函数而抛错(测试文件同时 require 两者)。
+async function fetchStoryExecutionIds() { return { ok: true, execIds: new Set() }; }
 
 async function fetchBugsInScope(productId, date) {
   const [unclosed, closedTodayMaybe] = await Promise.all([
@@ -1306,6 +1340,8 @@ if (require.main === module) {
   clearTimeout(_hardKill);
   module.exports = {
     fetchExecutionTasksScoped, STATE,
+    // V5 story-driven 采集(tests/run-story-driven-tests.js)
+    fetchVocOwnedExecutions, fetchStoryExecutionIds,
     // V4 派生函数(tests/run-derive-v4-tests.js)
     deriveTask, deriveBug, deriveStory, buildSummary, inScopeStory,
     // partial 防护(tests/run-partial-guard-tests.js)
