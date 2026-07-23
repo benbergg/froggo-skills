@@ -438,17 +438,22 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
   const base = `/executions/${execId}/tasks`;
   const sanitizedPath = '/executions/*/tasks';
 
-  const fetchScoped = async (queryParam, dateField, { skipNullEarly }) => {
+  const fetchScoped = async (queryParam, dateField, { skipNullEarly, preloadedPage1 }) => {
     const items = [];
     let reachedEnd = false;
     for (let page = 1; page <= maxPages && !reachedEnd; page++) {
-      const url = `${base}?${queryParam}&limit=100&page=${page}`;
-      const r = await fetchFn(url);
-      if (!r.ok) {
-        STATE.skipped.push({ path: sanitizedPath, page, queryParam, reason: r.reason });
-        return { ok: false, items };
+      let rows;
+      if (page === 1 && preloadedPage1) {
+        rows = preloadedPage1;
+      } else {
+        const url = `${base}?${queryParam}&limit=100&page=${page}`;
+        const r = await fetchFn(url);
+        if (!r.ok) {
+          STATE.skipped.push({ path: sanitizedPath, page, queryParam, execId, reason: r.reason });
+          return { ok: false, items };
+        }
+        rows = r.body.tasks || [];
       }
-      const rows = r.body.tasks || [];
       if (rows.length === 0) break;
       for (const t of rows) {
         const v = t[dateField];
@@ -471,10 +476,41 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
     return { ok: true, items };
   };
 
+  // 2026-07-23 自适应探针:先发 1 次 lastEditedDate_desc page1。响应 total
+  // 为数字且首页已取齐(含 total=0 空迭代)→ 全部任务在手,客户端按三个
+  // 日期字段本地过滤,单次调用完成——覆盖 b7e92e6 executions 取齐后暴露
+  // 的 ~85 个无近期活动陈年迭代(此前每个固定烧 3 次排序查询,晚间禅道
+  // 单调用 3-4s 时 phase2 必撞 900s 硬超时)。大迭代/无 total 响应回退
+  // 既有 3 腿路径,探针结果复用为 lastEditedDate 腿 page1,零额外开销。
+  // 注意:不允许按 execution.status/end 上游过滤——exec 2028 实测
+  // status=doing、end=2024-08-31,两个字段都会误杀核心班牛 sprint。
+  const probe = await fetchFn(`${base}?order=lastEditedDate_desc&limit=100&page=1`);
+  let probeRows = null;
+  let probeFailedResult = null;
+  if (!probe.ok) {
+    STATE.skipped.push({
+      path: sanitizedPath, page: 1, queryParam: 'order=lastEditedDate_desc', execId, reason: probe.reason,
+    });
+    probeFailedResult = { ok: false, items: [] };
+  } else {
+    probeRows = probe.body.tasks || [];
+    const total = typeof probe.body.total === 'number' ? probe.body.total : null;
+    if (total !== null && probeRows.length >= total) {
+      const items = probeRows.filter((t) =>
+        [t.openedDate, t.finishedDate, t.lastEditedDate].some((v) => {
+          if (!v || String(v).startsWith('0000-')) return false;
+          return String(v).slice(0, 10) >= threshold;
+        }));
+      return { ok: true, items };
+    }
+  }
+
   const results = await Promise.all([
     fetchScoped('order=openedDate_desc', 'openedDate', { skipNullEarly: false }),
     fetchScoped('order=finishedDate_desc', 'finishedDate', { skipNullEarly: true }),
-    fetchScoped('order=lastEditedDate_desc', 'lastEditedDate', { skipNullEarly: false }),
+    probeFailedResult !== null
+      ? Promise.resolve(probeFailedResult)
+      : fetchScoped('order=lastEditedDate_desc', 'lastEditedDate', { skipNullEarly: false, preloadedPage1: probeRows }),
   ]);
 
   if (results.every((r) => !r.ok)) {
@@ -1062,6 +1098,8 @@ async function main() {
           path: '/executions/*/tasks',
           reason: 'wall-clock-budget',
           remaining,
+          // 2026-07-23: 记录被砍 execution id,fatal 判定需区分 VOC/非 VOC
+          executions: allExecs.slice(i).map((e) => Number(e.id)),
         });
         wallClockEarlyExit = true;
         break;
@@ -1180,6 +1218,19 @@ async function main() {
 
   const today_start_iso = `${args.date}T00:00:00+08:00`;
 
+  // 2026-07-23: skip 条目按影响范围分流。exec 级条目(带 executions/execId)
+  // 若涉及的 execution 全部非 VOC 白名单项目所属 → 非致命降级;产品级
+  // 条目(users/stories/bugs 等,无 exec 标记)或涉及任一 VOC 迭代 → 致命。
+  const isNonCriticalSkip = (s) => {
+    const ids = Array.isArray(s.executions) && s.executions.length > 0
+      ? s.executions.map(Number)
+      : (s.execId !== undefined ? [Number(s.execId)] : null);
+    if (!ids) return false;
+    return ids.every((id) => !vocOwnedExecutionIds.has(id));
+  };
+  const criticalSkipped = STATE.skipped.filter((s) => !isNonCriticalSkip(s));
+  const degradedSkipped = STATE.skipped.filter(isNonCriticalSkip);
+
   let payload = {
     date: args.date,
     today_start: today_start_iso,
@@ -1195,7 +1246,8 @@ async function main() {
         phase1_ms: tPhase1Ms,
         phase2_ms: tPhase2Ms,
       },
-      skipped: STATE.skipped,
+      skipped: criticalSkipped,
+      degraded_non_voc: degradedSkipped,
       budget_exceeded: STATE.budgetExceeded,
       wall_clock_early_exit: wallClockEarlyExit,
     },
@@ -1203,24 +1255,38 @@ async function main() {
 
   payload = maybeDegrade(payload);
 
-  // skipped 非空 = 有数据源整页丢失(如 bugs?status=unclosed 401 被跳过),
-  // JSON 结构合法但内容不完整。宁可不出报告也不广播错数据(2026-07-22
-  // B57142 事件:active bug 全丢,概览 BUG 行 0/0 照播)。partial JSON 落
-  // `${out}.partial` 且正式路径被清空 —— 物理断路,后续步骤读不到正式
-  // 文件自然中止(2026-07-22 seq 83 事件:AI 无视 exit=2 照播 partial)。
+  // critical skipped 非空 = 有产品级数据源或 VOC 迭代数据整页丢失(如
+  // bugs?status=unclosed 401 被跳过),JSON 结构合法但内容不完整。宁可不
+  // 出报告也不广播错数据(2026-07-22 B57142 事件:active bug 全丢,概览
+  // BUG 行 0/0 照播)。partial JSON 落 `${out}.partial` 且正式路径被清空
+  // —— 物理断路,后续步骤读不到正式文件自然中止(2026-07-22 seq 83 事件:
+  // AI 无视 exit=2 照播 partial)。
+  //
+  // 2026-07-23: 恢复 05-13「预算耗尽时牺牲非 VOC 借派迭代」的降级语义。
+  // 7425d29 把所有 skip 一刀切 fatal,与 b7e92e6 executions 取齐叠加后,
+  // 晚间禅道慢速时非 VOC 陈年迭代超时 → 整轮中止(07-23 晚三连败)。
+  // 非 VOC exec 级 skip 不再 fatal:记入 _meta.degraded_non_voc 可见降级
+  // (非静默),日报脚注可说明借派数据不全;产品级数据源与 VOC 迭代的
+  // skip 仍然 fatal。
   const outTarget = finalizeOutput({
     out: args.out,
     json: JSON.stringify(payload, null, 2),
-    skippedCount: STATE.skipped.length,
+    skippedCount: criticalSkipped.length,
   });
 
-  if (STATE.skipped.length > 0) {
-    console.error(`FATAL: ${STATE.skipped.length} source(s) skipped — JSON incomplete (kept at ${outTarget} for diagnosis only), aborting to prevent silent data loss:`);
-    for (const s of STATE.skipped) console.error(`  - ${s.path} page=${s.page} reason=${s.reason}`);
+  if (criticalSkipped.length > 0) {
+    console.error(`FATAL: ${criticalSkipped.length} critical source(s) skipped — JSON incomplete (kept at ${outTarget} for diagnosis only), aborting to prevent silent data loss:`);
+    for (const s of criticalSkipped) console.error(`  - ${s.path} page=${s.page} reason=${s.reason}`);
     process.exit(2);
   }
 
-  process.stdout.write(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} → ${args.out}\n`);
+  if (degradedSkipped.length > 0) {
+    for (const s of degradedSkipped) {
+      trace(`WARN: non-VOC execution source degraded — ${s.path} reason=${s.reason} executions=${(s.executions || [s.execId]).join(',')}`);
+    }
+  }
+
+  process.stdout.write(`OK product=${args.product} date=${args.date} api_calls=${STATE.apiCalls} stories=${stories.length} tasks=${allTasksForSummary.length} bugs=${bugs.length} degraded_non_voc=${degradedSkipped.length} → ${args.out}\n`);
 }
 
 if (require.main === module) {

@@ -205,6 +205,114 @@ test('REGRESSION CANARY: today\'s exec=2028 active task T44013 survives', async 
     'storyID must be preserved — downstream tasksAttachedToStory filter depends on it');
 });
 
+// ---------------------------------------------------------------------------
+// 2026-07-23 adaptive single-call 测试组
+//
+// 线上实证(2026-07-23 晚三连败):b7e92e6 executions 取齐后 phase2 要对
+// ~91 个 execution 各发 3 次排序查询(~280 调用),其中 ~85 个是无近期
+// 活动的陈年迭代,晚间禅道单调用 3-4s 时必撞 900s 硬超时。
+// 修复:先发 1 次 lastEditedDate_desc page1 探针,total 为数字且首页
+// 已取齐(含 total=0)则单调用+客户端三字段过滤;否则回退 3 腿路径并
+// 复用探针为 lastEditedDate 腿 page1。
+// 注意:不允许按 execution.status/end 上游过滤——exec 2028 实测
+// status=doing、end=2024-08-31,两个字段都会误杀最核心的班牛 sprint。
+// ---------------------------------------------------------------------------
+
+function makeCountingFetch(responses) {
+  const inner = makeMockFetch(responses);
+  const fn = async (url) => {
+    fn.calls.push(url);
+    return inner(url);
+  };
+  fn.calls = [];
+  return fn;
+}
+
+test('ADAPTIVE: 空迭代 total=0 → 单调用返回空', async () => {
+  const fetchFn = makeCountingFetch({
+    '/executions/3100/tasks?order=lastEditedDate_desc&limit=100&page=1': {
+      ok: true,
+      body: { total: 0, tasks: [] },
+    },
+  });
+  const result = await fetchExecutionTasksScoped(3100, '2026-07-23', { fetchFn });
+  assert.equal(result.ok, true);
+  assert.equal(result.items.length, 0);
+  assert.equal(fetchFn.calls.length, 1,
+    `empty exec must cost exactly 1 call, got ${fetchFn.calls.length}: ${fetchFn.calls}`);
+});
+
+test('ADAPTIVE: 小迭代首页取齐 → 单调用 + 客户端三字段过滤', async () => {
+  // threshold = 2026-06-23 (30d before 2026-07-23)
+  const fetchFn = makeCountingFetch({
+    '/executions/3456/tasks?order=lastEditedDate_desc&limit=100&page=1': {
+      ok: true,
+      body: {
+        total: 5,
+        tasks: [
+          T(1, { lastEditedDate: '2026-07-23 10:00' }),            // in-window (edited)
+          T(2, { openedDate: '2026-07-01 09:00' }),                // in-window (opened, never edited)
+          // 下面这条:null finishedDate 行之后仍有 in-window 行——旧 leg
+          // 逻辑(skipNullEarly)会把它漏掉,客户端全量过滤必须保留
+          T(3, { finishedDate: null }),                            // out (all fields null/out)
+          T(4, { finishedDate: '2026-07-20 17:00' }),              // in-window (finished)
+          T(5, { openedDate: '2026-01-01', lastEditedDate: '2026-02-01' }), // out
+        ],
+      },
+    },
+  });
+  const result = await fetchExecutionTasksScoped(3456, '2026-07-23', { fetchFn });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.items.map((t) => t.id).sort(), [1, 2, 4],
+    `client-side 3-field filter mismatch: ${result.items.map((t) => t.id)}`);
+  assert.equal(fetchFn.calls.length, 1,
+    `small exec must cost exactly 1 call, got ${fetchFn.calls.length}`);
+});
+
+test('ADAPTIVE: 大迭代 total>首页 → 回退 3 腿,探针复用为 lastEditedDate page1(共 3 调用)', async () => {
+  const probeRows = [T(44013, { lastEditedDate: '2026-07-23 16:00' })];
+  const fetchFn = makeCountingFetch({
+    '/executions/2028/tasks?order=lastEditedDate_desc&limit=100&page=1': {
+      ok: true,
+      body: { total: 1576, tasks: probeRows },
+    },
+    '/executions/2028/tasks?order=openedDate_desc&limit=100&page=1': {
+      ok: true,
+      body: { total: 1576, tasks: [T(44014, { openedDate: '2026-07-23 09:00' }), T(40000, { openedDate: '2024-08-01' })] },
+    },
+    '/executions/2028/tasks?order=finishedDate_desc&limit=100&page=1': {
+      ok: true,
+      body: { total: 1576, tasks: [T(44015, { finishedDate: '2026-07-22 17:00' })] },
+    },
+  });
+  const result = await fetchExecutionTasksScoped(2028, '2026-07-23', { fetchFn });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.items.map((t) => t.id).sort(), [44013, 44014, 44015]);
+  assert.equal(fetchFn.calls.length, 3,
+    `big exec must reuse probe as lastEditedDate page1 (3 calls total), got ${fetchFn.calls.length}: ${fetchFn.calls}`);
+  const lastEditedCalls = fetchFn.calls.filter((u) => u.includes('lastEditedDate'));
+  assert.equal(lastEditedCalls.length, 1, 'lastEditedDate page1 must not be fetched twice');
+});
+
+test('ADAPTIVE-DEFENSIVE: 响应无 total → 回退 3 腿路径(探针复用,共 3 调用)', async () => {
+  const fetchFn = makeCountingFetch({
+    '/executions/2028/tasks?order=lastEditedDate_desc&limit=100&page=1': {
+      ok: true,
+      body: { tasks: [T(44013, { lastEditedDate: '2026-07-23 16:00' })] }, // no total
+    },
+    '/executions/2028/tasks?order=openedDate_desc&limit=100&page=1': {
+      ok: true, body: { tasks: [] },
+    },
+    '/executions/2028/tasks?order=finishedDate_desc&limit=100&page=1': {
+      ok: true, body: { tasks: [] },
+    },
+  });
+  const result = await fetchExecutionTasksScoped(2028, '2026-07-23', { fetchFn });
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.items.map((t) => t.id), [44013]);
+  assert.equal(fetchFn.calls.length, 3, `no-total fallback must cost 3 calls, got ${fetchFn.calls.length}`);
+});
+
 test('multi-page pagination: page=2 still respects threshold + maxPages cap', async () => {
   // Exec with 150 within-window tasks. Page 1 has 100 (all in scope, none < threshold),
   // page 2 has 50 then hits older. Should pull both pages.

@@ -120,3 +120,73 @@ test('P2 executions page1 失败: 进 skipped → exit 2 + 物理断路(无正�
   assert.equal(result.partialExists, true, 'partial JSON 应落 *.partial 供诊断');
   assert.match(result.stderr, /FATAL.*skipped/s);
 });
+
+// ---------------------------------------------------------------------------
+// 2026-07-23 VOC 降级分流测试组
+//
+// 7425d29 把所有 skip 一刀切 fatal,与 b7e92e6 executions 取齐叠加:晚间
+// 禅道慢速时非 VOC 借派迭代超时 → 整轮中止(07-23 晚三连败)。恢复
+// 05-13「预算耗尽牺牲非 VOC」语义:非 VOC exec 级 skip → 可见降级
+// (_meta.degraded_non_voc + exit 0);产品级数据源或 VOC 迭代 skip 仍 fatal。
+// ---------------------------------------------------------------------------
+
+// happy fixture 上加一个非 VOC 项目(9999)及其 execution 8001。
+// EXP_COMPASS_VOC_PROJECT_IDS='3084' → 8001 非 VOC 所属。
+function withNonVocProject() {
+  const scenario = happyScenario();
+  const routes = { ...scenario.routes };
+  routes['GET /products/95/projects'] = {
+    projects: [{ id: 3084, name: 'VOC Project' }, { id: 9999, name: '借派 Project' }],
+  };
+  // ztPaginate(b7e92e6 起)请求带 ?limit=100&page=1,happy fixture 的无
+  // query 路由匹配不上,需显式提供分页形式
+  const vocExecs = routes['GET /projects/3084/executions'];
+  routes['GET /projects/3084/executions?limit=100&page=1'] = {
+    executions: vocExecs.executions, total: vocExecs.executions.length, limit: 100, page: 1,
+  };
+  routes['GET /projects/9999/executions?limit=100&page=1'] = {
+    executions: [{ id: 8001, name: '借派 Sprint', status: 'doing', products: [95] }],
+    total: 1, limit: 100, page: 1,
+  };
+  for (const order of ['openedDate_desc', 'finishedDate_desc', 'lastEditedDate_desc']) {
+    routes[`GET /executions/8001/tasks?limit=100&order=${order}&page=1`] = { tasks: [], total: 0 };
+  }
+  return { routes };
+}
+
+test('P3 非 VOC exec 任务查询失败: 降级不中止 → exit 0 + 正式 JSON + degraded_non_voc', async () => {
+  const scenario = withNonVocProject();
+  scenario.inject = {
+    'GET /executions/8001/tasks?limit=100&order=lastEditedDate_desc&page=1': { status: 503 },
+    'GET /executions/8001/tasks?limit=100&order=openedDate_desc&page=1': { status: 503 },
+    'GET /executions/8001/tasks?limit=100&order=finishedDate_desc&page=1': { status: 503 },
+  };
+  const result = await runCollectAgainstMock(scenario);
+  assert.equal(result.exitCode, 0,
+    `non-VOC exec failure must degrade, not abort; got exit ${result.exitCode}; stderr:\n${result.stderr}`);
+  assert.ok(result.output, '正式 JSON 必须存在(非 VOC 降级不触发物理断路)');
+  assert.equal(result.partialExists, false, '不应产生 .partial');
+  const degraded = result.output._meta.degraded_non_voc || [];
+  assert.ok(degraded.length > 0, `_meta.degraded_non_voc 应记录降级明细,got: ${JSON.stringify(result.output._meta)}`);
+  assert.ok(degraded.every((s) => {
+    const ids = s.executions || [s.execId];
+    return ids.every((id) => Number(id) === 8001);
+  }), `降级条目应全部指向 exec 8001: ${JSON.stringify(degraded)}`);
+  assert.equal((result.output._meta.skipped || []).length, 0, 'critical skipped 应为空');
+  // VOC 数据完整性:degraded 不影响 happy 数据集
+  assert.ok(result.output.stories.length > 0, 'VOC stories 不受降级影响');
+});
+
+test('P4 VOC exec 任务查询失败: 仍然 fatal → exit 2 + 物理断路', async () => {
+  const scenario = withNonVocProject();
+  scenario.inject = {
+    'GET /executions/1001/tasks?limit=100&order=lastEditedDate_desc&page=1': { status: 503 },
+    'GET /executions/1001/tasks?limit=100&order=openedDate_desc&page=1': { status: 503 },
+    'GET /executions/1001/tasks?limit=100&order=finishedDate_desc&page=1': { status: 503 },
+  };
+  const result = await runCollectAgainstMock(scenario);
+  assert.equal(result.exitCode, 2,
+    `VOC exec failure must stay fatal; got exit ${result.exitCode}; stderr:\n${result.stderr}`);
+  assert.equal(result.output, null, '正式路径不应有 JSON(物理断路)');
+  assert.equal(result.partialExists, true, 'partial JSON 应落 *.partial');
+});
