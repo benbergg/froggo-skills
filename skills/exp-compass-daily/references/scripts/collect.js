@@ -556,9 +556,31 @@ async function fetchVocOwnedExecutions(vocProjectIds, looseBackfillProjectId, op
   return { vocOwnedExecutionIds, looseBackfillExecs };
 }
 
-// 2026-07-24 V5: Task 2 占位 —— 真实实现(查 story 关联 exec)由 Task 2 补齐。
-// 现在仅让 require() 不因缺函数而抛错(测试文件同时 require 两者)。
-async function fetchStoryExecutionIds() { return { ok: true, execIds: new Set() }; }
+// 2026-07-24 V5 核心:从 in-scope story 反查其关联的 execution 全集。
+// /stories/{id} 详情返回 executions map(key=exec id),用户确认研发会显式
+// "关联需求到迭代",故该 map 完备覆盖承载此 story task 的所有 exec。
+// 任一 story 详情失败 → ok=false + critical skipped(该 story 的 attached
+// task 可能漏,宁 fatal 不广播残报)。并发分批,复用 ztFetch 的重试/401 刷新。
+async function fetchStoryExecutionIds(storyIds, opts = {}) {
+  const { fetchFn = ztFetch, concurrency = 6 } = opts;
+  const execIds = new Set();
+  let anyFailed = false;
+  for (let i = 0; i < storyIds.length; i += concurrency) {
+    const batch = storyIds.slice(i, i + concurrency);
+    const results = await Promise.all(batch.map((sid) => fetchFn(`/stories/${sid}`)));
+    for (let j = 0; j < results.length; j++) {
+      const r = results[j];
+      if (!r.ok) {
+        STATE.skipped.push({ path: '/stories/*', storyId: batch[j], reason: r.reason });
+        anyFailed = true;
+        continue;
+      }
+      const execs = (r.body && r.body.executions) || {};
+      for (const k of Object.keys(execs)) execIds.add(Number(k));
+    }
+  }
+  return { ok: !anyFailed, execIds };
+}
 
 async function fetchBugsInScope(productId, date) {
   const [unclosed, closedTodayMaybe] = await Promise.all([

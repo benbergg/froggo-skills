@@ -48,3 +48,44 @@ test('fetchVocOwnedExecutions: 非 2023 项目的 doing exec 不进兜底集', a
   const { looseBackfillExecs } = await fetchVocOwnedExecutions([3084], 2023, { paginateFn });
   assert.equal(looseBackfillExecs.size, 0, '3084 的 doing exec 不应进兜底集(仅 2023)');
 });
+
+function makeStoryFetch(storyExecMap, failIds = new Set()) {
+  return async (url) => {
+    const m = url.match(/^\/stories\/(\d+)$/);
+    if (!m) return { ok: false, reason: `no-mock:${url}` };
+    const sid = Number(m[1]);
+    if (failIds.has(sid)) return { ok: false, reason: 'network-timeout' };
+    return { ok: true, body: { id: sid, executions: storyExecMap[sid] || {} } };
+  };
+}
+
+test('fetchStoryExecutionIds: 汇总各 story.executions 的 keys 为并集', async () => {
+  const fetchFn = makeStoryFetch({
+    22290: { 2028: {}, 3436: {} },  // VOC 日常 + 跨部门 aPaaS
+    22197: { 2028: {} },
+    22176: { 3247: {} },
+  });
+  const { ok, execIds } = await fetchStoryExecutionIds([22290, 22197, 22176], { fetchFn });
+  assert.equal(ok, true);
+  assert.deepEqual([...execIds].sort((a, b) => a - b), [2028, 3247, 3436]);
+});
+
+test('fetchStoryExecutionIds: story 无关联迭代(executions 空)不贡献 exec', async () => {
+  const fetchFn = makeStoryFetch({ 22433: {}, 22290: { 2028: {} } });
+  const { ok, execIds } = await fetchStoryExecutionIds([22433, 22290], { fetchFn });
+  assert.equal(ok, true);
+  assert.deepEqual([...execIds], [2028]);
+});
+
+test('fetchStoryExecutionIds: story 详情失败 → ok=false + STATE.skipped(critical)', async () => {
+  const fetchFn = makeStoryFetch({ 22290: { 2028: {} } }, new Set([22176]));
+  const { ok, execIds } = await fetchStoryExecutionIds([22290, 22176], { fetchFn });
+  assert.equal(ok, false, 'story 详情失败必须 ok=false(触发 fatal)');
+  assert.deepEqual([...execIds], [2028], '成功的 story 仍贡献其 exec');
+  const sk = STATE.skipped.find((s) => s.storyId === 22176);
+  assert.ok(sk, 'STATE.skipped 应记录失败的 story');
+  assert.equal(sk.reason, 'network-timeout');
+  // critical 判定:条目无 executions/execId 标记 → isNonCriticalSkip=false
+  assert.equal(sk.executions, undefined);
+  assert.equal(sk.execId, undefined);
+});
