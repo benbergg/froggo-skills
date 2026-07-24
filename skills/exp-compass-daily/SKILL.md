@@ -163,6 +163,8 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 
 **发送开关**:`EXP_COMPASS_SEND_DINGTALK` 未设或非 `1/true/yes/on` 时,Step 6 自动追加 `--dry-run`——`dingtalk-log` 只 echo `create_report_param` payload、**不真调 OpenAPI、群里不会收到**,用于测试期核对数据。announce 需明确标注"🧪 测试模式(dry-run),未真发钉钉"。测试数据全部通过后,在运行环境设 `EXP_COMPASS_SEND_DINGTALK=1`(本地 shell rc / cron 走 `gateway.systemd.env` + 白名单)方真广播。手动与 cron 共享此开关,语义一致。
 
+> **⚠️ dry-run 只 gate「发送」这一步,不改变前面任何步骤**。无论开关开关,Step 1-5 都必须**完整照常执行**:采集 collect.js、撰写日报、跑 C1-C8 自检、Write 知识库 MD、build-draft 切片。dry-run 时知识库 `05-Reports/daily/{DATE}.md` **仍正常写入**——这份 MD 就是当次撰写质量的评估对象。**禁止**因开关关闭而跳过采集/撰写/写 MD,否则测试期看不到日报质量,失去开关意义。
+
 **关于广播语义**:钉钉 OpenAPI 实际行为是 `to_chat=true` **不会**自动 fanout 到模板 `default_received_convs`,**必须显式**把 `default_received_convs[].conversation_id` 注入 `--to-cids` 才会真触发群通知(2026-05-11 backtest 实证:`to_chat=true` + 空 `to_cids` → 日志创建成功但群无通知;补 `to_cids` 后群正确收到)。dingtalk-log `create-report` 默认 `to_chat=false`(safe no-broadcast),日志仅入 userid"我的日志"。`exp-compass-daily` 仍**不在脚本里硬写**群 cid,运行时从 resolve-template 缓存的 `default_received_convs` 读取,目标群由模板管理员在钉钉后台配置即可。
 
 **调试 / DRY_RUN**:用 `--dry-run` flag(dingtalk-log 仅识别此 flag,**不识别 `DRY_RUN` env**)。dry-run 时 `dingtalk-log` 不真调 OpenAPI,只 echo `create_report_param` payload JSON,可在生产前 verify。例:
