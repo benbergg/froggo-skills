@@ -285,9 +285,12 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
    Bug 标题一律用 `display_title`(脚本已去【日期】前缀、截 40 字);`severity ≤ 2` 行首加 🔴。**Bug id 一律渲染为跟踪链接** `[B{id}]({bug.url})`(适用于二段存量风险、三段修复/新增 Bug;四段总结用纯文本 id,避免链接刷屏)。
 
 5. **今日总结**:
-   - 必须**写出具体名字、id、数字**(如"@虹猫 完成 S21241")
+   - **友好可读第一**:凡提到需求/任务/Bug,必须"**名称(或简短关键词) + 编号**"并存,**严禁裸编号**——读者看不懂 `S22359` 是什么需求。编号保留以便追溯,但必须紧跟名称。
+     - ✅ 好:"批量回评优化(S22359)、犇犇AI回评接入(S22288)等 5 需求今日收口"
+     - ❌ 差:"5 需求收口(S22359/S22288/S22287/S22201/S22197)"
+     - 名称来源:需求取 `story.title`、Bug 取 `display_title`、任务取 `task.name`;过长截 ~12 字关键词即可
    - 四维度至少覆盖三:**关键产出 / Bug 风险 / 逾期任务 / 滞留与存量**
-   - 严禁泛泛话术;长度 80~200 字;**必须含 ≥3 个 id 引用**(正则 `[STB]\d+`)
+   - 严禁泛泛话术;长度 100~260 字(带名称会变长,以说清楚为准,勿为压字数而退回裸编号);**含 ≥3 个 id 引用**(正则 `[STB]\d+`)以保可追溯
    - **归因铁律**:提到"某人做了某事"时,人名必须来自该条目自身的对应角色字段(完成→finishedBy,修复→resolvedBy,执行→assignedTo/display_handler,提出→openedBy);严禁"需 X 修复/建议 X 跟进"类推断——除非 X 是该条目的 assignedTo
 
 6. **任何提到的 id / 名字 / 数字必须在 JSON 中能找到**,严禁编造或推测。
@@ -315,7 +318,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 | **C3** | 今日产出 7 段双向 | 每段 id 集合 == 撰写约束 #4 对应 filter 结果(双向:不漏也不多);新增 Bug 段须已剔除当日闭环;完成任务段含 `!is_aggregate_parent` |
 | **C4** | 进度数字与口径标注 | 每个 `进度 N%` 的 N == `story.progress_pct`;`progress_source=任务` 必须带 `(按任务)`,`=阶段` 必须带 `~`/`(估)` |
 | **C5** | 逾期全覆盖 | `JSON 逾期任务全集(含挂在未开始需求下的) ⊆ (二段详情表⚠️行 ∪ 存量风险·隐形逾期行)`,两处集合无交集、并集 == 全集 |
-| **C6** | 总结具体性 | 今日总结段必须含 ≥3 个 `[STB]\d+`,且字数 ∈ [80, 200] |
+| **C6** | 总结具体性+友好 | 今日总结段:①含 ≥3 个 `[STB]\d+`(可追溯);②**禁裸编号串**——正则 `[STB]\d+ */ *[STB]\d+`(如 `S22359/S22288`)命中即 ✗,编号必须伴随名称;③每个编号前后 ~10 字内须有中文名称片段;④字数 ∈ [100, 260] |
 | **C7** | 归因角色校验 | 对 MD 中每个"人名+条目"配对,人名必须命中**该条目自身**的对应角色字段(二段处理人→display_handler,完成任务→finishedBy,修@→resolvedBy,验@→closedBy,当前@/待验@→assignedTo,提@→display_reporter,新增任务→display_handler,新增需求→openedBy,总结同规则),逐条 jq 核对;不再是全局 grep 存在性(全局存在挡不住张冠李戴) |
 | **C8** | 跨段一致性 | 概览数字与对应段条目数逐对核对:`story.today_done == 完成的需求条数`、`task.today_done == 完成任务条数`、`bug.today_done == 修复 Bug 中 is_today_closed 条数`、`bug.today_new == 新增 Bug 条数 + ⚡当日闭环条数`、`story.stale == 滞留行 S 数`;任一对不上 → ✗ 并列出差集 |
 
