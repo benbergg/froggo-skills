@@ -38,10 +38,11 @@ description: "体验罗盘-每日研发进度播报。从禅道采集单产品(�
 | `EXP_COMPASS_PRODUCTS` | ☐ | 禅道产品 id,默认 `95` |
 | `EXP_COMPASS_API_BUDGET` | ☐ | 禅道 API 调用预算,默认 `300` |
 | `EXP_COMPASS_HARD_TIMEOUT_MS` | ☐ | collect.js 硬超时,默认 `900000`(clamp 60s~30min) |
+| `EXP_COMPASS_SEND_DINGTALK` | ☐ | **钉钉广播总开关**,默认 `0`=不真发(测试模式,Step 6 强制走 `--dry-run` 只 echo payload)。设 `1`/`true` 才真广播到钉钉群。**测试数据全部核对通过后再打开** |
 
 **注意**:不再设 `DINGTALK_EXP_COMPASS_TEMPLATE_ID` / `_TO_CHAT` / `_TO_USERIDS` / `_TO_CIDS`。template_id 在 Step 0 由 `resolve-template.js` 按模板名查询并缓存到 `~/.cache/exp-compass-daily/template.json`;广播范围一律走模板的 `default_received_convs`。
 
-调试:`DRY_RUN=1` 仅对 `collect.js` 生效(跳过禅道 API);**钉钉调用走 `dingtalk-log create-report --dry-run` flag**,env `DRY_RUN` 对 dingtalk-log 无效。
+调试:`DRY_RUN=1` 仅对 `collect.js` 生效(跳过禅道 API)。钉钉广播由 **`EXP_COMPASS_SEND_DINGTALK`** 总开关控制(默认 `0`=不真发,Step 6 自动加 `--dry-run`);env `DRY_RUN` 对 dingtalk-log 无效,不要用它控制钉钉。
 
 ### 加载机制
 
@@ -144,15 +145,23 @@ CONTENTS_JSON=$(jq -c .contents /tmp/exp-compass-$DATE.contents.json)
 TPL_ID=$(jq -r .template_id ~/.cache/exp-compass-daily/template.json)
 # 模板配置的默认接收群 conversation_id 数组 — 必须显式注入 to_cids 才会触发群通知
 TO_CIDS=$(jq -c '[.default_received_convs[].conversation_id]' ~/.cache/exp-compass-daily/template.json)
+# 广播总开关:默认不真发(测试模式),EXP_COMPASS_SEND_DINGTALK=1/true 才真广播
+case "${EXP_COMPASS_SEND_DINGTALK:-0}" in
+  1|true|TRUE|yes|on) SEND_FLAG="" ;;
+  *) SEND_FLAG="--dry-run" ;;
+esac
 node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
   --template-id "$TPL_ID" \
   --userid "$DINGTALK_USERID" \
   --contents "$CONTENTS_JSON" \
   --to-chat true \
-  --to-cids "$TO_CIDS"
+  --to-cids "$TO_CIDS" \
+  $SEND_FLAG
 ```
 
 成功 echo `report_id`;失败 echo dingtalk-log 的 errcode + errmsg。
+
+**发送开关**:`EXP_COMPASS_SEND_DINGTALK` 未设或非 `1/true/yes/on` 时,Step 6 自动追加 `--dry-run`——`dingtalk-log` 只 echo `create_report_param` payload、**不真调 OpenAPI、群里不会收到**,用于测试期核对数据。announce 需明确标注"🧪 测试模式(dry-run),未真发钉钉"。测试数据全部通过后,在运行环境设 `EXP_COMPASS_SEND_DINGTALK=1`(本地 shell rc / cron 走 `gateway.systemd.env` + 白名单)方真广播。手动与 cron 共享此开关,语义一致。
 
 **关于广播语义**:钉钉 OpenAPI 实际行为是 `to_chat=true` **不会**自动 fanout 到模板 `default_received_convs`,**必须显式**把 `default_received_convs[].conversation_id` 注入 `--to-cids` 才会真触发群通知(2026-05-11 backtest 实证:`to_chat=true` + 空 `to_cids` → 日志创建成功但群无通知;补 `to_cids` 后群正确收到)。dingtalk-log `create-report` 默认 `to_chat=false`(safe no-broadcast),日志仅入 userid"我的日志"。`exp-compass-daily` 仍**不在脚本里硬写**群 cid,运行时从 resolve-template 缓存的 `default_received_convs` 读取,目标群由模板管理员在钉钉后台配置即可。
 
