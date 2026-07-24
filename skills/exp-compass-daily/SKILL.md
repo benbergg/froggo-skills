@@ -35,6 +35,7 @@ description: "体验罗盘-每日研发进度播报。从禅道采集单产品(�
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `DINGTALK_EXP_COMPASS_TEMPLATE_NAME` | ☐ | 钉钉日志模板名,**默认 `体验罗盘日报`**(固化在 skill);仅在切换模板时设置 |
+| `EXP_COMPASS_DATE` | ☐ | **日报目标日期覆盖**,格式 `YYYY-MM-DD`。未设=当天(cron 正常语义);设了=生成该指定日的日报(测试/补跑历史日用)。全流程 7 处日期统一读此 env |
 | `EXP_COMPASS_PRODUCTS` | ☐ | 禅道产品 id,默认 `95` |
 | `EXP_COMPASS_API_BUDGET` | ☐ | 禅道 API 调用预算,默认 `300` |
 | `EXP_COMPASS_HARD_TIMEOUT_MS` | ☐ | collect.js 硬超时,默认 `900000`(clamp 60s~30min) |
@@ -94,8 +95,8 @@ stdout 是 `template_id`(单行),stderr 列字段校验结果与默认接收群�
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.js \
   --product ${EXP_COMPASS_PRODUCTS:-95} \
-  --date $(date +%Y-%m-%d) \
-  --out /tmp/exp-compass-$(date +%Y-%m-%d).json
+  --date ${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)} \
+  --out /tmp/exp-compass-${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.json
 ```
 
 失败 → 退出,提示用户检查禅道凭据。成功后输出文件路径。
@@ -128,9 +129,9 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.j
 
 ```bash
 node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/build-draft.js \
-  --md ~/Knowledge-Library/05-Reports/daily/$(date +%Y-%m-%d).md \
-  --date $(date +%Y-%m-%d) \
-  --out /tmp/exp-compass-$(date +%Y-%m-%d).contents.json
+  --md ~/Knowledge-Library/05-Reports/daily/${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.md \
+  --date ${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)} \
+  --out /tmp/exp-compass-${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.contents.json
 ```
 
 - 退出非 0 → 中止流程,echo stderr
@@ -140,7 +141,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/build-dra
 ### Step 6 创建钉钉日志(广播到模板默认群)
 
 ```bash
-DATE=$(date +%Y-%m-%d)
+DATE=${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}
 CONTENTS_JSON=$(jq -c .contents /tmp/exp-compass-$DATE.contents.json)
 TPL_ID=$(jq -r .template_id ~/.cache/exp-compass-daily/template.json)
 # 模板配置的默认接收群 conversation_id 数组 — 必须显式注入 to_cids 才会触发群通知
@@ -321,7 +322,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 ### C7 参考实现
 
 ```bash
-DATE=$(date +%Y-%m-%d)
+DATE=${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}
 JSON=/tmp/exp-compass-$DATE.json
 MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 
