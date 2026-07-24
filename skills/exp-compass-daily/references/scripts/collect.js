@@ -537,6 +537,12 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
 // push STATE.skipped(page1 失败),path=/projects/*/executions 为 critical。
 async function fetchVocOwnedExecutions(vocProjectIds, looseBackfillProjectId, opts = {}) {
   const { paginateFn = ztPaginate } = opts;
+  // 2026-07-24: looseBackfillProjectId 与 vocProjectIds 是各自独立可覆盖的 env,
+  // 若前者不在后者白名单内,下面的 pid === looseBackfillProjectId 恒为 false,
+  // looseBackfillExecs 恒空、loose 散活兜底全漏且无任何报错——只能靠这条 trace 发现。
+  if (![...vocProjectIds].map(Number).includes(Number(looseBackfillProjectId))) {
+    trace(`WARN: looseBackfillProjectId=${looseBackfillProjectId} not in vocProjectIds whitelist; loose backfill will be empty`);
+  }
   const vocOwnedExecutionIds = new Set();
   const looseBackfillExecs = new Set();
   const results = await Promise.all(
@@ -563,10 +569,11 @@ async function fetchVocOwnedExecutions(vocProjectIds, looseBackfillProjectId, op
 // task 可能漏,宁 fatal 不广播残报)。并发分批,复用 ztFetch 的重试/401 刷新。
 async function fetchStoryExecutionIds(storyIds, opts = {}) {
   const { fetchFn = ztFetch, concurrency = 6 } = opts;
+  const step = Math.max(1, concurrency); // concurrency<=0 会死循环,兜底步进为 1
   const execIds = new Set();
   let anyFailed = false;
-  for (let i = 0; i < storyIds.length; i += concurrency) {
-    const batch = storyIds.slice(i, i + concurrency);
+  for (let i = 0; i < storyIds.length; i += step) {
+    const batch = storyIds.slice(i, i + step);
     const results = await Promise.all(batch.map((sid) => fetchFn(`/stories/${sid}`)));
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
@@ -1069,16 +1076,16 @@ async function main() {
   const productStoryIds = new Set(rawStories.map((s) => s.id));
 
   // Phase 2: tasks. NOT directly available under /products/{id}/tasks (returns
-  // "not found") — must traverse product → projects → executions → tasks.
-  // Pull every project's executions in parallel, then flatten across project
-  // boundaries before the tasks fan-out. The earlier per-project loop was the
-  // longest serial section in the script.
+  // "not found") — must go through /executions/{eid}/tasks. The exact execution
+  // id set is resolved via story-driven reverse lookup (see 2026-07-24 V5
+  // comment below), not by traversing every project under the product.
   //
-  // Wall-clock budget: this loop can take 2-5 minutes against a slow Zentao,
-  // and we'd rather emit a partial JSON than be SIGKILLed by the hard timeout
-  // mid-write. Reserve BUDGET_RESERVE_MS for the downstream merge / derive /
-  // writeFile path; once the elapsed time crosses (HARD_TIMEOUT - reserve),
-  // stop enqueueing new batches, mark the JSON degraded, and let main finish.
+  // Wall-clock budget: the per-execution tasks fan-out below can still take
+  // minutes against a slow Zentao, and we'd rather emit a partial JSON than be
+  // SIGKILLed by the hard timeout mid-write. Reserve BUDGET_RESERVE_MS for the
+  // downstream merge / derive / writeFile path; once the elapsed time crosses
+  // (HARD_TIMEOUT - reserve), stop enqueueing new batches, mark the JSON
+  // degraded, and let main finish.
   // Resolve VOC-owned project whitelist (env override > default const)
   const vocProjectEnv = process.env.EXP_COMPASS_VOC_PROJECT_IDS || '';
   const vocOwnedProjectIds = new Set(

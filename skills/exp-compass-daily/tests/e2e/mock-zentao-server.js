@@ -5,7 +5,7 @@
 // scenario reproduce 503-retry, partial-failure, oversize, etc., without
 // authoring a parallel set of fixture files.
 //
-// Used by tests/e2e/run-e2e-tests.js. Not used in production.
+// Used by tests/e2e/run-executions-pagination-tests.js. Not used in production.
 
 const http = require('node:http');
 

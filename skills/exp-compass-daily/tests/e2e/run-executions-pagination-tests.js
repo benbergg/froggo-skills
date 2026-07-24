@@ -7,8 +7,8 @@
 // STATE.skipped(collect exit 0"成功")。修复:改走 ztPaginate 翻页取齐,
 // page1 失败也会进 skipped → 物理断路 fatal 可见。
 //
-// NOTE: helper 镜像自 run-e2e-tests.js(那套 fixture 期望在 V4 后已过时,
-// 整体重写时应把本文件的 helper 合并过去)。
+// NOTE: helper 自包含(V4 旧套件 run-e2e-tests.js 已删除),本文件即
+// spawnCollectAsync helper 的唯一归属处。
 
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
@@ -141,10 +141,6 @@ test('P2 executions page1 失败: 进 skipped → exit 2 + 物理断路(无正�
 function withNonVocProject() {
   const scenario = happyScenario();
   const routes = { ...scenario.routes };
-  // vestigial:main() 已不再查此路由,保留仅为文档化"9999 是非白名单项目"
-  routes['GET /products/95/projects'] = {
-    projects: [{ id: 3084, name: 'VOC Project' }, { id: 9999, name: '借派 Project' }],
-  };
   routes['GET /stories/100'] = {
     id: 100,
     executions: { 1001: { status: 'doing' }, 8001: { status: 'doing' } },
@@ -228,6 +224,10 @@ test('V5-2 不遍历跨部门:未挂 story 的项目 executions 列表不被请�
   // story-driven 不查任何 /projects/{非白名单}/executions
   const projCalls = result.calls.filter((c) => /\/projects\/9999\/executions/.test(c));
   assert.equal(projCalls.length, 0, `不应请求跨部门项目 executions 列表,实际:${projCalls}`);
+  // 锁死"不回退全遍历":即使 mock 场景本就没定义 /products/95/projects,
+  // 也要显式断言 collect.js 没有请求过它——防止有人重新引入 project 全遍历。
+  const productProjectsCalls = result.calls.filter((c) => /\/products\/95\/projects/.test(c));
+  assert.equal(productProjectsCalls.length, 0, `不应请求 /products/95/projects,实际:${productProjectsCalls}`);
 });
 
 test('V5-3 story 详情失败 → exit 2 + 物理断路(无正式 JSON)', async () => {
@@ -265,7 +265,7 @@ test('V5-4 loose 兜底:2023 角色项目的 doing exec 上的 loose task 被捞
   const mock = await startMockServer(looseBackfillScenario());
   const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-compass-e2e-loose-'));
   fs.writeFileSync(path.join(tmpDir, 'token.json'), JSON.stringify({ token: 'test-token' }));
-  const outFile = path.join(tmpDir, 'out-2026-05-20.json');
+  const outFile = path.join(tmpDir, `out-${TEST_DATE}.json`);
   try {
     const env = {
       ...process.env,
@@ -277,7 +277,7 @@ test('V5-4 loose 兜底:2023 角色项目的 doing exec 上的 loose task 被捞
       EXP_COMPASS_LOOSE_BACKFILL_PROJECT_ID: '7777',
     };
     const proc = await spawnCollectAsync(
-      [COLLECT_JS, '--product', '95', '--date', '2026-05-20', '--out', outFile],
+      [COLLECT_JS, '--product', '95', '--date', TEST_DATE, '--out', outFile],
       { env },
     );
     assert.equal(proc.status, 0, `stderr:\n${proc.stderr}`);
