@@ -18,7 +18,10 @@ const SECTION_HEADS = {
   checklist: /^##\s*四、/m,
   quotes: /^##\s*五、/m,
 };
-const PLACEHOLDER_RE = /\b(TBD|TODO|FIXME|XXX|待补充|占位)\b/i;
+// 英文项用 \b 词边界(避免误伤如 "TODOLIST" 这类复合词);
+// 中文项不能用 \b —— 无 u 标志时 \b 定义在 ASCII [A-Za-z0-9_] 上,CJK 字符两侧根本不存在词边界,
+// 混进同一个 \b(...)\b 组会导致中文占位符永远匹配不到(fix round: 评审实测 test('待补充')===false)。
+const PLACEHOLDER_RE = /\b(?:TBD|TODO|FIXME|XXX)\b|待补充|占位|待填/i;
 
 function esc(s) {
   return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
@@ -31,9 +34,19 @@ function tsToSec(label) {
   return NaN;
 }
 
-// 归一化:小写、去标点、压空白 —— 用于 C4 的模糊匹配
+// 归一化:小写、去标点、压空白 —— 供 C3/C4 匹配前统一处理
 function normalize(s) {
   return String(s).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
+}
+
+// token 重叠率:needle 的词在 hay 词集合中的命中比例,顺序无关。
+// 仅供 C3 子串匹配失败后的宽松兜底(时间戳窗口内文本可能因分词切分错位导致子串不中)。
+function tokenOverlapRatio(needle, hay) {
+  const needleTokens = needle.split(' ').filter(Boolean);
+  if (needleTokens.length === 0) return 0;
+  const hayTokens = new Set(hay.split(' ').filter(Boolean));
+  const hit = needleTokens.filter((t) => hayTokens.has(t)).length;
+  return hit / needleTokens.length;
 }
 
 function parseTutorialMd(md) {
@@ -92,12 +105,25 @@ function runChecks(doc, transcript, selected) {
     }
   }
 
-  // C3 时间戳在 transcript 中真实存在(±5s)
-  const TOL = 5;
+  // C3 金句文本能在"时间戳窗口"覆盖到的 segment 文本里定位 —— 拦"真金句配错时间戳"
+  // (fix round F1:原实现只比较 s.start 与 q.sec 的数值距离,完全不看文本,
+  //  真金句配一个真实但错误的时间戳会被直接放行;真实字幕 cue 间距约 2-5s,
+  //  按此密度模拟 2480s 时长几乎不存在"时间戳落空"的情况,C3 在真实数据上形同虚设)。
+  // 窗口 ±10s:覆盖一句话可能跨 2-3 个 cue(cue 间距 2-5s)的情况,同时不宽到吞掉相邻无关句子。
+  const C3_WINDOW_SEC = 10;
   for (const q of doc.quotes) {
     if (!Number.isFinite(q.sec)) continue;
-    const hit = transcript.segments.some((s) => Math.abs(s.start - q.sec) <= TOL);
-    if (!hit) add('C3', `时间戳 ${q.label} 在 transcript 中不存在(±${TOL}s 内无段落)`);
+    const windowSegs = transcript.segments.filter(
+      (s) => s.start >= q.sec - C3_WINDOW_SEC && s.start <= q.sec + C3_WINDOW_SEC
+    );
+    const windowHay = normalize(windowSegs.map((s) => s.text).join(' '));
+    const needle = normalize(q.en);
+    const substringHit = windowHay.length > 0 && windowHay.includes(needle);
+    // 子串不中时退到 token 重叠阈值,容忍窗口边界把长句切成两半导致的子串错位
+    const overlapHit = !substringHit && tokenOverlapRatio(needle, windowHay) >= 0.8;
+    if (!substringHit && !overlapHit) {
+      add('C3', `时间戳 ${q.label} 附近(±${C3_WINDOW_SEC}s)找不到该金句文本: "${q.en}"`);
+    }
   }
 
   // C4 英文金句能在 transcript 原文中检索到
@@ -125,14 +151,21 @@ function runChecks(doc, transcript, selected) {
   }
 
   // C8 正文段落无未翻译的成段英文(金句区豁免)
+  // fix round F3:原实现按 \n 分行、整行含任意中文字符即豁免整行 —— 中英文写在同一段落/同一行时
+  // (常见于 AI 输出的连续段落),一句夹在中文句子后面的未翻译英文会被前面的中文"连带豁免",
+  // 检测形同虚设。改为先按行取出,再按句终止符(。！？.!?)切成句子,逐句独立判定。
   const bodyKeys = ['tldr', 'background', 'method', 'checklist'];
   for (const k of bodyKeys) {
     for (const line of (doc.sections[k] || '').split('\n')) {
       const t = line.replace(/^[-*>\s\[\]x]+/, '').trim();
-      if (t.length < 40) continue;
-      if (/[一-鿿]/.test(t)) continue;          // 含中文即视为已翻译
-      if (/^[A-Za-z0-9\s,.'"()\-:;/&%$#@!?]+$/.test(t)) {
-        add('C8', `${k} 段存在未翻译的成段英文: "${t.slice(0, 60)}…"`);
+      if (!t) continue;
+      const sentences = t.split(/(?<=[。！？.!?])\s*/).map((s) => s.trim()).filter(Boolean);
+      for (const s of sentences) {
+        if (s.length < 40) continue;
+        if (/[一-鿿]/.test(s)) continue;          // 该句含中文即视为已翻译
+        if (/^[A-Za-z0-9\s,.'"()\-:;/&%$#@!?]+$/.test(s)) {
+          add('C8', `${k} 段存在未翻译的成段英文: "${s.slice(0, 60)}…"`);
+        }
       }
     }
   }
