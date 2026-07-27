@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8" ?>
+<timedtext format="3">
+<body>
+<p t="0" d="2400"><s>The</s><s> first</s><s> thing</s></p>
+<p t="2400" d="3000"><s> we</s><s> learned</s><s> building</s><s> agents</s></p>
+<p t="5400" d="2800"><s> is</s><s> evaluation</s><s> comes</s><s> first</s></p>
+<p t="8200" d="2000"><s> not</s><s> the</s><s> model</s></p>
+</body>
+</timedtext>
