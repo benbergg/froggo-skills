@@ -1,0 +1,65 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><!--TITLE--></title>
+<style>
+:root{
+  --bg:#EEF1F6; --ink:#14161F; --ink-soft:#5A6072;
+  --brand:#5B44E4; --brand-soft:#ECE8FB; --brand-ink:#3B2AAE;
+  --gold:#D9982B; --gold-soft:#F7EBD0;
+  --line:#C9D0DE; --panel:#FFFFFF; --panel-2:#F6F8FC;
+  --sans:system-ui,-apple-system,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,"Cascadia Code",monospace;
+  --maxw:940px;
+}
+@media (prefers-color-scheme:dark){
+  :root{
+    --bg:#111319; --ink:#ECEEF5; --ink-soft:#A2A9BC;
+    --brand:#8F7CF5; --brand-soft:#241F45; --brand-ink:#C9BEFF;
+    --gold:#E8B45C; --gold-soft:#3A2E17;
+    --line:#2C3140; --panel:#191C25; --panel-2:#151821;
+  }
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);line-height:1.75}
+.wrap{max-width:var(--maxw);margin:0 auto;padding:0 20px}
+header.hero{padding:48px 0 32px;border-bottom:1px solid var(--line)}
+h1{font-size:clamp(24px,4vw,38px);line-height:1.3;margin:0 0 12px}
+.meta{color:var(--ink-soft);font-size:14px}
+.meta a{color:var(--brand);text-decoration:none}
+section{padding:32px 0;border-bottom:1px solid var(--line)}
+h2{font-size:clamp(19px,2.6vw,24px);margin:0 0 16px;color:var(--brand-ink)}
+h3{font-size:17px;margin:24px 0 8px}
+.panel{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px}
+ul,ol{padding-left:22px}
+li{margin:6px 0}
+.check li{list-style:none;position:relative;padding-left:26px}
+.check li::before{content:"☐";position:absolute;left:0;color:var(--brand)}
+blockquote{margin:16px 0;padding:16px 18px;background:var(--gold-soft);
+  border-left:4px solid var(--gold);border-radius:0 10px 10px 0}
+blockquote .en{font-family:var(--mono);font-size:14px;display:block;margin-bottom:8px}
+blockquote .zh{color:var(--ink-soft);font-size:15px}
+blockquote a.ts{color:var(--brand);text-decoration:none;font-weight:600}
+.embed{position:relative;padding-top:56.25%;margin:20px 0;border-radius:12px;overflow:hidden}
+.embed iframe{position:absolute;inset:0;width:100%;height:100%;border:0}
+footer{padding:28px 0 48px;color:var(--ink-soft);font-size:13px}
+@media (max-width:680px){ header.hero{padding:32px 0 24px} section{padding:24px 0} }
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+  <h1><!--TITLE--></h1>
+  <div class="meta"><!--META--></div>
+</div></header>
+
+<section id="tldr"><div class="wrap"><h2>一、TL;DR</h2><div class="panel"><!--TLDR--></div></div></section>
+<section id="background"><div class="wrap"><h2>二、背景 · 他要解决什么问题</h2><!--BACKGROUND--></div></section>
+<section id="method"><div class="wrap"><h2>三、核心方法论</h2><!--METHOD--></div></section>
+<section id="checklist"><div class="wrap"><h2>四、可落地 checklist</h2><div class="panel check"><!--CHECKLIST--></div></div></section>
+<section id="quotes"><div class="wrap"><h2>五、原声金句</h2><!--QUOTES--><div class="embed"><!--EMBED--></div></div></section>
+
+<footer><div class="wrap"><!--FOOTER--></div></footer>
+</body>
+</html>
