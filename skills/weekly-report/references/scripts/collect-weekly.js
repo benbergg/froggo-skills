@@ -208,9 +208,10 @@ const STATE = {
   //   Phase 0:  /users (1-2 pages) + /user (1)                          = ~3
   //   Phase 1:  /products/95/projects (1) + N projects × executions (~50)
   //             + ~30-100 executions × 3 scoped queries × early-exit     = ~300
-  //   Phase 2:  /products/95/bugs?status=all (1146 rows / 500 = 3 pages) = ~3
+  //   Phase 2:  /products/95/bugs?status=all (1377 rows / 100 = 14 pages) = ~14
+  //             (2026-07-27:limit 500→100 后页数从 3 涨到 14,见 ztPaginate)
   //   parent-name fill                                                   = ~5
-  //   total ≈ 350, with headroom for env-overridden multi-product scope.
+  //   total ≈ 360, with headroom for env-overridden multi-product scope.
   // Override via WEEKLY_API_BUDGET when adding products beyond [95].
   budget: parseInt(process.env.WEEKLY_API_BUDGET || '1500', 10),
   budgetExceeded: false,
@@ -295,24 +296,28 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
   return { ok: false, status: 0, body: null, reason: lastErr ? sanitizeMessage(lastErr.message) : 'unknown' };
 }
 
-async function ztPaginate(basePath, listKey) {
+async function ztPaginate(basePath, listKey, opts = {}) {
+  const { fetchFn = ztFetch } = opts;
   const sep = basePath.includes('?') ? '&' : '?';
-  // 2026-05-17: kept at 500 (vs exp-compass 77f92d2 which uses 100).
-  // Trade-off rationale: weekly fans out across 121 products × bugs?status=all
-  // where some products have 1000+ rows (product 2: 3925, product 103: 2445);
-  // limit=100 would inflate that to 40+ sequential pages per product, blowing
-  // the 15-min hard timeout. The known limit=500 4-24s tail-latency
-  // ([[project-zentao-pagination-pitfalls]]) is acceptable here because
-  // weekly runs once on a relaxed schedule, not on the daily cron critical
-  // path. Phase 2's per-sprint task fetch uses fetchExecutionTasksScoped
-  // (hard-coded limit=100 + 3-page early-exit) which is the right shape
-  // for many-small-windows; ztPaginate is the right shape for
-  // few-large-bulks.
-  const limit = 500;
+  // 2026-07-27: 500 → 100,与 exp-compass (77f92d2) 对齐。
+  //
+  // 原 limit=500 的 trade-off 注释写的是 "weekly fans out across 121 products
+  // × bugs?status=all",但 V4 (2026-05-17) 已把采集收敛为 product-scoped
+  // [95] 单产品 —— 那个前提在同一次重构里就失效了,limit=500 是遗留残留。
+  //
+  // 7-26 cron seq 29 实证代价:/products/95/bugs?status=all total=1377,
+  // limit=500 分 3 页,第 3 页 15s AbortController 超时 → 静默丢 377 条 bug。
+  // 当日实测单页耗时 limit=100 为 2.4/3.0/3.1s 平稳,limit=500 为
+  // 3.0/3.3/8.8s 且随页号递增 —— 即 [[project-zentao-pagination-pitfalls]]
+  // 记录的大 limit 尾延迟抖动。
+  //
+  // 页数代价可控:1377 行 → 14 页,PAGE_CONCURRENCY=4 分 4 批 ≈ 12s,
+  // 比 limit=500 的 3 页串行尾延迟更快也更稳。
+  const limit = 100;
   const sanitizedPath = basePath.replace(/\/products\/\d+|\/projects\/\d+|\/executions\/\d+/, (m) => m.replace(/\d+/, '*'));
   const out = [];
 
-  const r1 = await ztFetch(`${basePath}${sep}limit=${limit}&page=1`);
+  const r1 = await fetchFn(`${basePath}${sep}limit=${limit}&page=1`);
   if (!r1.ok) {
     STATE.skipped.push({ path: sanitizedPath, page: 1, reason: r1.reason });
     return out;
@@ -322,11 +327,24 @@ async function ztPaginate(basePath, listKey) {
   if (items1.length === 0) return out;
 
   const total = typeof r1.body.total === 'number' ? r1.body.total : null;
-  const MAX_PAGES = 20;
+  // limit 减到 100 后同步放大页数上限,保持 4000 行的覆盖能力
+  // (product 95 当前 1377 行,留 ~3x 增长余量)。
+  const MAX_PAGES = 40;
 
   if (total !== null) {
     if (out.length >= total) return out;
-    const numPages = Math.min(Math.ceil(total / limit), MAX_PAGES);
+    const wantPages = Math.ceil(total / limit);
+    const numPages = Math.min(wantPages, MAX_PAGES);
+    // MAX_PAGES 截断同样是丢数据,必须留痕 —— 否则又变成一处 exit 0 的
+    // 静默截断(下游 assertDataComplete 依赖 skipped 判定是否断路)。
+    if (wantPages > MAX_PAGES) {
+      STATE.skipped.push({
+        path: sanitizedPath,
+        page: MAX_PAGES + 1,
+        reason: 'max-pages',
+        detail: `total=${total} needs ${wantPages} pages > MAX_PAGES=${MAX_PAGES}`,
+      });
+    }
     if (numPages <= 1) return out;
     const PAGE_CONCURRENCY = 4;
     const remaining = [];
@@ -334,7 +352,7 @@ async function ztPaginate(basePath, listKey) {
     for (let i = 0; i < remaining.length; i += PAGE_CONCURRENCY) {
       const batch = remaining.slice(i, i + PAGE_CONCURRENCY);
       const results = await Promise.all(
-        batch.map((p) => ztFetch(`${basePath}${sep}limit=${limit}&page=${p}`)),
+        batch.map((p) => fetchFn(`${basePath}${sep}limit=${limit}&page=${p}`)),
       );
       for (let j = 0; j < results.length; j++) {
         const r = results[j];
@@ -349,7 +367,7 @@ async function ztPaginate(basePath, listKey) {
   }
 
   for (let page = 2; page <= MAX_PAGES; page++) {
-    const r = await ztFetch(`${basePath}${sep}limit=${limit}&page=${page}`);
+    const r = await fetchFn(`${basePath}${sep}limit=${limit}&page=${page}`);
     if (!r.ok) {
       STATE.skipped.push({ path: sanitizedPath, page, reason: r.reason });
       break;
@@ -358,8 +376,42 @@ async function ztPaginate(basePath, listKey) {
     if (items.length === 0) break;
     out.push(...items);
     if (items.length < limit) break;
+    // 走到 MAX_PAGES 仍是满页 → 后面还有数据,同样留痕。
+    if (page === MAX_PAGES) {
+      STATE.skipped.push({
+        path: sanitizedPath,
+        page: MAX_PAGES + 1,
+        reason: 'max-pages',
+        detail: `page ${MAX_PAGES} still full (no total field to bound the walk)`,
+      });
+    }
   }
   return out;
+}
+
+// 2026-07-27:丢页物理断路。
+//
+// 7-26 cron seq 29:bugs 第 3 页 terminated 被记进 STATE.skipped 后照常
+// exit 0 + 输出 "OK",周报静默少了 377 条 bug。skipped 只有留痕没有拦截,
+// 等于没有防线 —— 弱模型看到 exit 0 就会继续往下写周报并推送。
+//
+// budget 项不在这里拦:它有专属的 exit 5 分支和专属提示(调大
+// WEEKLY_API_BUDGET),重复拦截只会盖掉更精确的那条信息。
+function assertDataComplete(skipped, { allowPartial = false } = {}) {
+  const lost = (skipped || []).filter((s) => s.reason !== 'budget');
+  if (lost.length === 0 || allowPartial) return { fatal: false, message: '', lost };
+
+  const detail = lost
+    .map((s) => `${s.path} page=${s.page} reason=${s.reason}${s.detail ? ` (${s.detail})` : ''}`)
+    .join('; ');
+  return {
+    fatal: true,
+    lost,
+    message:
+      `FATAL: ${lost.length} page(s) dropped — collected data is incomplete: ${detail}. `
+      + 'Zentao tail-latency is usually transient: re-run first. '
+      + 'Pass --allow-partial / WEEKLY_ALLOW_PARTIAL=1 only when you accept an incomplete weekly report.',
+  };
 }
 
 // 2026-05-17: scoped per-execution task fetch — ported from
@@ -970,6 +1022,14 @@ async function main() {
     process.exit(5);
   }
 
+  // 2026-07-27:丢页断路。跟上面 budget 分支同构 —— 残缺 JSON 照样落盘供
+  // 诊断,但退出码非零,物理阻断下游继续写周报/推送。
+  const completeness = assertDataComplete(STATE.skipped, { allowPartial: args.allowPartial });
+  if (completeness.fatal) {
+    console.error(`${completeness.message} Partial data left in ${args.out} for inspection.`);
+    process.exit(6);
+  }
+
   process.stdout.write(`OK week=${args.week} me=${me} api_calls=${STATE.apiCalls} done=${summary.task_done} progress=${summary.task_progress} bug_resolved=${summary.bug_resolved} bug_active=${summary.bug_active} next=${summary.next_planned} → ${args.out}\n`);
 }
 
@@ -990,5 +1050,13 @@ if (require.main === module) {
   // Loaded via require() — typically a test. Cancel the hard-kill so we
   // don't sigterm the test process, and expose narrow surface for testing.
   clearTimeout(_hardKill);
-  module.exports = { fetchExecutionTasksScoped, resolveProductIds, classifyTask, dropProgressParentsOfDone, STATE };
+  module.exports = {
+    fetchExecutionTasksScoped,
+    resolveProductIds,
+    classifyTask,
+    dropProgressParentsOfDone,
+    ztPaginate,
+    assertDataComplete,
+    STATE,
+  };
 }

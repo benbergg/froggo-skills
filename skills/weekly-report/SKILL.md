@@ -45,26 +45,50 @@ done
 
 ### Step 1 数据采集
 
+**采集脚本正常耗时 150-500 秒**(实测:7-18 为 149s,7-26 禅道尾延迟抖动时为 504s)。必须按下面的方式跑,否则会以 cron 整轮超时收场。
+
 ```bash
-# 采集本周(默认 product=[95])
-node ${CLAUDE_PLUGIN_ROOT}/skills/weekly-report/references/scripts/collect-weekly.js \
-  --out /tmp/weekly-current.json
+# 后台起,日志落盘,立刻拿到 PID
+nohup node ${CLAUDE_PLUGIN_ROOT}/skills/weekly-report/references/scripts/collect-weekly.js \
+  --out /tmp/weekly-current.json \
+  > /tmp/collect-stdout.log 2> /tmp/collect-stderr.log &
+echo "PID: $!"
+```
 
-# 或指定历史周
+等待与查状态 —— **一次 `sleep 240` 起步,之后每次至少 `sleep 90`**:
+
+```bash
+sleep 240
+ps -p <PID> > /dev/null 2>&1 && echo "still running" || echo "exited"
+tail -5 /tmp/collect-stdout.log
+```
+
+其他变体:
+
+```bash
+# 指定历史周
 # node ... --week 2026-W18 --out /tmp/weekly-2026-W18.json
-
 # 临时借派到多个 product(本周也涉及 iPaaS 等)
 # WEEKLY_PRODUCT_IDS=95,114 node ... 或 node ... --products 95,114
 ```
 
+<硬性约束 原因="2026-07-26 cron run seq 29 实证">
+
+1. **禁止前台跑并设 `timeout` < 600s**。当次 AI 用 `timeout: 180` 前台跑,180s < 脚本实际耗时,进程必然被 SIGKILL,白白烧掉 190 秒。
+2. **禁止高频轮询**(`sleep 30` 级别的反复查状态)。每次轮询都是一次完整 LLM 推理;当次 AI 轮询了 20+ 次,烧掉 163 万 token 却没推进任何步骤,最终整轮 600s 超时 —— 而脚本其实已经跑完并 exit 0 了。
+3. **判定完成看退出码,不看 JSON 是否已落盘**。JSON 会在脚本退出前若干秒写出;看到文件就当成功会漏掉后面的断路检查。
+
+</硬性约束>
+
 退出码语义(详见 § 异常处理):
 - `0` 成功,stdout 末行 `OK week=... done=... bug_resolved=...`
 - `5` API budget 触顶 → 数据残缺,**不要继续后续步骤**;按 stderr 提示设 `WEEKLY_API_BUDGET=4000` 重跑 (缺省 1500,实测 ~275 足够单 product;扩到多 product 时可能触顶)
+- `6` **分页丢页 → 数据残缺,不要继续后续步骤**。禅道尾延迟通常是暂时的,**先原样重跑一次**;连续两次同样丢页再看 `_meta.skipped` 判断是不是端点真的挂了
 - `1` / `4` 凭据 / 超时类一般错误,看 stderr 决定如何处理
 
 成功后从输出文件名解析 `WK_NUM`(或读 JSON `.week` 字段),后续 Step 2-5 使用。
 
-> **调试场景**:刻意用小预算复现 budget 行为时,可加 `--allow-partial` 或 `WEEKLY_ALLOW_PARTIAL=1` 让脚本即便残缺也 exit 0。**生产/cron 不要用**。
+> **调试场景**:刻意用小预算复现 budget 行为、或明知残缺仍要出报告时,可加 `--allow-partial` 或 `WEEKLY_ALLOW_PARTIAL=1` 让脚本即便残缺也 exit 0。**生产/cron 不要用** —— 它会同时关掉 exit 5 和 exit 6 两道断路。
 
 ### Step 2 AI Daily 摘要(独立步骤)
 
@@ -378,6 +402,7 @@ RESULT: 5/7 FAIL
 | `collect-weekly.js` 一般错误 | 1 | 中止主流程,echo stderr,提示检查 zentao 凭据 |
 | 硬超时(10 min) | 4 | 看 `_meta.skipped` 哪些 endpoint 卡住,可调 `WEEKLY_HARD_TIMEOUT_MS` |
 | **API budget 触顶**(数据残缺) | **5** | **partial JSON 已写盘但 stdout 不打 "OK"。缺省 `WEEKLY_API_BUDGET=1500` (V4 单 product 实测 ~275 已够);按 stderr 提示设 `4000`(或更高)重跑;调试场景可用 `--allow-partial` 或 `WEEKLY_ALLOW_PARTIAL=1` 绕过** |
+| **分页丢页**(数据残缺) | **6** | **partial JSON 已写盘但 stdout 不打 "OK"。禅道大分页尾延迟多为暂时性,先原样重跑;stderr 会列出丢的是哪个 endpoint 的第几页。连续两次同样丢页 → 查该端点是否真的挂了,不要用 `--allow-partial` 硬出报告** |
 | token 401 自动刷新失败 | 1 | `collect-weekly.js` 内已 spawnSync `zt_acquire_token`;仍失败需手动 `rm ~/.cache/zentao/token.json` 后再跑 |
 | `summary` 字段缺失 | – | JSON 损坏,中止 Step 3,echo `cat /tmp/weekly-{WK_NUM}.json \| jq .` |
 | 自检 3 轮不过 | – | AskUserQuestion 让用户决定:带瑕疵保存 / 重新生成 / 取消 |

@@ -56,6 +56,7 @@ OK week=2026-W19 me=qingwa api_calls=87 done=5 progress=3 bug_resolved=6 bug_act
 - `exit 1` `FATAL: failed to acquire token via zentao-api bridge` → `rm ~/.cache/zentao/token.json` 后再跑;还失败 → 检查账号密码
 - `exit 4` `FATAL: hard timeout (600000ms) reached` → 单次跑超 10 分钟,看 `_meta.skipped` 哪些 endpoint 卡住,可调 `WEEKLY_HARD_TIMEOUT_MS`
 - **`exit 5` `FATAL: WEEKLY_API_BUDGET=N exhausted`** → API 预算触顶导致数据残缺。`/tmp/weekly-{WK}.json` **已写盘可看**但 `_meta.budget_exceeded=true`、bugs 几乎全 0。**正确处理**:`WEEKLY_API_BUDGET=4000 node collect-weekly.js ...` 重跑(或更高,看 stderr 推荐值)。**调试场景**可加 `--allow-partial` 或 `WEEKLY_ALLOW_PARTIAL=1` 绕过(用于排查 budget 之外的字段映射 bug)
+- **`exit 6` `FATAL: N page(s) dropped`** → 分页丢页导致数据残缺(禅道大分页尾延迟,15s 请求超时耗尽重试)。JSON **已写盘可看**,`_meta.skipped` 里列着丢的是哪个 endpoint 的第几页。**正确处理**:原样重跑一次,多数情况下抖动已过去;连续两次同样丢页才需要排查该端点。**不要**用 `--allow-partial` 硬出报告 —— 2026-07-26 实证丢的 377 条 bug 里就有 1 条本周已解决的,周报会少报
 - `exit 0` 但 `done=0 progress=0 bug_resolved=0 bug_active=0` → 真正空数据(节假日 / view 无任何数据),或 `me` 字段错了。检查 stdout `me=` 与 `mySprints=N` trace
 
 ## 3. 校验 JSON schema
