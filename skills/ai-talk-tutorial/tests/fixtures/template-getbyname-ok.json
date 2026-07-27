@@ -1,0 +1,13 @@
+{
+  "errcode": 0,
+  "result": {
+    "id": "tpl_ai_talk_placeholder",
+    "name": "AI 演讲教程",
+    "default_received_convs": [
+      { "conversation_id": "cidPLACEHOLDER==", "title": "AI 学习群" }
+    ],
+    "fields": [
+      { "field_name": "AI 演讲教程", "sort": "0", "type": "1" }
+    ]
+  }
+}
