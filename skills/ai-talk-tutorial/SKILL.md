@@ -319,8 +319,9 @@ WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 # 本该报警的路径在用,最坏后果是该报警的时候群里收到一条空消息
 [ -n "$MSG" ] || { echo "FATAL: MSG 未设置,调用方必须先设置 MSG 再执行本块" >&2; exit 1; }
 # 再 export 一次兜底:调用方如果写成普通赋值 MSG="..." 漏了 export,上面的判空
-# 用的是 shell 变量、能通过,但 :329 的 process.env.MSG 是子进程读环境变量,不
-# export 就读不到,会拼出一条没有 content 字段的 payload、照样静默广播成功
+# 用的是 shell 变量、能通过,但下方构造 CONTENTS_JSON 时的 process.env.MSG 是子
+# 进程读环境变量,不 export 就读不到,会拼出一条没有 content 字段的 payload、
+# 照样静默广播成功
 export MSG
 
 TPL_ID=$(cat "$WORK/template_id.txt" 2>/dev/null)
