@@ -301,7 +301,23 @@ async function main() {
   }
   const cookiesPath = args.cookies || process.env.AI_TALK_COOKIES_PATH || DEFAULT_COOKIES;
 
-  const { candidates } = JSON.parse(fs.readFileSync(args.candidates, 'utf-8'));
+  // candidates.json 读取/解析单独兜底,不能落到 main().catch() 的 exit(6)——
+  // 那个退出码语义是「全部候选取字幕失败」,参数写错/文件损坏属于 exit(1)(参数错)。
+  // 2026-07-27 fix round 3(review F4):混淆这两者会让 cron 侧把参数错误误判成
+  // 字幕层故障并发出误导性钉钉告警(Task 6 exit 6 触发告警文案)。
+  let candidates;
+  try {
+    const parsed = JSON.parse(fs.readFileSync(args.candidates, 'utf-8'));
+    candidates = parsed.candidates;
+  } catch (e) {
+    process.stderr.write(`Failed to read/parse --candidates ${args.candidates}: ${e.message}\n`);
+    process.exit(1);
+  }
+  if (!Array.isArray(candidates)) {
+    process.stderr.write(`--candidates JSON 缺少 "candidates" 数组字段: ${args.candidates}\n`);
+    process.exit(1);
+  }
+
   fs.mkdirSync(args.out, { recursive: true });
 
   // 逐个探测,第一个有字幕的胜出 —— IDC IP 上请求越少越安全

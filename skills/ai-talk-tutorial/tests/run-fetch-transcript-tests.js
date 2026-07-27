@@ -5,7 +5,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { FIXTURE } = require('./helpers');
+const { FIXTURE, runCli, freshTmp } = require('./helpers');
 
 const F = require('../references/scripts/fetch-transcript.js');
 
@@ -116,5 +116,39 @@ test('T11: 空壳 cookie 文件(缺 SAPISID/__Secure-3PAPISID)级 2 直接拒绝
     );
   } finally {
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+test('T12: --candidates 指向不存在的文件 → exit 1(fix round 3 F4:不能落到 exit 6)', () => {
+  const out = freshTmp();
+  const r = runCli({
+    script: 'fetch-transcript.js',
+    args: ['--candidates', '/no/such/path/candidates.json', '--out', out],
+  });
+  try {
+    assert.equal(r.code, 1, `expected 1, got ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /Failed to read\/parse --candidates/);
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T13: --candidates 指向损坏 JSON → exit 1(fix round 3 F4:不能落到 exit 6)', () => {
+  const dir = freshTmp();
+  const badPath = path.join(dir, 'bad-candidates.json');
+  fs.writeFileSync(badPath, 'not json');
+  const out = freshTmp();
+  const r = runCli({
+    script: 'fetch-transcript.js',
+    args: ['--candidates', badPath, '--out', out],
+  });
+  try {
+    assert.equal(r.code, 1, `expected 1, got ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /Failed to read\/parse --candidates/);
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
   }
 });
