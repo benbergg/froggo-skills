@@ -106,12 +106,12 @@ function parseCookieString(raw) {
 
 // ---- 三级取字幕 --------------------------------------------------------
 
-async function innertubePlayer(videoId, clientName, clientVersion, headers) {
+async function innertubePlayer(videoId, clientName, clientVersion, headers, extraClient = {}) {
   const res = await fetch('https://www.youtube.com/youtubei/v1/player?prettyPrint=false', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', ...headers },
     body: JSON.stringify({
-      context: { client: { clientName, clientVersion, hl: 'en' } },
+      context: { client: { clientName, clientVersion, hl: 'en', ...extraClient } },
       videoId,
     }),
   });
@@ -126,9 +126,22 @@ function pickEnglishTrack(data) {
 }
 
 // 级 1:ANDROID client,无 cookie
+//
+// clientVersion 锁定 20.10.38(与 VM 上 npm 包 youtube-transcript@1.3.1 生产验证版本一致)。
+// 2026-07-27 fix round 1 实测:19.09.37 对 InnerTube player 端点直接返回 HTTP 400
+// (curl 复现,payload 本身不被接受,不是我们代码逻辑的锅);20.10.38 返回 200。
+// 2026-07-27 fix round 2:补全 androidSdkVersion/osName/osVersion/gl,
+// 让 payload 协议上完整(不再是残缺请求体)。⚠️ 补全后仍实测 400/LOGIN_REQUIRED——
+// 控制端已确认根因是 VM 缺一份有效登录态 cookie,无 cookie 时 InnerTube 各 client
+// 均不可用;此级作为「YouTube 政策松动或换有效 cookie 环境时」的快路径保留。
 async function tryAndroid(videoId) {
-  const data = await innertubePlayer(videoId, 'ANDROID', '19.09.37', {
-    'User-Agent': 'com.google.android.youtube/19.09.37 (Linux; U; Android 14)',
+  const data = await innertubePlayer(videoId, 'ANDROID', '20.10.38', {
+    'User-Agent': 'com.google.android.youtube/20.10.38 (Linux; U; Android 14)',
+  }, {
+    androidSdkVersion: 34,
+    osName: 'Android',
+    osVersion: '14',
+    gl: 'US',
   });
   const status = data?.playabilityStatus?.status;
   if (status !== 'OK' && status !== 'LIVE_STREAMING') throw new Error(`playability=${status}`);
@@ -144,6 +157,18 @@ async function tryWebWithCookies(videoId, cookiesPath) {
   const raw = fs.readFileSync(cookiesPath, 'utf-8');
   const cookieStr = parseCookieString(raw);
   if (!cookieStr) throw new Error('cookie file empty');
+
+  // 防御:cookie 文件存在但既无 SAPISID 也无 __Secure-3PAPISID —— 大概率是空壳/过期文件,
+  // 直接跳过,不发一次注定 LOGIN_REQUIRED 的请求。
+  // 2026-07-27 fix round 2:VM 上曾出现 15 行的空壳 cookie 文件(本地 Chrome 导出版是 415
+  // 行),控制端逐一实测 SAPISIDHASH/SAPISID3PHASH × 全域/仅 YT 域 × 带不带
+  // X-Goog-AuthUser 全部 LOGIN_REQUIRED,连不带 Authorization 只带 cookie 也一样——
+  // 根因是缺有效登录态,不是签名方式。这条防线让日后 cookie 失效时故障信息一眼可读,
+  // 而不是淹没在一次必然失败的网络请求日志里。
+  if (!/(?:^|\s)(?:__Secure-3PAPISID|SAPISID)\s/m.test(raw)) {
+    throw new Error('cookie 文件疑似无效(缺关键字段 SAPISID/__Secure-3PAPISID)');
+  }
+
   const apisidMatch = raw.match(/__Secure-3PAPISID\s+(\S+)/);
   if (!apisidMatch) throw new Error('__Secure-3PAPISID missing');
   const apisid = apisidMatch[1];
@@ -169,10 +194,29 @@ async function tryWebWithCookies(videoId, cookiesPath) {
   return parseTimedTextXml(xml);
 }
 
+// yt-dlp 二进制解析:env YT_DLP_PATH 优先,其次探测常见安装路径,
+// 都没有再回落到 PATH 里的 'yt-dlp'。
+// 2026-07-27 fix round 1 实测:VM 上 'yt-dlp' 不在 PATH(ENOENT),
+// 真实路径是 /home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp(venv 安装,不进全局 PATH)。
+function resolveYtDlpBin() {
+  if (process.env.YT_DLP_PATH) return process.env.YT_DLP_PATH;
+  const candidates = [
+    '/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp',
+    path.join(os.homedir(), '.local', 'yt-dlp-venv', 'bin', 'yt-dlp'),
+    path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
+    '/usr/local/bin/yt-dlp',
+    '/opt/homebrew/bin/yt-dlp',
+  ];
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return c;
+  }
+  return 'yt-dlp';
+}
+
 // 级 3:yt-dlp 兜底。--ignore-no-formats-error 必需:
 // 缺它则 format 选择阶段直接 "Requested format is not available" 中止,字幕不下载。
 function tryYtDlp(videoId, cookiesPath) {
-  const bin = process.env.YT_DLP_PATH || 'yt-dlp';
+  const bin = resolveYtDlpBin();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `at-sub-${videoId}-`));
   try {
     const r = spawnSync(bin, [
@@ -293,7 +337,10 @@ async function main() {
   process.exit(6);
 }
 
-module.exports = { parseTimedTextXml, mergeSegments, parseCookieString, formatTimestamp, decodeEntities };
+module.exports = {
+  parseTimedTextXml, mergeSegments, parseCookieString, formatTimestamp, decodeEntities,
+  resolveYtDlpBin, tryWebWithCookies,
+};
 
 if (require.main === module) {
   main().catch((e) => {

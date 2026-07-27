@@ -1,6 +1,8 @@
 'use strict';
 // fetch-transcript.js BDD 测试:XML 双格式解析(保留时间戳)、段落合并、cookie 解析、时间戳格式化。
 const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { FIXTURE } = require('./helpers');
@@ -65,4 +67,54 @@ test('T7: Netscape cookie 文件解析', () => {
 
 test('T8: 空/注释-only cookie 文件 → null', () => {
   assert.equal(F.parseCookieString('# only a comment\n'), null);
+});
+
+test('T9: resolveYtDlpBin 优先取 YT_DLP_PATH env(fix round 1 F3)', () => {
+  const prev = process.env.YT_DLP_PATH;
+  process.env.YT_DLP_PATH = '/custom/path/yt-dlp';
+  try {
+    assert.equal(F.resolveYtDlpBin(), '/custom/path/yt-dlp');
+  } finally {
+    if (prev === undefined) delete process.env.YT_DLP_PATH; else process.env.YT_DLP_PATH = prev;
+  }
+});
+
+test('T10: resolveYtDlpBin 无 env 时按候选路径探测,全不存在才回落 "yt-dlp"', () => {
+  const prev = process.env.YT_DLP_PATH;
+  delete process.env.YT_DLP_PATH;
+  try {
+    // 与实现内的候选列表保持一致:第一个真实存在的路径胜出,否则回落 'yt-dlp'。
+    // 不假设本机是否装了全局 yt-dlp(mac 测试机可能有 /usr/local/bin/yt-dlp,
+    // VM 上没有但有 venv 路径)——用同样的探测逻辑独立计算期望值,避免环境耦合。
+    const candidates = [
+      '/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp',
+      path.join(os.homedir(), '.local', 'yt-dlp-venv', 'bin', 'yt-dlp'),
+      path.join(os.homedir(), '.local', 'bin', 'yt-dlp'),
+      '/usr/local/bin/yt-dlp',
+      '/opt/homebrew/bin/yt-dlp',
+    ];
+    const expected = candidates.find((c) => fs.existsSync(c)) || 'yt-dlp';
+    assert.equal(F.resolveYtDlpBin(), expected);
+  } finally {
+    if (prev !== undefined) process.env.YT_DLP_PATH = prev;
+  }
+});
+
+test('T11: 空壳 cookie 文件(缺 SAPISID/__Secure-3PAPISID)级 2 直接拒绝,不发请求(fix round 2 F2 防御)', async () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'at-cookie-test-'));
+  const shellCookiePath = path.join(dir, 'shell-cookies.txt');
+  // 模拟 VM 上曾出现的空壳 cookie:有 cookie 行,但都不是 SAPISID 相关字段
+  fs.writeFileSync(shellCookiePath, [
+    '# Netscape HTTP Cookie File',
+    '.youtube.com\tTRUE\t/\tTRUE\t0\t__Secure-3PSID\tsomevalue',
+    '.youtube.com\tTRUE\t/\tTRUE\t0\t__Secure-1PSIDTS\tanothervalue',
+  ].join('\n'));
+  try {
+    await assert.rejects(
+      () => F.tryWebWithCookies('dummyVideoId', shellCookiePath),
+      /cookie 文件疑似无效/
+    );
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
 });
