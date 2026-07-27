@@ -22,6 +22,7 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 |---|---|---|
 | `YOUTUBE_API_KEY` | ✅ | YouTube Data API v3 key,Step 1 发现层用;缺失时 `discover.js` exit 1 |
 | `AI_TALK_FEISHU_TARGET` | ☐ | 飞书接收方 open_id,默认 `ou_4a9c3a58ae44cb2eda31c84dd86799e9`(与本机其余 cron 任务同一会话) |
+| `AI_TALK_FEISHU_ACCOUNT` | ☐ | 飞书渠道账号,默认 `helios`。**open_id 按应用隔离**,换账号必须同时换 target |
 | `AI_TALK_COOKIES_PATH` | ☐ | YouTube cookie 文件,默认 `/home/ubuntu/.openclaw/workspace/astraeus/video素材/youtube-cookies.txt` |
 | `AI_TALK_DATE` | ☐ | 目标日期覆盖 `YYYY-MM-DD`,补跑历史日用 |
 | `AI_TALK_ARCHIVE_DIR` | ☐ | 归档根目录,默认 `$HOME/workspace/Knowledge-Library/08-Research/AI-Talks` |
@@ -310,17 +311,22 @@ WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 [ -n "$MSG" ] || { echo "FATAL: MSG 未设置,调用方必须先设置 MSG 再执行本块" >&2; exit 1; }
 
 TARGET="${AI_TALK_FEISHU_TARGET:-ou_4a9c3a58ae44cb2eda31c84dd86799e9}"
+ACCOUNT="${AI_TALK_FEISHU_ACCOUNT:-helios}"
 
 case "${SEND_NOTIFY:-0}" in
   1|true|TRUE|yes|on) SEND_FLAG="" ;;
   *) SEND_FLAG="--dry-run" ;;
 esac
 
-openclaw message send --channel feishu -t "$TARGET" -m "$MSG" $SEND_FLAG
+openclaw message send --channel feishu --account "$ACCOUNT" -t "$TARGET" -m "$MSG" $SEND_FLAG
 RC=$?
 [ $RC -eq 0 ] || { echo "FATAL: openclaw message send exit $RC,飞书通知未发出" >&2; exit $RC; }
 ```
 
+> ⚠️ **`--account` 必须显式传**。本机装了 4 个飞书账号(`helios`/`astraeus`/`forge`/`default`),不指定时会挑到别的应用，而 `open_id` 是**按应用隔离**的 —— 2026-07-28 实测漏传 `--account` 会被飞书拒绝：`feishu_code=99992361 open_id cross app`。默认 `ou_4a9c…` 这个 open_id 属于 `helios` 应用。
+>
+> ⚠️ **`--dry-run` 不校验收件人**。三个账号 dry-run 全部输出 `would run send via feishu`，只有真发才会暴露 `cross app` 错误。换 `AI_TALK_FEISHU_TARGET` 或 `AI_TALK_FEISHU_ACCOUNT` 后，必须真发一条验证，不能只看 dry-run。
+>
 > `openclaw` 只在 login shell 的 PATH 里(`bash -lc`)。openclaw cron 的 exec 本来就是 login shell,手动验证时若报 `command not found`,用 `bash -lc "..."` 包一层。
 >
 > `--dry-run` 只打印 payload 不发送,由 `SEND_NOTIFY` 控制 —— 它**仅 gate 发送这一步**,前面 Step 1-5 照常执行。
