@@ -1,5 +1,5 @@
 'use strict';
-// channels.json 结构校验 + channelId 真实性核验(需 YOUTUBE_API_KEY)。
+// channels.json 结构校验 + channelId 真实性核验(联网核验,默认 skip;不用 Data API,见下方 T3 注释)。
 const path = require('node:path');
 const fs = require('node:fs');
 const { test } = require('node:test');

@@ -106,3 +106,26 @@ test('T12: 全部被淘汰 → exit 4', () => {
     r.cleanup();
   }
 });
+
+// ---- FR5(最终修复轮):loadProcessed 原实现 catch { return new Set(); } 静默吞掉损坏的
+// processed.json —— 去重状态无声归零,后果是重新选中已经发过的视频、重复生成并广播,
+// 运维侧没有任何信号。这里要求:损坏时仍返回空集合(不中止流程),但必须先往 stderr
+// 打一条 WARN,点明"去重状态本次失效"。
+
+test('T13: --state 指向损坏的 processed.json → WARN 到 stderr,去重状态本次失效但不中止流程(FR5)', () => {
+  const out = freshTmp();
+  const state = path.join(out, 'processed.json');
+  fs.writeFileSync(state, 'not valid json {{{');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--state', state],
+  });
+  try {
+    assert.equal(r.code, 0, `expected 0(损坏的去重状态不应中止流程), got ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /WARN/);
+    assert.match(r.stderr, /去重状态本次失效/, 'WARN 文案应明确点出去重状态失效,而不是静默无信号');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});

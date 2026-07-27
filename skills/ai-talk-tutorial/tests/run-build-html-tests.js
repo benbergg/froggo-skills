@@ -81,7 +81,7 @@ test('T8: C6 — 占位符被拦', () => {
   assert.ok(v.some((x) => x.code === 'C6'));
 });
 
-test('T9: C7 — 标题与 selected.json 不符被拦', () => {
+test('T9: C7 — video_id 与 selected.json 不符被拦(注:全流程无标题一致性校验,见 SKILL.md 诚实上限)', () => {
   const doc = B.parseTutorialMd(load('tutorial-good.md'));
   const v = B.runChecks(doc, TRANSCRIPT, { ...SELECTED, id: 'zzzzzzzzzzz' });
   assert.ok(v.some((x) => x.code === 'C7'));
@@ -313,7 +313,7 @@ test('T21: C2 — duration_sec 与实际字幕轴不一致时,真实存在的金
     `真实字幕轴上存在的金句不应被 C2 误杀: ${JSON.stringify(v)}`);
 });
 
-test('T22: C2 — 放宽上界后,真正编造的时间戳(远超字幕轴与 duration_sec)依然被拦(用 transcript-real.json)', () => {
+test('T22: C2 — 放宽上界后,真正编造的时间戳(远超字幕轴与 duration_sec)依然被拦(用 transcript-real.json)(护栏,非判别 —— 见 T21 判别测试)', () => {
   const transcriptReal = JSON.parse(fs.readFileSync(FIXTURE('transcript-real.json'), 'utf-8'));
   const selectedReal = JSON.parse(fs.readFileSync(FIXTURE('selected-real.json'), 'utf-8'));
 
@@ -322,4 +322,162 @@ test('T22: C2 — 放宽上界后,真正编造的时间戳(远超字幕轴与 du
   doc.quotes[0].label = '1666:39';
   const v = B.runChecks(doc, transcriptReal, selectedReal);
   assert.ok(v.some((x) => x.code === 'C2'), `明显编造的时间戳应仍被 C2 拦住: ${JSON.stringify(v)}`);
+});
+
+// ---- FR1(最终修复轮):C1/C5 只判"段落非空"/"步骤数与标题非空",完全不检查
+// 段落"正文"内容 —— 一份 TL;DR 一行、背景一句"略。"、三个空标题步骤、checklist 一项、
+// 一条真实金句的骨架文档能通过全部自检并被广播(SKILL.md:163 的"每步须有标题和正文"
+// 约束没有任何脚本落地)。本轮加:
+//   C5 每步正文最小长度 STEP_BODY_MIN_CHARS=15 —— 阈值依据:tutorial-good.md 三步
+//     真实正文分别是 22/27/24 字符(单句中文方法论描述的下限),15 留出安全余量、
+//     同时能拦住 tutorial-hollow.md 里完全空白(0 字符)的正文,不会误伤真实产出。
+//   C1 tldr/checklist ≥2 条(TLDR_MIN_BULLETS/CHECKLIST_MIN_ITEMS)—— tutorial-good.md
+//     两处均为 3 条,阈值 2 留出至少 1 条的余量,同时能拦住骨架文档的单条。
+//   C1 background ≥30 字符(BACKGROUND_MIN_CHARS)—— tutorial-good.md 背景段实测 54 字符
+//     (评审建议的 60 反而会误杀这份合格夹具,故未采用),30 留出接近一半的余量,
+//     同时远高于骨架文档"略。"的 2 字符。
+//   C1 H1 ≥6 字符(H1_MIN_CHARS,采用评审建议值)—— tutorial-good.md 标题实测 20 字符,
+//     骨架文档标题"AI 教程"只有 5 字符,刚好落在阈值之下。
+// 每条阈值均已用 T2(tutorial-good.md → 零违规)验证不会误伤合格产出。
+
+test('T23: FR1 — 结构合法但内容空洞的骨架文档被 C1+C5 拦(核心判别用例)', () => {
+  const doc = B.parseTutorialMd(load('tutorial-hollow.md'));
+  const v = B.runChecks(doc, TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C1'), `期望骨架文档触发 C1,实际: ${JSON.stringify(v)}`);
+  assert.ok(v.some((x) => x.code === 'C5'), `期望骨架文档触发 C5(步骤正文空洞),实际: ${JSON.stringify(v)}`);
+  // 确认不是靠 C2/C3/C4/C6/C7/C8 这些既有检查误撞上的 —— 骨架文档的时间戳/金句/占位符/
+  // video_id 都是"合法"的,唯独正文内容空洞,只应由新增的 C1/C5 内容深度检查拦住
+  assert.ok(!v.some((x) => ['C2', 'C3', 'C4', 'C6', 'C7', 'C8'].includes(x.code)),
+    `骨架文档不应触发 C2/C3/C4/C6/C7/C8,实际: ${JSON.stringify(v)}`);
+});
+
+test('T24: FR1 — CLI 层面骨架文档同样 exit 5,不产出 HTML(物理断路)', () => {
+  const out = freshTmp();
+  const tPath = path.join(out, 't.json');
+  const sPath = path.join(out, 's.json');
+  const hPath = path.join(out, 'tutorial.html');
+  fs.writeFileSync(tPath, JSON.stringify(TRANSCRIPT));
+  fs.writeFileSync(sPath, JSON.stringify(SELECTED));
+  const r = runCli({
+    script: 'build-html.js',
+    args: ['--md', FIXTURE('tutorial-hollow.md'), '--transcript', tPath, '--selected', sPath, '--out', hPath],
+  });
+  try {
+    assert.equal(r.code, 5, `expected 5, got ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /C1/);
+    assert.match(r.stderr, /C5/);
+    assert.equal(fs.existsSync(hPath), false, '骨架文档不应产出 HTML');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T25: C5 — 单步正文过短(<15 字符)被拦,即便标题非空(FR1)', () => {
+  const md = load('tutorial-good.md').replace(
+    '### 1. 先定义失败样本\n从真实流量里挑出失败案例，作为评估集的种子。',
+    '### 1. 先定义失败样本\n太短。'
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C5' && /正文过短/.test(x.message)),
+    `期望正文过短被 C5 拦住,实际: ${JSON.stringify(v)}`);
+});
+
+test('T26: C1 — TL;DR 只有 1 条 bullet 被拦(FR1)', () => {
+  const md = load('tutorial-good.md').replace(
+    /## 一、\s*TL;DR\n\n[\s\S]*?(?=\n## 二、)/,
+    '## 一、TL;DR\n\n- 只有一条。'
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C1' && /TL;DR/.test(x.message)),
+    `期望 TL;DR 条目过少被 C1 拦住,实际: ${JSON.stringify(v)}`);
+});
+
+test('T27: C1 — checklist 只有 1 项被拦(FR1)', () => {
+  const md = load('tutorial-good.md').replace(
+    /## 四、可落地 checklist\n\n[\s\S]*?(?=\n## 五、)/,
+    '## 四、可落地 checklist\n\n- [ ] 只有一项。\n'
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C1' && /checklist/.test(x.message)),
+    `期望 checklist 条目过少被 C1 拦住,实际: ${JSON.stringify(v)}`);
+});
+
+test('T28: C1 — 背景段落过短(<30 字符)被拦(FR1)', () => {
+  const md = load('tutorial-good.md').replace(
+    '团队在把 agent 推上生产时，常常先挑模型再补评估，结果无法判断改动是否带来提升。他把评估放在模型之前。',
+    '略。'
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C1' && /背景段落过短/.test(x.message)),
+    `期望背景过短被 C1 拦住,实际: ${JSON.stringify(v)}`);
+});
+
+test('T29: C1 — H1 标题过短(<6 字符)被拦(FR1)', () => {
+  const md = load('tutorial-good.md').replace(
+    '# 如何构建能上生产的 Agent 评估体系',
+    '# AI 教程'
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C1' && /H1 标题过短/.test(x.message)),
+    `期望 H1 过短被 C1 拦住,实际: ${JSON.stringify(v)}`);
+});
+
+// ---- FR3:esc() 不转义 " 却被用在 HTML 属性上下文(title="..."/href="...")------------
+// H1 写成 `# 论 "Vibe Coding" 的三层 <演进>`(SKILL.md:166 要求金句用 ASCII 直引号,
+// 容易带偏模型在全文含 H1 都用 ""),产出的 iframe title 属性会在第二个 " 处提前闭合,
+// 后续 allowfullscreen 等 token 被解析成伪属性 —— 归档 HTML 是最终交付物,命中概率不低。
+
+test('T30: H1 含 ASCII 直引号与尖括号 → title/href 属性正确转义为 &quot;/&lt;/&gt;,不提前闭合(FR3)', () => {
+  const out = freshTmp();
+  const mdPath = path.join(out, 't.md');
+  const tPath = path.join(out, 't.json');
+  const sPath = path.join(out, 's.json');
+  const hPath = path.join(out, 'tutorial.html');
+  const md = load('tutorial-good.md').replace(
+    '# 如何构建能上生产的 Agent 评估体系',
+    '# 论 "Vibe Coding" 的三层 <演进> 方法体系'
+  );
+  fs.writeFileSync(mdPath, md);
+  fs.writeFileSync(tPath, JSON.stringify(TRANSCRIPT));
+  fs.writeFileSync(sPath, JSON.stringify(SELECTED));
+  const r = runCli({
+    script: 'build-html.js',
+    args: ['--md', mdPath, '--transcript', tPath, '--selected', sPath, '--out', hPath],
+  });
+  try {
+    assert.equal(r.code, 0, `expected 0, got ${r.code}: ${r.stderr}`);
+    const html = fs.readFileSync(hPath, 'utf-8');
+    // title 属性值必须是单个完整、正确转义的字符串 —— 提前闭合会导致后面出现
+    // 裸露的 Vibe Coding" 之类残片,或 allowfullscreen 被解析成 title 值的一部分
+    assert.match(html, /title="论 &quot;Vibe Coding&quot; 的三层 &lt;演进&gt; 方法体系"/,
+      'iframe title 属性未正确转义 "/<>');
+    assert.match(html, /allowfullscreen loading="lazy"><\/iframe>/, 'title 属性提前闭合,后续属性解析错乱');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+// ---- FR4:自检失败(exit 5)时不删除已存在的 --out 文件,同日重跑会归档陈旧 HTML -------
+
+test('T31: 自检失败(exit 5)时删除已存在的旧 --out 文件,防止同日重跑归档陈旧 HTML(FR4)', () => {
+  const out = freshTmp();
+  const tPath = path.join(out, 't.json');
+  const sPath = path.join(out, 's.json');
+  const hPath = path.join(out, 'tutorial.html');
+  fs.writeFileSync(tPath, JSON.stringify(TRANSCRIPT));
+  fs.writeFileSync(sPath, JSON.stringify(SELECTED));
+  fs.writeFileSync(hPath, '<html>STALE FROM YESTERDAY</html>');
+  const r = runCli({
+    script: 'build-html.js',
+    args: ['--md', FIXTURE('tutorial-fake-quote.md'), '--transcript', tPath, '--selected', sPath, '--out', hPath],
+  });
+  try {
+    assert.equal(r.code, 5, `expected 5, got ${r.code}: ${r.stderr}`);
+    assert.equal(fs.existsSync(hPath), false, '自检失败后旧 HTML 未被删除,同日重跑会把它当今日产出归档广播');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
 });

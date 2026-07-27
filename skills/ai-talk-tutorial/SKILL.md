@@ -241,14 +241,26 @@ git add "$REL/$YEAR/$DATE-$SLUG.html" "$REL/$YEAR/$DATE-$SLUG.md" "$REL/index.ht
 # 若提前(在 cp/git 之前)写这个状态,一旦后面任何一步失败(cp 失败/不在 git 仓库/
 # push 冲突解不开),这个视频已经被标记"已处理",明天不会再选中,但内容其实从未
 # 提交成功 —— 当天教程静默永久丢失且不可自愈。挪到这里,只有真正落库成功才计入去重。
+#
+# 读 processed.json 单独 try/catch(fix round FR5):discover.js 的 loadProcessed() 已经在
+# 损坏时 WARN + 视为空集合,这里是同一份文件的另一处读取入口,原来是裸 JSON.parse ——
+# 一旦文件损坏就会在这里抛异常,而这个 heredoc 排在 git push 成功之后,会把"git 已经
+# 提交成功"的 Step 5 报成失败(容错策略与 discover.js 不一致)。改成损坏时 WARN 并以
+# 空数组重建,不让它在 push 成功之后把整步炸掉。
 WORK="$WORK" node - <<'JS'
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const work = process.env.WORK;
 const state = path.join(os.homedir(), '.cache', 'ai-talk-tutorial', 'state', 'processed.json');
 fs.mkdirSync(path.dirname(state), { recursive: true });
-const seen = fs.existsSync(state)
-  ? (JSON.parse(fs.readFileSync(state, 'utf-8')).processed || [])
-  : [];
+let seen = [];
+if (fs.existsSync(state)) {
+  try {
+    seen = JSON.parse(fs.readFileSync(state, 'utf-8')).processed || [];
+  } catch (e) {
+    process.stderr.write('WARN: ' + state + ' 损坏(' + e.message + '),去重状态以空数组重建\n');
+    seen = [];
+  }
+}
 const vid = JSON.parse(fs.readFileSync(path.join(work, 'selected.json'), 'utf-8')).id;
 if (!seen.includes(vid)) seen.push(vid);
 fs.writeFileSync(state, JSON.stringify({ processed: seen.slice(-500) }, null, 2) + '\n');
@@ -367,3 +379,7 @@ node "$PLUGIN_ROOT/skills/dingtalk-log/scripts/dingtalk-log.js" create-report \
 
 C1–C8 只能挡**结构性错误与引用真实性**。方法论提炼得准不准、有没有抓错重点属于模型发挥,**无法脚本化**。
 重要用途请人工过一遍正文。
+
+C7 只校验 `transcript.video_id` 与 `selected.id` 是否一致(防止拿错视频的字幕拼错视频的教程),**不做标题一致性校验** ——
+`tutorial.md` 的 H1 与 `selected.json.title`(YouTube 原标题)本来就该不同(H1 是 AI 提炼的中文标题,不是原标题的翻译或摘录),
+全流程没有、也不应该有任何一处比对两者是否"相符"。

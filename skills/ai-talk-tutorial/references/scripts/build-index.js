@@ -5,16 +5,20 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+// fix round(FR3):build-html.js 的 esc() 补上了 " → &quot; 转义(它被用在 title=".."/href=".."
+// 属性上下文,不转义会导致属性提前闭合),href="..." 这里同样是属性上下文,一并加,理由相同。
 function esc(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 // esc() 的逆运算:归档 HTML 里的 <title> 内容在 Task 4 build-html.js 写入时已被 esc() 转义过一遍,
 // collect() 截取到的是转义后的明文实体,必须先解码回原始字符,交给 render() 的 esc() 重新转义一次,
 // 否则会叠加成双重转义(如 "Bug & Fix" 显示成 "Bug &amp;amp; Fix")。
-// 解码顺序不能颠倒:必须先解 &lt;/&gt;,最后才解 &amp; —— 反过来会把 "&amp;lt;" 误解成 "<"。
+// 解码顺序不能颠倒:必须先解 &lt;/&gt;/&quot;,最后才解 &amp; —— 反过来会把 "&amp;lt;" 误解成 "<"。
+// fix round(FR3):esc() 加了 &quot; 转义后,<title> 里可能出现 &quot;,必须同步支持解码,
+// 否则会被 render() 的 esc() 二次转义成 &amp;quot;(与 &lt;/&gt; 同一类问题)。
 function unesc(s) {
-  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&amp;/g, '&');
+  return String(s).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&amp;/g, '&');
 }
 
 function collect(root) {

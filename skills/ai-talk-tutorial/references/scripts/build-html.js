@@ -23,8 +23,12 @@ const SECTION_HEADS = {
 // 混进同一个 \b(...)\b 组会导致中文占位符永远匹配不到(fix round: 评审实测 test('待补充')===false)。
 const PLACEHOLDER_RE = /\b(?:TBD|TODO|FIXME|XXX)\b|待补充|占位|待填/i;
 
+// fix round(FR3):原实现不转义 ",但 esc() 被用在 HTML 属性上下文(title="..."/href="...")——
+// H1 或链接里出现 ASCII 直引号(SKILL.md:166 明确要求金句用 ASCII 直引号,容易带偏模型在
+// 全文含 H1 都用 "")会让属性值在第二个引号处提前闭合,后续 token 被解析成伪属性。
+// & 必须先替换,否则 " → &quot; 产生的 & 会被二次转义成 &amp;quot;。
 function esc(s) {
-  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;');
 }
 
 function tsToSec(label) {
@@ -104,25 +108,68 @@ function parseTutorialMd(md) {
     quotes.push({ label: m[1], sec: tsToSec(m[1]), en: m[2].trim(), zh: m[3].trim() });
   }
 
-  // 方法论步骤
+  // 方法论步骤(标题 + 正文)
+  // fix round(FR1):原实现只捕获标题行,不捕获正文 —— C5 因此只能判"标题非空",
+  // 判不了"正文是否空洞"。这里先收集每个标题整行的起止位置,再用"本标题行末尾"
+  // 到"下一个标题行起始"(或段落末尾)切出该步的正文。
   const steps = [];
   const sRe = /^###\s*(\d+)[.、]\s*(.+)$/gm;
+  const heads = [];
   while ((m = sRe.exec(sections.method || '')) !== null) {
-    steps.push({ no: parseInt(m[1], 10), title: m[2].trim() });
+    heads.push({ no: parseInt(m[1], 10), title: m[2].trim(), lineStart: m.index, lineEnd: m.index + m[0].length });
+  }
+  for (let i = 0; i < heads.length; i++) {
+    const bodyEnd = i + 1 < heads.length ? heads[i + 1].lineStart : (sections.method || '').length;
+    steps.push({
+      no: heads[i].no,
+      title: heads[i].title,
+      body: (sections.method || '').slice(heads[i].lineEnd, bodyEnd).trim(),
+    });
   }
 
   return { title, sections, quotes, steps, raw: md };
 }
 
+// 数列表项条数(与 renderList 用的判定逻辑保持一致,但这里只计数不渲染)
+function countListItems(body) {
+  return (body || '').split('\n').filter((l) => /^[-*]\s*(?:\[[ x]\]\s*)?.+/.test(l.trim())).length;
+}
+
+// C1/C5 内容深度阈值(FR1 —— 评审实测"结构合法、内容空洞"的骨架文档能通过旧版全部
+// 自检:C1 原来只判段落 trim() 非空,C5 原来只判步骤数≥3 且标题非空,SKILL.md:163
+// "每步须有标题和正文"这句里"正文"这一半完全没有脚本落地)。
+// 阈值取自 tests/fixtures/tutorial-good.md 的真实实测值,不是凭空估的:
+//   - 三步正文实测 22/27/24 字符 → STEP_BODY_MIN_CHARS=15(留安全余量,拦住 tutorial-hollow.md 的 0 字符空正文)
+//   - TL;DR/checklist 均实测 3 条 → 阈值 2(留 1 条余量,拦住骨架文档的 1 条)
+//   - 背景段实测 54 字符 → BACKGROUND_MIN_CHARS=30(评审建议的 60 反而会误杀这份合格夹具,未采纳)
+//   - H1 实测 20 字符 → H1_MIN_CHARS=6(采纳评审建议,骨架文档标题"AI 教程"5 字符,刚好落在阈值下)
+const STEP_BODY_MIN_CHARS = 15;
+const TLDR_MIN_BULLETS = 2;
+const CHECKLIST_MIN_ITEMS = 2;
+const BACKGROUND_MIN_CHARS = 30;
+const H1_MIN_CHARS = 6;
+
 function runChecks(doc, transcript, selected) {
   const v = [];
   const add = (code, message) => v.push({ code, message });
 
-  // C1 五段齐全
+  // C1 五段齐全 + 最小内容要求(FR1:拦"段落存在但内容空洞")
   for (const k of SECTION_KEYS) {
     if (!doc.sections[k] || doc.sections[k].trim().length === 0) add('C1', `缺少段落: ${k}`);
   }
+  if (doc.sections.tldr) {
+    const n = countListItems(doc.sections.tldr);
+    if (n < TLDR_MIN_BULLETS) add('C1', `TL;DR 条目过少(${n} 条,要求 ≥${TLDR_MIN_BULLETS} 条),内容空洞`);
+  }
+  if (doc.sections.checklist) {
+    const n = countListItems(doc.sections.checklist);
+    if (n < CHECKLIST_MIN_ITEMS) add('C1', `checklist 条目过少(${n} 条,要求 ≥${CHECKLIST_MIN_ITEMS} 条),内容空洞`);
+  }
+  if (doc.sections.background && doc.sections.background.length < BACKGROUND_MIN_CHARS) {
+    add('C1', `背景段落过短(${doc.sections.background.length} 字符,要求 ≥${BACKGROUND_MIN_CHARS} 字符),内容空洞`);
+  }
   if (!doc.title) add('C1', '缺少 H1 标题');
+  else if (doc.title.length < H1_MIN_CHARS) add('C1', `H1 标题过短(${doc.title.length} 字符,要求 ≥${H1_MIN_CHARS} 字符)`);
 
   // C2 时间戳格式合法且 ≤ 视频总时长上界
   // fix round(端到端验收缺陷2):duration_sec 来自 YouTube Data API 的
@@ -202,10 +249,13 @@ function runChecks(doc, transcript, selected) {
       + `但只成功解析出 ${doc.quotes.length} 条。${hint}`);
   }
 
-  // C5 方法论 ≥3 步且无空步骤
+  // C5 方法论 ≥3 步、标题非空、且每步正文非空洞(FR1:原实现不检查正文,只检查标题)
   if (doc.steps.length < 3) add('C5', `方法论步骤仅 ${doc.steps.length} 个,要求 ≥3`);
   for (const s of doc.steps) {
     if (!s.title) add('C5', `第 ${s.no} 步标题为空`);
+    if (!s.body || s.body.length < STEP_BODY_MIN_CHARS) {
+      add('C5', `第 ${s.no} 步正文过短或缺失(${s.body ? s.body.length : 0} 字符,要求 ≥${STEP_BODY_MIN_CHARS} 字符),仅有标题无实质内容`);
+    }
   }
 
   // C6 无占位符
@@ -367,6 +417,10 @@ function main() {
   if (violations.length > 0) {
     process.stderr.write(`自检未通过,共 ${violations.length} 条:\n`);
     for (const x of violations) process.stderr.write(`  [${x.code}] ${x.message}\n`);
+    // fix round(FR4):$WORK 按 DATE 分目录,同日重跑(cron 重试/3 轮自检失败后人工重跑)
+    // 会命中同一个 --out 路径。若不删除旧文件,Step 5 的 cp 会把上一次成功产出的陈旧
+    // HTML 当作今日产出归档并广播,"3 轮不过则中止"退化成纯提示词约束(违反物理断路原则)。
+    fs.rmSync(args.out, { force: true });
     process.stderr.write('HTML 未生成 —— 请修正 tutorial.md 后重跑\n');
     process.exit(5);
   }

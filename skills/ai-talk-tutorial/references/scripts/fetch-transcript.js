@@ -318,6 +318,19 @@ async function main() {
     process.exit(1);
   }
 
+  // fix round(FR2):discover.js 零候选时仍会无条件写出 candidates.json(candidates: []),
+  // 这份文件若被误传到本步(违反 SKILL.md Step 1 exit 4 分支的散文约束)会走到下面的
+  // for 循环空转、直落 exit 6,触发"所有候选取字幕均失败"的告警 —— 内容是错的,
+  // 会把运维引向 cookie/yt-dlp 排查这个完全无关的方向。在入口显式拦成 exit 1,
+  // 与"参数/文件错误"归为一类,不再冒充"字幕层故障"。
+  if (candidates.length === 0) {
+    process.stderr.write(
+      'candidates 为空,应走 discover.js exit 4 的零候选分支,不应到达本步'
+      + `(--candidates ${args.candidates})\n`
+    );
+    process.exit(1);
+  }
+
   fs.mkdirSync(args.out, { recursive: true });
 
   // 逐个探测,第一个有字幕的胜出 —— IDC IP 上请求越少越安全

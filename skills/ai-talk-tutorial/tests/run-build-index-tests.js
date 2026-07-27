@@ -101,7 +101,40 @@ test('T5: 文件名不符 YYYY-MM-DD-slug.html → 跳过', () => {
   }
 });
 
-test('T6: 年份子目录名非 4 位数字 → 跳过', () => {
+// ---- FR3(最终修复轮):build-html.js 的 esc() 加了 &quot; 转义之后,归档 HTML 的
+// <title> 里可能出现 &quot;(标题含 ASCII 直引号时),collect()+unesc() 若不同步支持
+// 解码 &quot;,会把它当普通文本传给 render() 的 esc() 重新转义一次,产生
+// &quot; → &amp;quot; 的双重转义(Task 5 T4 已经验证过 &amp;/&lt;/&gt; 不能双重转义,
+// 这里补上 &quot; 这一路径,防止把 Task 5 修好的往返自洽性弄坏)。
+
+test('T6: 标题含 " 且已被 build-html.js 的 esc() 转义为 &quot; → 索引页单重转义,不产生 &amp;quot;(FR3 往返自洽性)', () => {
+  const root = freshTmp();
+  fs.mkdirSync(path.join(root, '2026'), { recursive: true });
+  // 模拟 build-html.js 加了 &quot; 转义后的真实产出:标题原文是
+  // 论 "Vibe Coding" 的三层 <演进>,esc() 之后 <title> 里是这样:
+  const page = '<!doctype html><html><head><meta charset="utf-8">'
+    + '<title>论 &quot;Vibe Coding&quot; 的三层 &lt;演进&gt;</title></head><body></body></html>';
+  fs.writeFileSync(path.join(root, '2026', '2026-07-21-quoted.html'), page);
+  const r = runCli({ script: 'build-index.js', args: ['--dir', root] });
+  try {
+    assert.equal(r.code, 0, r.stderr);
+    const html = fs.readFileSync(path.join(root, 'index.html'), 'utf-8');
+    // 单重转义:原文 论 "Vibe Coding" 的三层 <演进> 应恰好转义一次
+    assert.match(html, /论 &quot;Vibe Coding&quot; 的三层 &lt;演进&gt;/);
+    // 不应出现双重转义
+    assert.ok(!/&amp;quot;/.test(html), '出现双重转义 &amp;quot;');
+    assert.ok(!/&amp;lt;/.test(html), '出现双重转义 &amp;lt;');
+    assert.ok(!/&amp;gt;/.test(html), '出现双重转义 &amp;gt;');
+    // 也不应把原始引号未转义地拼进属性上下文(index.html 里标题在 <a> 文本内容,
+    // 不在属性里,但未转义的裸 " 混入仍是不该出现的原始标记泄漏)
+    assert.ok(!/论 "Vibe Coding" 的三层 <演进>/.test(html), '出现未转义的原始标记');
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T7: 年份子目录名非 4 位数字 → 跳过', () => {
   const root = freshTmp();
   fs.mkdirSync(path.join(root, 'notyear'), { recursive: true });
   fs.writeFileSync(

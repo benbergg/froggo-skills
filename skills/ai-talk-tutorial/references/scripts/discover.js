@@ -138,7 +138,12 @@ function loadProcessed(statePath) {
   try {
     const o = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     return new Set(Array.isArray(o.processed) ? o.processed : []);
-  } catch {
+  } catch (e) {
+    // fix round(FR5):原实现静默吞掉损坏的 processed.json —— 去重状态无声归零,
+    // 后果是重新选中已经发过的视频、重复生成并广播,运维侧没有任何信号。
+    // 仍然返回空集合(不中止本次运行,损坏的去重状态不应阻断今天的候选发现),
+    // 但必须留一条 WARN,让"去重状态本次失效"这件事不是完全无感的。
+    process.stderr.write(`WARN: 无法解析 ${statePath}(${e.message}),去重状态本次失效,视为空集合\n`);
     return new Set();
   }
 }

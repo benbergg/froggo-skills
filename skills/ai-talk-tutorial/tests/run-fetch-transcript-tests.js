@@ -152,3 +152,29 @@ test('T13: --candidates 指向损坏 JSON → exit 1(fix round 3 F4:不能落到
     r.cleanup();
   }
 });
+
+// ---- FR2(最终修复轮):discover.js 零候选时仍无条件写出 candidates.json(candidates: []),
+// 若这份文件被直接传给 fetch-transcript.js(违反 SKILL.md Step 1 exit 4 分支的散文约束时),
+// 旧实现会走到 for 循环空转、直落 exit 6,触发 SKILL.md:110 那条"所有候选取字幕均失败,
+// 请人工核查候选与 cookie/yt-dlp 状态"的告警 —— 内容是错的,会把运维引向无关排查方向。
+// 本轮把这个场景在 fetch-transcript.js 入口显式拦截为 exit 1 + 准确文案,不再落到 exit 6。
+
+test('T14: --candidates 的 candidates 数组为空 → exit 1,不落到 exit 6(FR2:零候选应止步于 discover.js exit 4 分支)', () => {
+  const dir = freshTmp();
+  const candPath = path.join(dir, 'candidates.json');
+  fs.writeFileSync(candPath, JSON.stringify({ generated_at: '2026-07-27', candidates: [], rejected: {} }));
+  const out = freshTmp();
+  const r = runCli({
+    script: 'fetch-transcript.js',
+    args: ['--candidates', candPath, '--out', out],
+  });
+  try {
+    assert.equal(r.code, 1, `expected 1, got ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /candidates 为空/);
+    assert.match(r.stderr, /discover\.js exit 4/, '文案应点名正确的零候选分支,避免运维误判成字幕层故障');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
