@@ -3,7 +3,18 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { runCli, FIXTURE } = require('./helpers');
 const fs = require('node:fs');
+const os = require('node:os');
 const path = require('node:path');
+
+// 读 validate-base.md、做 mutation、写临时文件,返回路径(V 系列校验测试用)
+function writeMutatedBase(mutate) {
+  const base = fs.readFileSync(FIXTURE('validate-base.md'), 'utf-8');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'exp-vt-'));
+  const p = path.join(dir, 'mutated.md');
+  fs.writeFileSync(p, mutate(base), 'utf-8');
+  return p;
+}
+const BASE_JSON = () => FIXTURE('validate-base.json');
 
 test('T1: 标准 MD → 输出 contents 含 4 段 + key 与 ANCHORS 一致', () => {
   const r = runCli({
@@ -202,5 +213,54 @@ test('T7c: V4 二段新结构(⚠️ 标题 / └ 表尾 / ⏸ 滞留行 / ## �
     assert.doesNotMatch(j.contents[2].content, /存量风险/);
     // 三段的"今日测试完毕"新子段在三段内
     assert.match(j.contents[2].content, /^## 今日测试完毕$/m);
+  } finally { r.cleanup(); }
+});
+
+// ---- V5 数据一致性硬校验(--json,MD↔JSON,不符 exit 5 阻断广播) --------------
+
+test('V1: --json 且 MD 与 JSON 完全一致 → exit 0 正常输出', () => {
+  const r = runCli({
+    args: ['--md', FIXTURE('validate-base.md'), '--date', '2026-07-24', '--json', BASE_JSON()],
+  });
+  try {
+    assert.equal(r.code, 0, `expected exit 0 got ${r.code}, stderr=${r.stderr}`);
+    assert.equal(JSON.parse(r.stdout).contents.length, 4);
+  } finally { r.cleanup(); }
+});
+
+test('V2: 概览需求"进行中"填错(3→5,应=active) → exit 5 + stderr 列差异', () => {
+  const md = writeMutatedBase((b) => b.replace('| 需求 | 3 (另滞留 2)', '| 需求 | 5 (另滞留 2)'));
+  const r = runCli({ args: ['--md', md, '--date', '2026-07-24', '--json', BASE_JSON()] });
+  assert.equal(r.code, 5, `expected exit 5 got ${r.code}, stderr=${r.stderr}`);
+  assert.match(r.stderr, /需求|进行中|active/);
+});
+
+test('V3: 二段详情表漏一个 active 需求(删 ### S300 段) → exit 5', () => {
+  const md = writeMutatedBase((b) => b.replace(/### S300 需求丙[\s\S]*?\n\n(?=⏸)/, ''));
+  const r = runCli({ args: ['--md', md, '--date', '2026-07-24', '--json', BASE_JSON()] });
+  assert.equal(r.code, 5, `expected exit 5 got ${r.code}, stderr=${r.stderr}`);
+  assert.match(r.stderr, /详情表|active|300/);
+});
+
+test('V4: 待修复 Bug 段混入 resolved bug(加 B500) → exit 5', () => {
+  const md = writeMutatedBase((b) => b.replace(
+    '待修复 Bug (1):[B700](https://z/bug-view-700.html)(阿三)',
+    '待修复 Bug (2):[B700](https://z/bug-view-700.html)(阿三)、[B500](https://z/bug-view-500.html)(阿二)'));
+  const r = runCli({ args: ['--md', md, '--date', '2026-07-24', '--json', BASE_JSON()] });
+  assert.equal(r.code, 5, `expected exit 5 got ${r.code}, stderr=${r.stderr}`);
+  assert.match(r.stderr, /待修复|500|active/);
+});
+
+test('V5: 概览任务行数字错(进行中 7→9) → exit 5', () => {
+  const md = writeMutatedBase((b) => b.replace('| 任务 | 7 | 1 | 0 | 7 |', '| 任务 | 9 | 1 | 0 | 7 |'));
+  const r = runCli({ args: ['--md', md, '--date', '2026-07-24', '--json', BASE_JSON()] });
+  assert.equal(r.code, 5, `expected exit 5 got ${r.code}, stderr=${r.stderr}`);
+  assert.match(r.stderr, /任务|进行中/);
+});
+
+test('V6: 不传 --json → 跳过校验,向后兼容 exit 0', () => {
+  const r = runCli({ args: ['--md', FIXTURE('validate-base.md'), '--date', '2026-07-24'] });
+  try {
+    assert.equal(r.code, 0, `expected exit 0 got ${r.code}, stderr=${r.stderr}`);
   } finally { r.cleanup(); }
 });

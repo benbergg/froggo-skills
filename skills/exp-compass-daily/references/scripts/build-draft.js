@@ -4,7 +4,7 @@
 // outputs a contents JSON suitable for `dingtalk-log save-content --contents`.
 //
 // Usage:
-//   node build-draft.js --md /path/to/{DATE}.md --date 2026-05-11 [--out /tmp/x.json]
+//   node build-draft.js --md /path/to/{DATE}.md --date 2026-05-11 [--out /tmp/x.json] [--json /tmp/exp-compass-{DATE}.json]
 //
 // Optional env:
 //   DINGTALK_EXP_COMPASS_FIELD_NAMES_JSON  JSON array of 4 strings overriding ANCHORS.key
@@ -14,6 +14,10 @@
 //   exit 0  ok
 //   exit 1  bad args / IO error
 //   exit 4  H1 anchor missing or out of order
+//   exit 5  --json 提供时 MD↔JSON 数据一致性校验失败(概览数字/详情表 active/待修复 Bug)
+//
+// --json 是 V5 物理断路:传入 collect.js 的采集 JSON,硬校验弱模型撰写的 MD
+// 与采集真相是否一致,不一致 exit 5 阻断广播(不发错误数据)。未传则跳过(向后兼容)。
 
 'use strict';
 
@@ -29,13 +33,14 @@ const DEFAULT_ANCHORS = [
 ];
 
 function parseArgs(argv) {
-  const out = { md: null, date: null, outFile: null };
+  const out = { md: null, date: null, outFile: null, json: null };
   for (let i = 2; i < argv.length; i++) {
     const k = argv[i];
     const v = argv[i + 1];
     if (k === '--md') { out.md = v; i++; }
     else if (k === '--date') { out.date = v; i++; }
     else if (k === '--out') { out.outFile = v; i++; }
+    else if (k === '--json') { out.json = v; i++; }
   }
   return out;
 }
@@ -138,6 +143,90 @@ function transformOverviewTable(content) {
   return { ok: true, text };
 }
 
+// ---- V5 数据一致性硬校验(--json) ------------------------------------------
+
+// 从概览段解析 3 行的原始数字。返回 { 需求, 任务, BUG } 每项含
+// { inProgressRaw, todayNew, todayDone, todo };无法解析的行不入 map。
+function parseOverviewRows(section) {
+  const rows = {};
+  for (const line of section.split('\n')) {
+    const m = line.match(/^\|\s*(需求|任务|[Bb][Uu][Gg])[^|]*\|\s*([^|]*?)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*(\d+)\s*\|\s*$/);
+    if (m) {
+      const [, rawType, inProgressRaw, todayNew, todayDone, todo] = m;
+      rows[normalizeRowType(rawType)] = {
+        inProgressRaw,
+        todayNew: Number(todayNew),
+        todayDone: Number(todayDone),
+        todo: Number(todo),
+      };
+    }
+  }
+  return rows;
+}
+
+// 校验 MD 与采集 JSON 的一致性。返回差异描述数组(空=通过)。
+function validateAgainstJson(sections, anchors, json) {
+  const diffs = [];
+  const s = (json && json.summary) || {};
+  const overviewKey = anchors[0].key;
+  const detailKey = anchors[1].key;
+  const overview = sections[overviewKey] || '';
+  const detail = sections[detailKey] || '';
+
+  // 1) 概览 12 数字。需求"进行中"=active(不是 in_progress),任务/BUG 行=in_progress。
+  const rows = parseOverviewRows(overview);
+  const eq = (label, got, want) => {
+    if (Number(got) !== Number(want)) diffs.push(`概览 ${label}: MD=${got} != JSON=${want}`);
+  };
+  if (rows['需求'] && s.story) {
+    const mStory = rows['需求'].inProgressRaw.match(/^(\d+)(?:\s*\(另滞留\s*(\d+)\))?/);
+    const active = mStory ? Number(mStory[1]) : NaN;
+    const stale = mStory && mStory[2] != null ? Number(mStory[2]) : 0;
+    eq('需求·进行中(应=active)', active, s.story.active);
+    if ((s.story.stale || 0) !== stale) diffs.push(`概览 需求·另滞留: MD=${stale} != JSON=${s.story.stale}`);
+    eq('需求·今日新增', rows['需求'].todayNew, s.story.today_new);
+    eq('需求·今日完成', rows['需求'].todayDone, s.story.today_done);
+    eq('需求·待处理', rows['需求'].todo, s.story.todo);
+  } else {
+    diffs.push('概览: 需求行无法解析或 JSON.summary.story 缺失');
+  }
+  for (const [zh, key] of [['任务', 'task'], ['BUG', 'bug']]) {
+    if (rows[zh] && s[key]) {
+      eq(`${zh}·进行中`, Number(rows[zh].inProgressRaw), s[key].in_progress);
+      eq(`${zh}·今日新增`, rows[zh].todayNew, s[key].today_new);
+      eq(`${zh}·今日完成`, rows[zh].todayDone, s[key].today_done);
+      eq(`${zh}·待处理`, rows[zh].todo, s[key].todo);
+    } else {
+      diffs.push(`概览: ${zh}行无法解析或 JSON.summary.${key} 缺失`);
+    }
+  }
+
+  // 2) 二段详情表 ### 标题的 story id 全集 == JSON is_active 全集
+  const detailIds = new Set();
+  for (const line of detail.split('\n')) {
+    const m = line.match(/^###[^\n]*?S(\d+)/);
+    if (m) detailIds.add(Number(m[1]));
+  }
+  const activeIds = new Set((json.stories || []).filter((x) => x.is_active).map((x) => Number(x.id)));
+  const missing = [...activeIds].filter((id) => !detailIds.has(id));
+  const extra = [...detailIds].filter((id) => !activeIds.has(id));
+  if (missing.length) diffs.push(`详情表漏 active 需求(应列未列): ${missing.map((i) => 'S' + i).join(',')}`);
+  if (extra.length) diffs.push(`详情表多列非 active 需求: ${extra.map((i) => 'S' + i).join(',')}`);
+
+  // 3) "待修复 Bug" 行的 B id 必须 status=active
+  const bugStatus = new Map((json.bugs || []).map((b) => [Number(b.id), b.status]));
+  for (const line of detail.split('\n')) {
+    if (!line.includes('待修复 Bug')) continue;
+    const ids = [...line.matchAll(/B(\d+)/g)].map((m) => Number(m[1]));
+    for (const id of ids) {
+      const st = bugStatus.get(id);
+      if (st !== 'active') diffs.push(`待修复 Bug 段 B${id} 状态=${st || '未采集'},应为 active`);
+    }
+  }
+
+  return diffs;
+}
+
 function main() {
   const args = parseArgs(process.argv);
   if (!args.md) { console.error('FATAL: --md is required'); process.exit(1); }
@@ -147,6 +236,23 @@ function main() {
   const md = fs.readFileSync(args.md, 'utf-8');
   const anchors = resolveAnchors();
   const sections = sliceMarkdown(md, anchors);
+
+  // V5 物理断路:传了 --json 就硬校验 MD↔采集 JSON,不一致 exit 5 阻断广播。
+  if (args.json) {
+    if (!fs.existsSync(args.json)) {
+      console.error(`FATAL: --json file not found: ${args.json}`);
+      process.exit(1);
+    }
+    let json;
+    try { json = JSON.parse(fs.readFileSync(args.json, 'utf-8')); }
+    catch (e) { console.error(`FATAL: --json not valid JSON: ${e.message}`); process.exit(1); }
+    const diffs = validateAgainstJson(sections, anchors, json);
+    if (diffs.length) {
+      console.error('FATAL: MD↔JSON 数据一致性校验失败,阻断广播:');
+      for (const d of diffs) console.error(`  - ${d}`);
+      process.exit(5);
+    }
+  }
 
   const contents = anchors.map((a, i) => {
     let body = sections[a.key];

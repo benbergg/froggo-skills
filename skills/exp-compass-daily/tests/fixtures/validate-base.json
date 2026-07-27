@@ -1,0 +1,20 @@
+{
+  "summary": {
+    "story": { "active": 3, "stale": 2, "in_progress": 5, "today_new": 0, "today_done": 5, "todo": 10 },
+    "task": { "in_progress": 7, "today_new": 1, "today_done": 0, "todo": 7 },
+    "bug": { "in_progress": 1, "today_new": 0, "today_done": 1, "todo": 2 }
+  },
+  "stories": [
+    { "id": 100, "is_active": true },
+    { "id": 200, "is_active": true },
+    { "id": 300, "is_active": true },
+    { "id": 900, "is_active": false },
+    { "id": 901, "is_active": false },
+    { "id": 400, "is_active": false }
+  ],
+  "bugs": [
+    { "id": 700, "status": "active" },
+    { "id": 600, "status": "closed" },
+    { "id": 500, "status": "resolved" }
+  ]
+}
