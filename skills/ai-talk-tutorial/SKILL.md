@@ -221,10 +221,16 @@ REPO=$(cd "$ARCHIVE" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
 [ -n "$REPO" ] || { echo "FATAL: $ARCHIVE 不在 git 仓库内" >&2; exit 1; }
 REL=${ARCHIVE#"$REPO"/}
 
+# git commit 允许空 diff 时"失败"当成功处理:归档内容与仓库已有内容一致
+# (同日重跑,或 Knowledge-Library 每小时自动 commit 抢在这一步之前把文件收走了)
+# 时 `git commit` 会以非 0 退出且报 "nothing to commit",若不兜住,整链会在这里
+# FATAL、processed.json 永远写不进去,次日又会重复选中同一个视频重新生成一遍。
+# `git diff --cached --quiet` 无暂存差异时返回 0——只有在"commit 失败但索引里
+# 确实还有未提交差异"(hook 拒绝、GPG 签名失败等真失败)时才返回 1,继续让整链 FATAL。
 cd "$REPO" && \
 git pull --rebase --autostash origin master && \
 git add "$REL/$YEAR/$DATE-$SLUG.html" "$REL/$YEAR/$DATE-$SLUG.md" "$REL/index.html" && \
-git commit -m "docs: AI 演讲教程 $DATE" && \
+(git commit -m "docs: AI 演讲教程 $DATE" || git diff --cached --quiet) && \
 (git push origin master || (git pull --rebase --autostash origin master && git push origin master)) \
   || { echo "FATAL: git 归档提交失败,不标记已处理(明日会重试)" >&2; exit 1; }
 
@@ -283,11 +289,14 @@ process.stdout.write(
   + '📄 归档:' + '$ARCHIVE_HTML'
 );
 ")
-# export VAR=$(cmd) 这种写法会吞掉命令替换本身的退出码(实测:node 抛异常时
-# $? 仍是 0),所以不能靠 $? 判断,只能靠结果是否为空 —— tutorial.md 缺失或
-# TL;DR 正则匹配不到时 node 抛异常、stdout 空,MSG 就是空串,这里必须显式挡住,
-# 否则空 MSG 会一路传进「简讯推送共用块」,那边虽然也会再挡一次(见 F7),但源头
-# 挡住能给出更准确的失败原因。
+# 上面是普通赋值 MSG=$(node -e ...),不是 export MSG=$(...),所以 $? 本身其实
+# 会正确传播 node 的异常退出码(实测 MSG=$(node -e "throw...");echo $? → 1;
+# 只有写成 export MSG=$(...) 那种复合赋值才会把 $? 吞成 0 ——那是下面 F7 讲的
+# 另一个坑,这里没有踩)。即便如此仍然改判空而不是判 $?:tutorial.md 缺失或
+# TL;DR 正则匹配不到时 node 抛异常、stdout 为空,判空这一条规则就能同时兜住
+# "node 异常退出"和"node 正常退出但恰好输出空字符串"两种情况,比只判 $? 更宽,
+# 不用为两种失败模式分别处理。挡在这里(而不是等传进「简讯推送共用块」才被
+# F7 的判空兜住)是为了给出更准确的失败原因。
 [ -n "$MSG" ] || { echo "FATAL: MSG 构造失败(tutorial.md 或 selected.json 缺失/格式不对),中止推送" >&2; exit 1; }
 export MSG
 ```
@@ -304,11 +313,15 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 
-# 调用方必须已经 export 好 $MSG;不校验的话 dingtalk-log.js 只查 --contents
-# 是不是合法 JSON 数组,不查数组里有没有 content 字段,空 MSG 会被静默广播成功
-# (exit 0),而这个块恰恰是 exit 6 / 3 轮自检失败这两条本该报警的路径在用,
-# 最坏后果是该报警的时候群里收到一条空消息
-[ -n "$MSG" ] || { echo "FATAL: MSG 未设置,调用方必须先 export MSG 再执行本块" >&2; exit 1; }
+# 调用方必须已经设好 $MSG(export 或普通赋值均可,下面 export 兜底);不校验的话
+# dingtalk-log.js 只查 --contents 是不是合法 JSON 数组,不查数组里有没有 content
+# 字段,空 MSG 会被静默广播成功(exit 0),而这个块恰恰是 exit 6 / 3 轮自检失败这两条
+# 本该报警的路径在用,最坏后果是该报警的时候群里收到一条空消息
+[ -n "$MSG" ] || { echo "FATAL: MSG 未设置,调用方必须先设置 MSG 再执行本块" >&2; exit 1; }
+# 再 export 一次兜底:调用方如果写成普通赋值 MSG="..." 漏了 export,上面的判空
+# 用的是 shell 变量、能通过,但 :329 的 process.env.MSG 是子进程读环境变量,不
+# export 就读不到,会拼出一条没有 content 字段的 payload、照样静默广播成功
+export MSG
 
 TPL_ID=$(cat "$WORK/template_id.txt" 2>/dev/null)
 if [ -z "$TPL_ID" ]; then
