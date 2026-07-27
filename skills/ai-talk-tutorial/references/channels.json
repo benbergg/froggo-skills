@@ -1,0 +1,36 @@
+{
+  "channels": [
+    { "handle": "@aiDotEngineer",   "channelId": "UCLKPca3kwwd-B59HNr-_lvA", "weight": 1.0, "note": "AI Engineer World's Fair/Summit，agentic 实操密度最高" },
+    { "handle": "@ycombinator",     "channelId": "UCcefcZRL2oaA_uBNeo5UOWg", "weight": 1.0, "note": "AI Startup School、Lightcone" },
+    { "handle": "@anthropic-ai",    "channelId": "UCrDwWp7EBBv4NwvScIpBDOA", "weight": 0.9, "note": "一手高管发言，混 product launch" },
+    { "handle": "@OpenAI",          "channelId": "UCXZCJLdBC09xxGZ6gcdrc6A", "weight": 0.9, "note": "同上" },
+    { "handle": "@GoogleDeepMind",  "channelId": "UCP7jMXSY2xbc3KCAE0MHQ-A", "weight": 0.9, "note": "同上" },
+    { "handle": "@SequoiaCapital",  "channelId": "UCWrF0oN6unbXrWsTN7RctTw", "weight": 0.8, "note": "Training Data 深访" },
+    { "handle": "@a16z",            "channelId": "UC9cn0TuPq4dnbTY-CBsm8XA", "weight": 0.8, "note": "高管深访" },
+    { "handle": "@lexfridman",      "channelId": "UCSHZKyawb77ixDdsGog4iWA", "weight": 0.6, "note": "长访谈，How-to 密度低" }
+  ],
+  "keywords": [
+    { "pattern": "agentic",            "bonus": 0.20 },
+    { "pattern": "agent",              "bonus": 0.12 },
+    { "pattern": "how we built",       "bonus": 0.20 },
+    { "pattern": "context engineering","bonus": 0.18 },
+    { "pattern": "eval",               "bonus": 0.15 },
+    { "pattern": "mcp",                "bonus": 0.15 },
+    { "pattern": "rag",                "bonus": 0.12 },
+    { "pattern": "in production",      "bonus": 0.15 },
+    { "pattern": "lessons",            "bonus": 0.12 },
+    { "pattern": "playbook",           "bonus": 0.15 }
+  ],
+  "scoring": {
+    "keywordBase": 0.7,
+    "keywordCap": 1.6,
+    "durationIdealMinSec": 480,
+    "durationIdealMaxSec": 4200,
+    "durationShortSec": 480,
+    "durationShortFactor": 0.3,
+    "durationLongSec": 5400,
+    "durationLongFactor": 0.5,
+    "recencyDecay": 0.85,
+    "maxDurationSec": 6000
+  }
+}
