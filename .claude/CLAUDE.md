@@ -99,6 +99,13 @@ weekly-report
 
 prompt-engineering
 └── 独立，无外部依赖
+
+ai-talk-tutorial(AI 演讲教程日报)
+├── 强依赖 dingtalk-log(get-template 查模板 + create-report 广播)
+├── 强依赖 YOUTUBE_API_KEY(Data API v3 发现层)
+├── 强依赖 Node.js 18+(原生 fetch)
+├── 软依赖 yt-dlp ≥2026.06(三级降级兜底)
+└── 字幕层移植自 VM llm-video-log/subtitle.ts,两处需同步维护
 ```
 
 ### exp-compass-daily 设计文档
