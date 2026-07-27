@@ -204,12 +204,34 @@ const t = s.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+\$/g,
 process.stdout.write(t || s.id);
 ")
 mkdir -p "$ARCHIVE/$YEAR"
-cp "$WORK/tutorial.html" "$ARCHIVE/$YEAR/$DATE-$SLUG.html"
-cp "$WORK/tutorial.md"   "$ARCHIVE/$YEAR/$DATE-$SLUG.md"
+cp "$WORK/tutorial.html" "$ARCHIVE/$YEAR/$DATE-$SLUG.html" \
+  || { echo "FATAL: 归档 tutorial.html 失败" >&2; exit 1; }
+cp "$WORK/tutorial.md"   "$ARCHIVE/$YEAR/$DATE-$SLUG.md" \
+  || { echo "FATAL: 归档 tutorial.md 失败" >&2; exit 1; }
 
-node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/build-index.js" --dir "$ARCHIVE"
+node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/build-index.js" --dir "$ARCHIVE" \
+  || { echo "FATAL: build-index.js 失败" >&2; exit 1; }
 
-# 记录已处理,避免明日重复选中
+# AI_TALK_ARCHIVE_DIR 可覆盖,归档目录不一定是仓库根往下正好两级 —— 用 git rev-parse
+# 动态定位仓库根与相对路径,不硬编码 "08-Research/AI-Talks" 这层深度。
+# $ARCHIVE 不在任何 git 仓库内时 rev-parse 会失败、REPO 为空 —— "cd \"\"" 在 bash/sh
+# 里都返回 0 且不换目录,不挡这一下的话,后面 git pull/commit 会打到 exec 当前 cwd 那个
+# 无关仓库上(有副作用),所以必须显式判空。
+REPO=$(cd "$ARCHIVE" 2>/dev/null && git rev-parse --show-toplevel 2>/dev/null)
+[ -n "$REPO" ] || { echo "FATAL: $ARCHIVE 不在 git 仓库内" >&2; exit 1; }
+REL=${ARCHIVE#"$REPO"/}
+
+cd "$REPO" && \
+git pull --rebase --autostash origin master && \
+git add "$REL/$YEAR/$DATE-$SLUG.html" "$REL/$YEAR/$DATE-$SLUG.md" "$REL/index.html" && \
+git commit -m "docs: AI 演讲教程 $DATE" && \
+(git push origin master || (git pull --rebase --autostash origin master && git push origin master)) \
+  || { echo "FATAL: git 归档提交失败,不标记已处理(明日会重试)" >&2; exit 1; }
+
+# 记录已处理,避免明日重复选中 —— 放在 git 链确认成功之后:
+# 若提前(在 cp/git 之前)写这个状态,一旦后面任何一步失败(cp 失败/不在 git 仓库/
+# push 冲突解不开),这个视频已经被标记"已处理",明天不会再选中,但内容其实从未
+# 提交成功 —— 当天教程静默永久丢失且不可自愈。挪到这里,只有真正落库成功才计入去重。
 WORK="$WORK" node - <<'JS'
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const work = process.env.WORK;
@@ -222,16 +244,6 @@ const vid = JSON.parse(fs.readFileSync(path.join(work, 'selected.json'), 'utf-8'
 if (!seen.includes(vid)) seen.push(vid);
 fs.writeFileSync(state, JSON.stringify({ processed: seen.slice(-500) }, null, 2) + '\n');
 JS
-
-# AI_TALK_ARCHIVE_DIR 可覆盖,归档目录不一定是仓库根往下正好两级 —— 用 git rev-parse
-# 动态定位仓库根与相对路径,不硬编码 "08-Research/AI-Talks" 这层深度
-REPO=$(cd "$ARCHIVE" && git rev-parse --show-toplevel)
-REL=${ARCHIVE#"$REPO"/}
-cd "$REPO" && \
-git pull --rebase --autostash origin master && \
-git add "$REL/$YEAR/$DATE-$SLUG.html" "$REL/$YEAR/$DATE-$SLUG.md" "$REL/index.html" && \
-git commit -m "docs: AI 演讲教程 $DATE" && \
-(git push origin master || (git pull --rebase --autostash origin master && git push origin master))
 ```
 
 ### Step 6 · 推送钉钉摘要(正常完成路径)
@@ -251,22 +263,33 @@ const t = s.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+\$/g,
 process.stdout.write(t || s.id);
 ")
 
-export MSG=$(node -e "
+# 归档文件的存在性就是 Step 5 是否真的跑成功过的物理证据 —— 不校验的话,即使 Step 5
+# 的 git 链失败了(F9 已让它不再静默吞掉),这里拼出来的路径依旧会被当成"已归档"塞进推送正文
+ARCHIVE_HTML="$ARCHIVE/$YEAR/$DATE-$SLUG.html"
+[ -f "$ARCHIVE_HTML" ] || { echo "FATAL: 归档文件 $ARCHIVE_HTML 不存在,Step 5 未成功执行,中止推送" >&2; exit 1; }
+
+MSG=$(node -e "
 const fs = require('node:fs'), path = require('node:path');
 const sel = JSON.parse(fs.readFileSync(path.join('$WORK', 'selected.json'), 'utf-8'));
 const md = fs.readFileSync(path.join('$WORK', 'tutorial.md'), 'utf-8');
 const title = md.match(/^#\s+(.+)\$/m)[1].trim();
 const block = md.match(/##\s*一、\s*TL;DR\s*\n([\s\S]*?)(?=\n##\s)/)[1];
 const tldr = block.trim().split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
-const archivePath = '$ARCHIVE/$YEAR/$DATE-$SLUG.html';
 process.stdout.write(
   '**' + title + '**\n\n'
   + '🎙 ' + sel.channelTitle + ' · ' + Math.round(sel.durationSec / 60) + ' 分钟\n\n'
   + tldr + '\n\n'
   + '🔗 [原视频](' + sel.url + ')\n'
-  + '📄 归档:' + archivePath
+  + '📄 归档:' + '$ARCHIVE_HTML'
 );
 ")
+# export VAR=$(cmd) 这种写法会吞掉命令替换本身的退出码(实测:node 抛异常时
+# $? 仍是 0),所以不能靠 $? 判断,只能靠结果是否为空 —— tutorial.md 缺失或
+# TL;DR 正则匹配不到时 node 抛异常、stdout 空,MSG 就是空串,这里必须显式挡住,
+# 否则空 MSG 会一路传进「简讯推送共用块」,那边虽然也会再挡一次(见 F7),但源头
+# 挡住能给出更准确的失败原因。
+[ -n "$MSG" ] || { echo "FATAL: MSG 构造失败(tutorial.md 或 selected.json 缺失/格式不对),中止推送" >&2; exit 1; }
+export MSG
 ```
 
 **紧接着在同一个 exec 里**,首尾相连贴上并执行下面「简讯推送(共用块)」的完整代码(依赖上面刚 `export` 的 `$MSG`)。
@@ -280,6 +303,12 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
 DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+
+# 调用方必须已经 export 好 $MSG;不校验的话 dingtalk-log.js 只查 --contents
+# 是不是合法 JSON 数组,不查数组里有没有 content 字段,空 MSG 会被静默广播成功
+# (exit 0),而这个块恰恰是 exit 6 / 3 轮自检失败这两条本该报警的路径在用,
+# 最坏后果是该报警的时候群里收到一条空消息
+[ -n "$MSG" ] || { echo "FATAL: MSG 未设置,调用方必须先 export MSG 再执行本块" >&2; exit 1; }
 
 TPL_ID=$(cat "$WORK/template_id.txt" 2>/dev/null)
 if [ -z "$TPL_ID" ]; then
