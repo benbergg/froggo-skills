@@ -41,12 +41,39 @@ function normalize(s) {
 
 // token 重叠率:needle 的词在 hay 词集合中的命中比例,顺序无关。
 // 仅供 C3 子串匹配失败后的宽松兜底(时间戳窗口内文本可能因分词切分错位导致子串不中)。
+// fix round F8:needle 内重复词先去重再算比例 —— 不去重时,一句几乎全是高频功能词
+// 的短语(如 "this is one of the things that that is..." )单靠重复计数就能虚高凑够 0.8,
+// 是一条真实存在的假阴性带(评审密集 cue 压测:3714 组错配漏放 2 组)。
 function tokenOverlapRatio(needle, hay) {
-  const needleTokens = needle.split(' ').filter(Boolean);
+  const needleTokens = [...new Set(needle.split(' ').filter(Boolean))];
   if (needleTokens.length === 0) return 0;
   const hayTokens = new Set(hay.split(' ').filter(Boolean));
   const hit = needleTokens.filter((t) => hayTokens.has(t)).length;
   return hit / needleTokens.length;
+}
+
+// C3 窗口选段:在"start 落在 ±tolSec 区间"的基础上,额外纳入"覆盖 sec 的那一段"
+// (start<=sec 中最后一段)及其紧邻后继段 —— 见 runChecks 内 fix round F6 注释。
+// MAX_ADJACENT_GAP_SEC 界定"后继段仍算相邻",避免把窗口放宽到吞掉毫不相关的远处段落。
+const MAX_ADJACENT_GAP_SEC = 70;
+function windowSegmentsFor(segments, sec, tolSec) {
+  const inRange = segments.filter((s) => s.start >= sec - tolSec && s.start <= sec + tolSec);
+  const covering = segments
+    .filter((s) => s.start <= sec && sec - s.start <= MAX_ADJACENT_GAP_SEC)
+    .sort((a, b) => b.start - a.start)[0] || null;
+  const extra = [];
+  if (covering) {
+    extra.push(covering);
+    const idx = segments.indexOf(covering);
+    const successor = idx >= 0 ? segments[idx + 1] : undefined;
+    if (successor && successor.start - sec <= MAX_ADJACENT_GAP_SEC) extra.push(successor);
+  }
+  const seen = new Set();
+  const result = [];
+  for (const s of [...inRange, ...extra]) {
+    if (!seen.has(s.start)) { seen.add(s.start); result.push(s); }
+  }
+  return result;
 }
 
 function parseTutorialMd(md) {
@@ -110,12 +137,16 @@ function runChecks(doc, transcript, selected) {
   //  真金句配一个真实但错误的时间戳会被直接放行;真实字幕 cue 间距约 2-5s,
   //  按此密度模拟 2480s 时长几乎不存在"时间戳落空"的情况,C3 在真实数据上形同虚设)。
   // 窗口 ±10s:覆盖一句话可能跨 2-3 个 cue(cue 间距 2-5s)的情况,同时不宽到吞掉相邻无关句子。
+  // fix round F6:生产环境 transcript 不是密集 cue —— fetch-transcript.js 的
+  // mergeSegments({minSec:30,maxSec:60}) 把字幕合并成 30-60s 大段(transcript-real.json 实测
+  // 段间距 31-62s)。金句常跨相邻两段:前半句在段末、后半句在下一段开头;AI 按惯例把时间戳写成
+  // 该段自己的 startLabel 时,后半句所在的下一段会落在 ±10s 窗口外,导致真实金句被误判 C3
+  // (评审用生产形态实测:75 组构造中 20 组误报,27%)。windowSegmentsFor 额外纳入"覆盖 sec 的段"
+  // 及其紧邻后继段(见函数定义与 MAX_ADJACENT_GAP_SEC)来堵这个洞。
   const C3_WINDOW_SEC = 10;
   for (const q of doc.quotes) {
     if (!Number.isFinite(q.sec)) continue;
-    const windowSegs = transcript.segments.filter(
-      (s) => s.start >= q.sec - C3_WINDOW_SEC && s.start <= q.sec + C3_WINDOW_SEC
-    );
+    const windowSegs = windowSegmentsFor(transcript.segments, q.sec, C3_WINDOW_SEC);
     const windowHay = normalize(windowSegs.map((s) => s.text).join(' '));
     const needle = normalize(q.en);
     const substringHit = windowHay.length > 0 && windowHay.includes(needle);
@@ -154,16 +185,24 @@ function runChecks(doc, transcript, selected) {
   // fix round F3:原实现按 \n 分行、整行含任意中文字符即豁免整行 —— 中英文写在同一段落/同一行时
   // (常见于 AI 输出的连续段落),一句夹在中文句子后面的未翻译英文会被前面的中文"连带豁免",
   // 检测形同虚设。改为先按行取出,再按句终止符(。！？.!?)切成句子,逐句独立判定。
+  // fix round F5(F3 引入的回归):句级判定把长度阈值也从"整行"降到了"每句",导致
+  // "整行纯英文、但拆成的每句都 <40 字符"这种输入被放行(旧的行级判定本能拦住)。
+  // 改为先做行级判定(整行 ≥40 字符且纯 ASCII 无中文即报),行级不中时再退到句级判定
+  // (句级专门负责"中英文同行"场景) —— 两级取并集,不是互斥。
   const bodyKeys = ['tldr', 'background', 'method', 'checklist'];
+  const isUntranslatedAscii = (s) => s.length >= 40 && !/[一-鿿]/.test(s)
+    && /^[A-Za-z0-9\s,.'"()\-:;/&%$#@!?]+$/.test(s);
   for (const k of bodyKeys) {
     for (const line of (doc.sections[k] || '').split('\n')) {
       const t = line.replace(/^[-*>\s\[\]x]+/, '').trim();
       if (!t) continue;
+      if (isUntranslatedAscii(t)) {
+        add('C8', `${k} 段存在未翻译的成段英文: "${t.slice(0, 60)}…"`);
+        continue; // 整行已判定,不再重复对句子级判定(避免同一处内容报两条)
+      }
       const sentences = t.split(/(?<=[。！？.!?])\s*/).map((s) => s.trim()).filter(Boolean);
       for (const s of sentences) {
-        if (s.length < 40) continue;
-        if (/[一-鿿]/.test(s)) continue;          // 该句含中文即视为已翻译
-        if (/^[A-Za-z0-9\s,.'"()\-:;/&%$#@!?]+$/.test(s)) {
+        if (isUntranslatedAscii(s)) {
           add('C8', `${k} 段存在未翻译的成段英文: "${s.slice(0, 60)}…"`);
         }
       }

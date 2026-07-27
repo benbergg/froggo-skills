@@ -195,3 +195,73 @@ test('T15: C6 — 中文占位符"待补充"被拦(不依赖 TODO 这类英文�
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C6'), `中文占位符"待补充"未被 C6 拦住: ${JSON.stringify(v)}`);
 });
+
+// ---- 评审 fix round F5:C8 句级判定回归了长度阈值,整行纯英文短句拼接被放行 -----
+
+test('T16: C8 — 整行纯英文但拆句后逐句都 <40 字符仍被拦(F5 回归修复)', () => {
+  const md = load('tutorial-good.md').replace(
+    '团队在把 agent 推上生产时，常常先挑模型再补评估，结果无法判断改动是否带来提升。他把评估放在模型之前。',
+    'Eval first. Model second. Data always. Ship fast and measure.'
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C8'), `整行纯英文短句拼接未被 C8 拦住: ${JSON.stringify(v)}`);
+});
+
+// ---- 评审 fix round F6:C3 窗口需覆盖"金句跨相邻合并段"的生产形态 -------------
+// fetch-transcript.js 的 mergeSegments({minSec:30,maxSec:60}) 把真实字幕合并成 30-60s 大段
+// (transcript-real.json 实测段间距 31-62s)。纯按 start 落在 ±TOL 窗口内选段,
+// 会在"金句跨相邻两段、时间戳取前段 start"时漏掉后半句所在的下一段,造成假阳性 C3。
+
+test('T17: C3 — 金句跨相邻合并段(30-60s 间距)、时间戳取前段 start 时不误报', () => {
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  doc.quotes[0].sec = 300;
+  doc.quotes[0].label = '5:00';
+  doc.quotes[0].en = 'you cannot improve what you do not measure';
+  const mergedTranscript = {
+    video_id: 'aaaaaaaaaaa', title: 'x', channel: 'x', duration_sec: 500, via: 'android', cue_count: 2,
+    segments: [
+      { start: 300, startLabel: '5:00', text: "let's talk about evaluation strategy. you cannot improve" },
+      { start: 345, startLabel: '5:45', text: 'what you do not measure so build evals first' },
+    ],
+    full_text: "let's talk about evaluation strategy. you cannot improve what you do not measure so build evals first",
+  };
+  const v = B.runChecks(doc, mergedTranscript, SELECTED);
+  assert.ok(!v.some((x) => x.code === 'C3'), `跨段金句被误报 C3: ${JSON.stringify(v)}`);
+});
+
+test('T18: C3 — 放宽窗口后,真实错配(时间戳真实但金句不在附近)依然被拦', () => {
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  doc.quotes[0].sec = 40;
+  doc.quotes[0].label = '0:40';
+  doc.quotes[0].en = 'you cannot improve what you do not measure';
+  const mergedTranscript = {
+    video_id: 'aaaaaaaaaaa', title: 'x', channel: 'x', duration_sec: 200, via: 'android', cue_count: 4,
+    segments: [
+      { start: 0,   startLabel: '0:00', text: 'welcome to the show today we have a great guest' },
+      { start: 40,  startLabel: '0:40', text: "let's talk about product strategy and roadmap decisions" },
+      { start: 95,  startLabel: '1:35', text: 'here is another unrelated segment about pricing model' },
+      { start: 150, startLabel: '2:30', text: 'you cannot improve what you do not measure said the speaker' },
+    ],
+    full_text: [
+      'welcome to the show today we have a great guest',
+      "let's talk about product strategy and roadmap decisions",
+      'here is another unrelated segment about pricing model',
+      'you cannot improve what you do not measure said the speaker',
+    ].join(' '),
+  };
+  const v = B.runChecks(doc, mergedTranscript, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C3'), `放宽窗口后仍应拦住真实错配: ${JSON.stringify(v)}`);
+});
+
+// ---- 评审 fix round F7:C4 的独有拦截带需要测试覆盖 ------------------------
+// C3 变强后,C4 继续存在的唯一理由是"语序改写、词全在、时间戳真实"这条带:
+// token 重叠率会算出 1.0 放行 C3,只有 C4 的精确子串匹配能拦住。
+
+test('T19: C4 独有拦截带 — 语序改写、词全在、时间戳真实,仅 C4 触发', () => {
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  // 与原句同词不同序;时间戳(754s / 12:34)保持真实不变
+  doc.quotes[0].en = 'what you do not measure you cannot improve';
+  const v = B.runChecks(doc, TRANSCRIPT, SELECTED);
+  assert.ok(!v.some((x) => x.code === 'C3'), `语序改写不应触发 C3(token 重叠应放行): ${JSON.stringify(v)}`);
+  assert.ok(v.some((x) => x.code === 'C4'), `语序改写应被 C4 精确子串匹配拦住: ${JSON.stringify(v)}`);
+});
