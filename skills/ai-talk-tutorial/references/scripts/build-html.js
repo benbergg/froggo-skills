@@ -130,9 +130,12 @@ function parseTutorialMd(md) {
   return { title, sections, quotes, steps, raw: md };
 }
 
-// 数列表项条数(与 renderList 用的判定逻辑保持一致,但这里只计数不渲染)
+// 数列表项条数(只计数不渲染)。除 `-`/`*` 外也认编号列表 `1.` / `1、`——SKILL.md 的撰写
+// 约束并未禁止编号写法,若只认 bullet,一份内容完整的编号 TL;DR 会被 C1 判成"内容空洞"
+// 而中止当天流水线,且报错文案会把 3 轮修复循环引向"重写内容"而非"换标记符"。
 function countListItems(body) {
-  return (body || '').split('\n').filter((l) => /^[-*]\s*(?:\[[ x]\]\s*)?.+/.test(l.trim())).length;
+  return (body || '').split('\n')
+    .filter((l) => /^(?:[-*]|\d+[.、])\s*(?:\[[ x]\]\s*)?.+/.test(l.trim())).length;
 }
 
 // C1/C5 内容深度阈值(FR1 —— 评审实测"结构合法、内容空洞"的骨架文档能通过旧版全部
@@ -159,11 +162,11 @@ function runChecks(doc, transcript, selected) {
   }
   if (doc.sections.tldr) {
     const n = countListItems(doc.sections.tldr);
-    if (n < TLDR_MIN_BULLETS) add('C1', `TL;DR 条目过少(${n} 条,要求 ≥${TLDR_MIN_BULLETS} 条),内容空洞`);
+    if (n < TLDR_MIN_BULLETS) add('C1', `TL;DR 条目过少(${n} 条,要求 ≥${TLDR_MIN_BULLETS} 条),内容空洞${n === 0 ? ';若已写了条目请检查行首标记是否为 - / * / 1.' : ''}`);
   }
   if (doc.sections.checklist) {
     const n = countListItems(doc.sections.checklist);
-    if (n < CHECKLIST_MIN_ITEMS) add('C1', `checklist 条目过少(${n} 条,要求 ≥${CHECKLIST_MIN_ITEMS} 条),内容空洞`);
+    if (n < CHECKLIST_MIN_ITEMS) add('C1', `checklist 条目过少(${n} 条,要求 ≥${CHECKLIST_MIN_ITEMS} 条),内容空洞${n === 0 ? ';若已写了条目请检查行首标记是否为 - [ ] / - / 1.' : ''}`);
   }
   if (doc.sections.background && doc.sections.background.length < BACKGROUND_MIN_CHARS) {
     add('C1', `背景段落过短(${doc.sections.background.length} 字符,要求 ≥${BACKGROUND_MIN_CHARS} 字符),内容空洞`);

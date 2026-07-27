@@ -423,6 +423,20 @@ test('T29: C1 — H1 标题过短(<6 字符)被拦(FR1)', () => {
     `期望 H1 过短被 C1 拦住,实际: ${JSON.stringify(v)}`);
 });
 
+// FR1 收尾:countListItems 原本只认 `-`/`*`,而 SKILL.md 的撰写约束并未禁止编号写法。
+// 一份内容完整但用 `1.` 写 TL;DR 的文档会被 C1 判成"条目过少…内容空洞"而中止当天流水线,
+// 且该文案会把 3 轮修复循环引向"重写内容"而不是"换标记符"——假阳性比漏放更糟。
+test('T32: TL;DR 用编号列表(1./2./3.)书写不被 C1 误判为内容空洞', () => {
+  const md = load('tutorial-good.md');
+  let n = 0;
+  const numbered = md.split('\n')
+    .map((l) => (/^- /.test(l) && n < 3 ? `${++n}. ${l.slice(2)}` : l))
+    .join('\n');
+  assert.equal(n, 3, '夹具的 TL;DR 应有 3 条 bullet 可供改写');
+  const v = B.runChecks(B.parseTutorialMd(numbered), TRANSCRIPT, SELECTED);
+  assert.deepEqual(v, [], `编号列表不应触发任何违规,实际: ${JSON.stringify(v)}`);
+});
+
 // ---- FR3:esc() 不转义 " 却被用在 HTML 属性上下文(title="..."/href="...")------------
 // H1 写成 `# 论 "Vibe Coding" 的三层 <演进>`(SKILL.md:166 要求金句用 ASCII 直引号,
 // 容易带偏模型在全文含 H1 都用 ""),产出的 iframe title 属性会在第二个 " 处提前闭合,
