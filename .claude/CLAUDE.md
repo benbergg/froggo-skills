@@ -101,7 +101,7 @@ prompt-engineering
 └── 独立，无外部依赖
 
 ai-talk-tutorial(AI 演讲教程日报)
-├── 强依赖 dingtalk-log(get-template 查模板 + create-report 广播)
+├── 强依赖 openclaw CLI(message send --channel feishu 推送,无 dingtalk-log 依赖)
 ├── 强依赖 YOUTUBE_API_KEY(Data API v3 发现层)
 ├── 强依赖 Node.js 18+(原生 fetch)
 ├── 软依赖 yt-dlp ≥2026.06(三级降级兜底)

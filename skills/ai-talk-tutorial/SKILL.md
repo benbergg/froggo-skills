@@ -1,11 +1,11 @@
 ---
 name: ai-talk-tutorial
-description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engineer/YC/Anthropic/OpenAI/DeepMind/Sequoia/a16z 等)发现 AI/Agentic/模型公司高管演讲,打分选出当日 Top 1,AI 按五段模板提炼为可操作中文 How-to 教程,跑 C1-C8 自检(含时间戳与金句真实性校验),渲染自包含 HTML 归档知识库并推送钉钉摘要。触发词:AI 演讲教程、youtube 教程、演讲教程、talk tutorial、ai talk、今日演讲、大佬演讲、高管演讲、AI 日课。"
+description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engineer/YC/Anthropic/OpenAI/DeepMind/Sequoia/a16z 等)发现 AI/Agentic/模型公司高管演讲,打分选出当日 Top 1,AI 按五段模板提炼为可操作中文 How-to 教程,跑 C1-C8 自检(含时间戳与金句真实性校验),渲染自包含 HTML 归档知识库并推送飞书摘要。触发词:AI 演讲教程、youtube 教程、演讲教程、talk tutorial、ai talk、今日演讲、大佬演讲、高管演讲、AI 日课。"
 ---
 
 # AI 演讲教程日报
 
-> 依赖 [`dingtalk-log`](../dingtalk-log/SKILL.md) 的 OpenAPI 封装。
+> 通知走 openclaw 自带的飞书通道(`openclaw message send --channel feishu`),无外部 skill 依赖。
 > 详细设计 [[20260727-youtube教程生成skill-v2-设计文档]]。
 > **核心理念**:脚本做发现/取字幕/校验/渲染/推送,AI 只在 Step 3 做语言提炼。
 > 每步产物落盘构成**物理断路** —— 上一步文件不存在,下一步跑不动。
@@ -21,12 +21,11 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 | 变量 | 必填 | 说明 |
 |---|---|---|
 | `YOUTUBE_API_KEY` | ✅ | YouTube Data API v3 key,Step 1 发现层用;缺失时 `discover.js` exit 1 |
-| `DINGTALK_APPKEY` / `DINGTALK_APPSECRET` / `DINGTALK_USERID` | ✅ | 钉钉推送(全局共享) |
+| `AI_TALK_FEISHU_TARGET` | ☐ | 飞书接收方 open_id,默认 `ou_4a9c3a58ae44cb2eda31c84dd86799e9`(与本机其余 cron 任务同一会话) |
 | `AI_TALK_COOKIES_PATH` | ☐ | YouTube cookie 文件,默认 `/home/ubuntu/.openclaw/workspace/astraeus/video素材/youtube-cookies.txt` |
-| `AI_TALK_TEMPLATE_NAME` | ☐ | 钉钉模板名,**默认 `AI 演讲教程`**(固化在 skill) |
 | `AI_TALK_DATE` | ☐ | 目标日期覆盖 `YYYY-MM-DD`,补跑历史日用 |
 | `AI_TALK_ARCHIVE_DIR` | ☐ | 归档根目录,默认 `$HOME/workspace/Knowledge-Library/08-Research/AI-Talks` |
-| `SEND_DINGTALK` | ☐ | `1/true/yes/on` 才真发;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
+| `SEND_NOTIFY` | ☐ | `1/true/yes/on` 才真发飞书;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
 | `YT_DLP_PATH` | ☐ | yt-dlp 二进制路径。未设时 `fetch-transcript.js` 依次探测 `/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/bin/yt-dlp`、`/usr/local/bin/yt-dlp`、`/opt/homebrew/bin/yt-dlp`,都不存在才回落到 PATH 里的 `yt-dlp` |
 
 ## 插件根目录解析
@@ -49,29 +48,6 @@ WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 > ⚠️ **前台 exec,单次 timeout ≥600s,禁用 `sleep` 轮询**。
 > 每次轮询都是一次完整 LLM 推理 —— 2026-07-26 周报曾因 20+ 次轮询烧掉 163 万 token 且未推进任何步骤。
 
-### Step 0 · 解析钉钉模板
-
-```bash
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
-[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
-DATE="${AI_TALK_DATE:-$(date +%F)}"
-WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
-mkdir -p "$WORK"
-
-TPL_ID=$(node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/resolve-template.js" \
-  --template-name "${AI_TALK_TEMPLATE_NAME:-AI 演讲教程}")
-RC=$?
-if [ $RC -ne 0 ] || [ -z "$TPL_ID" ]; then
-  echo "FATAL: resolve-template.js exit $RC,模板解析失败,中止全流程" >&2
-  exit $RC
-fi
-printf '%s' "$TPL_ID" > "$WORK/template_id.tmp" && mv "$WORK/template_id.tmp" "$WORK/template_id.txt"
-```
-
-用命令替换(`$(...)`)取 `TPL_ID` 而不是 `node ... > "$WORK/template_id.txt"` 直接重定向 —— shell 对 `>` 是**先创建/截断目标文件,再执行命令**,无论脚本退出码是什么,文件都会存在(失败时是空文件),会把下游"文件存在即可跑"的物理断路判断骗过去。`template_id.txt` 只在**确认成功**(exit 0 且 `TPL_ID` 非空)后原子落盘(先写 `.tmp` 再 `mv`)。**下游任何 exec,只要发现 `$WORK/template_id.txt` 不存在或为空,一律视为 Step 0 未成功,不得继续**,这是物理断路,不是提示词约束。
-
-exit≠0 则**中止全流程**。
-
 ### Step 1 · 发现候选
 
 ```bash
@@ -79,8 +55,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
 DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
-
-[ -s "$WORK/template_id.txt" ] || { echo "FATAL: Step 0 未成功(缺 $WORK/template_id.txt),中止" >&2; exit 1; }
+mkdir -p "$WORK"
 
 node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/discover.js" \
   --out "$WORK" --today "$DATE" \
@@ -271,7 +246,7 @@ fs.writeFileSync(state, JSON.stringify({ processed: seen.slice(-500) }, null, 2)
 JS
 ```
 
-### Step 6 · 推送钉钉摘要(正常完成路径)
+### Step 6 · 推送飞书摘要(正常完成路径)
 
 **构造摘要正文**(标题 + 频道 + 时长 + TL;DR + 归档路径):
 
@@ -308,23 +283,20 @@ process.stdout.write(
   + '📄 归档:' + '$ARCHIVE_HTML'
 );
 ")
-# 上面是普通赋值 MSG=$(node -e ...),不是 export MSG=$(...),所以 $? 本身其实
-# 会正确传播 node 的异常退出码(实测 MSG=$(node -e "throw...");echo $? → 1;
-# 只有写成 export MSG=$(...) 那种复合赋值才会把 $? 吞成 0 ——那是下面 F7 讲的
-# 另一个坑,这里没有踩)。即便如此仍然改判空而不是判 $?:tutorial.md 缺失或
-# TL;DR 正则匹配不到时 node 抛异常、stdout 为空,判空这一条规则就能同时兜住
-# "node 异常退出"和"node 正常退出但恰好输出空字符串"两种情况,比只判 $? 更宽,
-# 不用为两种失败模式分别处理。挡在这里(而不是等传进「简讯推送共用块」才被
-# F7 的判空兜住)是为了给出更准确的失败原因。
+# 用普通赋值 MSG=$(node -e ...) 而不是 export MSG=$(...) —— 前者会正确传播 node 的
+# 异常退出码(实测 MSG=$(node -e "throw...");echo $? → 1),后者那种复合赋值会把 $?
+# 吞成 0。即便如此仍然判空而不是判 $?:tutorial.md 缺失或 TL;DR 正则匹配不到时 node
+# 抛异常、stdout 为空,判空这一条规则能同时兜住"node 异常退出"和"node 正常退出但恰好
+# 输出空字符串"两种情况,比只判 $? 更宽。挡在这里(而不是等传进「简讯推送共用块」才被
+# 那边的判空兜住)是为了给出更准确的失败原因。
 [ -n "$MSG" ] || { echo "FATAL: MSG 构造失败(tutorial.md 或 selected.json 缺失/格式不对),中止推送" >&2; exit 1; }
-export MSG
 ```
 
-**紧接着在同一个 exec 里**,首尾相连贴上并执行下面「简讯推送(共用块)」的完整代码(依赖上面刚 `export` 的 `$MSG`)。
+**紧接着在同一个 exec 里**,首尾相连贴上并执行下面「简讯推送(共用块)」的完整代码(依赖上面刚设好的 `$MSG`)。
 
 #### 简讯推送(共用块)
 
-**exit 4 / exit 6 / 自检 3 轮失败 / Step 6 正常完成 四处共用**,自包含(自己解析 `PLUGIN_ROOT`/`DATE`/`WORK`,不依赖前面 exec 留下的 shell 变量,只吃调用方在同一个 exec 里已经 `export` 好的 `$MSG`):
+**exit 4 / exit 6 / 自检 3 轮失败 / Step 6 正常完成 四处共用**,自包含(自己解析 `PLUGIN_ROOT`/`DATE`/`WORK`,不依赖前面 exec 留下的 shell 变量,只吃调用方在同一个 exec 里设好的 `$MSG`):
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
@@ -332,52 +304,26 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 
-# 调用方必须已经设好 $MSG(export 或普通赋值均可,下面 export 兜底);不校验的话
-# dingtalk-log.js 只查 --contents 是不是合法 JSON 数组,不查数组里有没有 content
-# 字段,空 MSG 会被静默广播成功(exit 0),而这个块恰恰是 exit 6 / 3 轮自检失败这两条
-# 本该报警的路径在用,最坏后果是该报警的时候群里收到一条空消息
+# 调用方必须已经设好 $MSG;不校验的话空消息会被当成一条正常通知发出去(exit 0),
+# 而这个块恰恰是 exit 6 / 3 轮自检失败这两条**本该报警**的路径在用 —— 最坏后果
+# 是该报警的时候飞书收到一条空消息,比不发还糟(看起来像跑成功了)
 [ -n "$MSG" ] || { echo "FATAL: MSG 未设置,调用方必须先设置 MSG 再执行本块" >&2; exit 1; }
-# 再 export 一次兜底:调用方如果写成普通赋值 MSG="..." 漏了 export,上面的判空
-# 用的是 shell 变量、能通过,但下方构造 CONTENTS_JSON 时的 process.env.MSG 是子
-# 进程读环境变量,不 export 就读不到,会拼出一条没有 content 字段的 payload、
-# 照样静默广播成功
-export MSG
 
-TPL_ID=$(cat "$WORK/template_id.txt" 2>/dev/null)
-if [ -z "$TPL_ID" ]; then
-  echo "FATAL: $WORK/template_id.txt 缺失或为空,Step 0 未成功,无法推送" >&2
-  exit 1
-fi
+TARGET="${AI_TALK_FEISHU_TARGET:-ou_4a9c3a58ae44cb2eda31c84dd86799e9}"
 
-TO_CIDS=$(node -e "
-const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
-const p = path.join(os.homedir(), '.cache', 'ai-talk-tutorial', 'template.json');
-const convs = JSON.parse(fs.readFileSync(p, 'utf-8')).default_received_convs || [];
-process.stdout.write(JSON.stringify(convs.map((c) => c.conversation_id)));
-")
-
-CONTENTS_JSON=$(node -e "
-process.stdout.write(JSON.stringify([{
-  key: 'AI 演讲教程', sort: '0', type: '1',
-  content_type: 'markdown', content: process.env.MSG,
-}]));
-")
-
-case "${SEND_DINGTALK:-0}" in
+case "${SEND_NOTIFY:-0}" in
   1|true|TRUE|yes|on) SEND_FLAG="" ;;
   *) SEND_FLAG="--dry-run" ;;
 esac
 
-node "$PLUGIN_ROOT/skills/dingtalk-log/scripts/dingtalk-log.js" create-report \
-  --template-id "$TPL_ID" \
-  --userid "$DINGTALK_USERID" \
-  --contents "$CONTENTS_JSON" \
-  --to-chat true \
-  --to-cids "$TO_CIDS" \
-  $SEND_FLAG
+openclaw message send --channel feishu -t "$TARGET" -m "$MSG" $SEND_FLAG
+RC=$?
+[ $RC -eq 0 ] || { echo "FATAL: openclaw message send exit $RC,飞书通知未发出" >&2; exit $RC; }
 ```
 
-> ⚠️ **必须同时传 `--to-chat true` 和 `--to-cids`**。钉钉 OpenAPI 实测 `to_chat=true` 单独**不会** fanout 到模板的 `default_received_convs`,不注入 cids 则群里收不到通知。
+> `openclaw` 只在 login shell 的 PATH 里(`bash -lc`)。openclaw cron 的 exec 本来就是 login shell,手动验证时若报 `command not found`,用 `bash -lc "..."` 包一层。
+>
+> `--dry-run` 只打印 payload 不发送,由 `SEND_NOTIFY` 控制 —— 它**仅 gate 发送这一步**,前面 Step 1-5 照常执行。
 
 ## 诚实上限
 
