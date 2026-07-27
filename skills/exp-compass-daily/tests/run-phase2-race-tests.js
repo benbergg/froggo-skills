@@ -1,223 +1,256 @@
 'use strict';
-// Spec tests for the per-execution race phase2 batch loop in collect.js
-// (~line 783-845). These tests lock in the 2026-05-13 fix invariants:
+// Unit tests for collect.js 的 phase2 循环 fetchAllExecutionTasks。
 //
-//   1. One slow execution only drops its own data; sibling tasks survive.
-//   2. VOC-owned executions are drained before non-VOC ones.
-//   3. Wall-clock budget exhaustion still stops enqueuing new batches.
-//
-// IMPORTANT: phase2BatchFetch below is a *spec mirror* of collect.js's
-// phase2 batch loop. If you refactor that loop in collect.js (e.g. switch
-// concurrency model, change timeout semantics, drop VOC-first sort), you
-// MUST update this spec or replace it with an end-to-end test that spawns
-// collect.js against a mock Zentao server. Out-of-sync spec is worse than
-// no spec.
+// 2026-07-27 起直接测真实实现(此前是 spec mirror 副本,与 collect.js 会漂移)。
+// 锁定的不变式:
+//   1. 单个慢 execution 只丢自己,兄弟源保留(2026-05-13 per-exec race)
+//   2. VOC-owned execution 先取,预算不够时先牺牲非 VOC
+//   3. wall-clock 预算耗尽时停止投放新批次
+//   4. 默认串行(并发 1)——2026-07-27 实证并发会把禅道同端点拖慢 2-4 倍
+//   5. exec 超时自适应:按剩余预算/剩余 exec 数分配,clamp 到 [min,max]
+//   6. 首轮失败的 execution 用剩余预算串行重试;重试成功必须抹掉 skipped 痕迹
+//      (否则 finalizeOutput 仍会误判 fatal)
 
-const { test } = require('node:test');
+const { test, beforeEach } = require('node:test');
 const assert = require('node:assert/strict');
 
-async function phase2BatchFetch({
-  allExecs,
-  paginateFn,
-  vocOwnedExecutionIds = new Set(),
-  concurrency = 3,
-  execTimeoutMs = 90_000,
-  wallDeadlineMs = Infinity,
-  startTimeMs = 0,
-  nowFn = Date.now,
-  traceFn = () => {},
-}) {
-  const sorted = [...allExecs].sort((a, b) => {
-    const av = vocOwnedExecutionIds.has(Number(a.id)) ? 0 : 1;
-    const bv = vocOwnedExecutionIds.has(Number(b.id)) ? 0 : 1;
-    return av - bv;
-  });
-  const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
-  const rawTasks = [];
-  const skipped = [];
-  let wallClockEarlyExit = false;
-  for (let i = 0; i < sorted.length; i += concurrency) {
-    const elapsedMs = nowFn() - startTimeMs;
-    if (elapsedMs > wallDeadlineMs) {
-      const remaining = sorted.length - i;
-      skipped.push({
-        path: '/executions/*/tasks',
-        reason: 'wall-clock-budget',
-        remaining,
-      });
-      wallClockEarlyExit = true;
-      break;
+process.env.ZENTAO_BASE_URL = process.env.ZENTAO_BASE_URL || 'http://test.invalid';
+process.env.ZENTAO_ACCOUNT = process.env.ZENTAO_ACCOUNT || 'test';
+process.env.ZENTAO_PASSWORD = process.env.ZENTAO_PASSWORD || 'test';
+
+const {
+  fetchAllExecutionTasks,
+  pickExecTimeoutMs,
+  dropExecSkips,
+  TASK_CONCURRENCY_DEFAULT,
+  STATE,
+} = require('../references/scripts/collect.js');
+
+beforeEach(() => {
+  STATE.skipped = [];
+  STATE.apiCalls = 0;
+});
+
+// 每个测试用自己的 state,避免相互污染
+const freshState = () => ({ skipped: [] });
+
+// 造一个 fetchExecFn:slowIds 里的 exec 挂 delayMs,其余立即返回一条任务。
+function makeFetchExec({ slowIds = [], delayMs = 200, failIds = [], okAfterFirstTry = [] } = {}) {
+  const attempts = new Map();
+  const fn = async (execId) => {
+    const n = (attempts.get(Number(execId)) || 0) + 1;
+    attempts.set(Number(execId), n);
+    if (okAfterFirstTry.includes(Number(execId)) && n === 1) {
+      await new Promise((r) => setTimeout(r, delayMs));
+      return { ok: true, items: [{ id: `T_${execId}` }] };
     }
-    const batch = sorted.slice(i, i + concurrency);
-    traceFn(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
-    const batchResults = await Promise.all(
-      batch.map(async (ex) => {
-        const tasksPromise = paginateFn(`/executions/${ex.id}/tasks`);
-        const timeoutPromise = new Promise((resolve) => {
-          setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), execTimeoutMs);
-        });
-        const result = await Promise.race([tasksPromise, timeoutPromise]);
-        return { id: ex.id, result };
-      }),
-    );
-    for (const { id, result } of batchResults) {
-      if (result === EXEC_TIMEOUT_SENTINEL) {
-        skipped.push({
-          path: '/executions/*/tasks',
-          reason: 'exec-timeout',
-          executions: [id],
-        });
-        continue;
-      }
-      rawTasks.push(...result);
+    if (slowIds.includes(Number(execId))) {
+      await new Promise((r) => setTimeout(r, delayMs));
     }
-  }
-  return { rawTasks, skipped, wallClockEarlyExit };
+    if (failIds.includes(Number(execId))) return { ok: false, items: [] };
+    return { ok: true, items: [{ id: `T_${execId}` }] };
+  };
+  fn.attempts = attempts;
+  return fn;
 }
 
-test('INVARIANT: slow exec only loses itself; 4 sibling tasks preserved', async () => {
-  // Today's regression: pre-fix whole-batch race dropped all 5 exec tasks
-  // when one (exec 2028) exceeded the deadline. Post-fix: only 2028 lost.
-  const execList = [
-    { id: 2028 }, // slow
-    { id: 2127 },
-    { id: 2121 },
-    { id: 2102 },
-    { id: 2085 },
-  ];
-  const paginateFn = async (apiPath) => {
-    const m = apiPath.match(/\/executions\/(\d+)\/tasks$/);
-    const execId = Number(m[1]);
-    if (execId === 2028) {
-      await new Promise((r) => setTimeout(r, 200));
-      return [{ id: 'T_2028' }];
-    }
-    return [{ id: `T_${execId}` }];
-  };
-  const result = await phase2BatchFetch({
-    allExecs: execList,
-    paginateFn,
-    concurrency: 3,
-    execTimeoutMs: 80,
-  });
-  assert.equal(result.rawTasks.length, 4, '4 sibling exec tasks must survive');
-  const ids = result.rawTasks.map((t) => t.id).sort();
-  assert.deepEqual(ids, ['T_2085', 'T_2102', 'T_2121', 'T_2127']);
-  assert.deepEqual(result.skipped, [{
-    path: '/executions/*/tasks',
-    reason: 'exec-timeout',
-    executions: [2028],
-  }], 'only the slow exec should be recorded as skipped');
+test('默认并发为 1(串行)——并发会把禅道同端点拖慢 2-4 倍', () => {
+  assert.equal(TASK_CONCURRENCY_DEFAULT, 1);
 });
 
-test('INVARIANT: multiple slow execs each tracked individually, not as a group', async () => {
-  // Two slow execs in different batches; both should be skipped as separate
-  // entries with their own ids, NOT lumped as a batch.
-  const execList = [
-    { id: 1 }, { id: 2 }, { id: 3 }, // batch 1 — exec 2 slow
-    { id: 4 }, { id: 5 }, { id: 6 }, // batch 2 — exec 5 slow
-  ];
-  const paginateFn = async (apiPath) => {
-    const m = apiPath.match(/\/executions\/(\d+)\/tasks$/);
-    const execId = Number(m[1]);
-    if (execId === 2 || execId === 5) {
-      await new Promise((r) => setTimeout(r, 200));
-    }
-    return [{ id: `T_${execId}` }];
-  };
-  const result = await phase2BatchFetch({
-    allExecs: execList,
-    paginateFn,
-    concurrency: 3,
-    execTimeoutMs: 80,
-  });
-  assert.equal(result.rawTasks.length, 4, '4 fast execs survive across both batches');
-  assert.deepEqual(result.skipped.map((s) => s.executions), [[2], [5]],
-    'skipped should record each slow exec separately');
-});
-
-test('VOC-first ordering: VOC-owned execs fetched before non-VOC', async () => {
-  const execList = [
-    { id: 100 }, // non-VOC
-    { id: 200 }, // VOC
-    { id: 300 }, // non-VOC
-    { id: 400 }, // VOC
-  ];
-  const vocOwnedExecutionIds = new Set([200, 400]);
-  const fetchOrder = [];
-  const paginateFn = async (apiPath) => {
-    const m = apiPath.match(/\/executions\/(\d+)\/tasks$/);
-    const execId = Number(m[1]);
-    fetchOrder.push(execId);
-    return [{ id: `T_${execId}` }];
-  };
-  await phase2BatchFetch({
-    allExecs: execList,
-    paginateFn,
-    vocOwnedExecutionIds,
-    concurrency: 2,
-  });
-  assert.ok(vocOwnedExecutionIds.has(fetchOrder[0]), `expected first fetched in VOC set, got ${fetchOrder[0]}`);
-  assert.ok(vocOwnedExecutionIds.has(fetchOrder[1]), `expected second fetched in VOC set, got ${fetchOrder[1]}`);
-  assert.equal(vocOwnedExecutionIds.has(fetchOrder[2]), false, `expected third fetched outside VOC set, got ${fetchOrder[2]}`);
-});
-
-test('wall-clock budget exhaustion: stop enqueuing further batches', async () => {
-  const execList = [
-    { id: 1 }, { id: 2 }, { id: 3 },
-    { id: 4 }, { id: 5 }, { id: 6 },
-  ];
-  const paginateFn = async (apiPath) => {
-    const m = apiPath.match(/\/executions\/(\d+)\/tasks$/);
-    return [{ id: `T_${m[1]}` }];
-  };
-  // Mock clock: first poll returns 0 (under budget), second returns past deadline.
-  const clockValues = [0, 9_999_999];
-  let callIdx = 0;
-  const nowFn = () => clockValues[Math.min(callIdx++, clockValues.length - 1)];
-  const result = await phase2BatchFetch({
-    allExecs: execList,
-    paginateFn,
-    concurrency: 3,
-    wallDeadlineMs: 1000,
-    startTimeMs: 0,
-    nowFn,
-  });
-  assert.equal(result.rawTasks.length, 3, 'first batch (3 execs) processed before budget exhausted');
-  assert.equal(result.wallClockEarlyExit, true);
-  assert.deepEqual(result.skipped, [{
-    path: '/executions/*/tasks',
-    reason: 'wall-clock-budget',
-    remaining: 3,
+test('INVARIANT: 慢 execution 只丢自己,4 个兄弟源保留', async () => {
+  const state = freshState();
+  const res = await fetchAllExecutionTasks(
+    [{ id: 2028 }, { id: 2127 }, { id: 2121 }, { id: 2102 }, { id: 2085 }],
+    '2026-07-27',
+    {
+      fetchExecFn: makeFetchExec({ slowIds: [2028], delayMs: 300 }),
+      concurrency: 3,
+      execTimeoutMinMs: 80,
+      execTimeoutMaxMs: 80,
+      state,
+      traceFn: () => {},
+      retryFailed: false,
+    },
+  );
+  assert.equal(res.rawTasks.length, 4, '4 个兄弟源必须存活');
+  assert.deepEqual(res.rawTasks.map((t) => t.id).sort(), ['T_2085', 'T_2102', 'T_2121', 'T_2127']);
+  assert.deepEqual(state.skipped, [{
+    path: '/executions/*/tasks', reason: 'exec-timeout', executions: [2028],
   }]);
 });
 
-test('REGRESSION CANARY: if someone restores whole-batch race, this test should fail', async () => {
-  // Synthesizes the pre-fix scenario and asserts the post-fix behavior:
-  // before fix, a single slow exec poisoned the entire 5-exec batch and
-  // rawTasks would be empty. After fix, only the slow exec is lost.
-  const execList = [
-    { id: 2028 }, // slow — VOC 班牛 sprint stand-in
-    { id: 2127 }, { id: 2121 }, { id: 2102 }, { id: 2085 },
-  ];
-  const paginateFn = async (apiPath) => {
-    const m = apiPath.match(/\/executions\/(\d+)\/tasks$/);
-    const execId = Number(m[1]);
-    if (execId === 2028) {
-      await new Promise((r) => setTimeout(r, 200));
-      return [{ id: 'T44013', storyID: 21311 }]; // active VOC task
-    }
-    return [{ id: `T_${execId}` }];
+test('INVARIANT: 多个慢源各自单独记录,不按批次汇总', async () => {
+  const state = freshState();
+  const res = await fetchAllExecutionTasks(
+    [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }, { id: 6 }],
+    '2026-07-27',
+    {
+      fetchExecFn: makeFetchExec({ slowIds: [2, 5], delayMs: 300 }),
+      concurrency: 3,
+      execTimeoutMinMs: 80,
+      execTimeoutMaxMs: 80,
+      state,
+      traceFn: () => {},
+      retryFailed: false,
+    },
+  );
+  assert.equal(res.rawTasks.length, 4);
+  assert.deepEqual(state.skipped.map((s) => s.executions), [[2], [5]]);
+});
+
+test('VOC-first: VOC-owned execution 先于非 VOC 被取', async () => {
+  const order = [];
+  const fetchExecFn = async (execId) => {
+    order.push(Number(execId));
+    return { ok: true, items: [{ id: `T_${execId}` }] };
   };
-  const result = await phase2BatchFetch({
-    allExecs: execList,
-    paginateFn,
-    concurrency: 5, // whole-batch concurrency — matches the day-of incident batch size
-    execTimeoutMs: 80,
+  await fetchAllExecutionTasks(
+    [{ id: 100 }, { id: 200 }, { id: 300 }, { id: 400 }],
+    '2026-07-27',
+    {
+      fetchExecFn,
+      vocOwnedExecutionIds: new Set([200, 400]),
+      concurrency: 2,
+      state: freshState(),
+      traceFn: () => {},
+    },
+  );
+  assert.deepEqual(order.slice(0, 2).sort(), [200, 400], '前两个必须是 VOC');
+  assert.deepEqual(order.slice(2).sort(), [100, 300]);
+});
+
+test('wall-clock 预算耗尽时停止投放新批次', async () => {
+  const state = freshState();
+  const clock = [0, 9_999_999];
+  let idx = 0;
+  const res = await fetchAllExecutionTasks(
+    [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }, { id: 5 }, { id: 6 }],
+    '2026-07-27',
+    {
+      fetchExecFn: makeFetchExec(),
+      concurrency: 3,
+      wallDeadlineMs: 1000,
+      startMs: 0,
+      nowFn: () => clock[Math.min(idx++, clock.length - 1)],
+      state,
+      traceFn: () => {},
+    },
+  );
+  assert.equal(res.rawTasks.length, 3, '第一批 3 个在预算耗尽前完成');
+  assert.equal(res.wallClockEarlyExit, true);
+  assert.deepEqual(state.skipped, [{
+    path: '/executions/*/tasks',
+    reason: 'wall-clock-budget',
+    remaining: 3,
+    executions: [4, 5, 6],
+  }]);
+});
+
+test('自适应超时: 剩余预算 / 剩余批次数,并 clamp 到 [min,max]', () => {
+  // 预算充裕 → 取 max
+  assert.equal(pickExecTimeoutMs(1_000_000, 2, 60_000, 240_000), 240_000);
+  // 预算紧张 → 取 min(不会给出小到必然超时的值)
+  assert.equal(pickExecTimeoutMs(10_000, 5, 60_000, 240_000), 60_000);
+  // 中间值按均分
+  assert.equal(pickExecTimeoutMs(400_000, 4, 60_000, 240_000), 100_000);
+  // 剩余数为 0 不除零
+  assert.equal(pickExecTimeoutMs(300_000, 0, 60_000, 240_000), 240_000);
+});
+
+test('重试轮: 首轮超时的 execution 第二次成功,数据补回且 skipped 痕迹清空', async () => {
+  const state = freshState();
+  // exec 7 第一次慢(超时),第二次快
+  const fetchExecFn = makeFetchExec({ okAfterFirstTry: [7], delayMs: 300 });
+  const res = await fetchAllExecutionTasks(
+    [{ id: 7 }, { id: 8 }],
+    '2026-07-27',
+    {
+      fetchExecFn,
+      concurrency: 1,
+      execTimeoutMinMs: 80,
+      execTimeoutMaxMs: 80,
+      state,
+      traceFn: () => {},
+    },
+  );
+  assert.deepEqual(res.retriedOk, [7], 'exec 7 应在重试轮成功');
+  assert.deepEqual(res.rawTasks.map((t) => t.id).sort(), ['T_7', 'T_8']);
+  assert.deepEqual(state.skipped, [], '重试成功后不能残留 skipped,否则 finalizeOutput 误判 fatal');
+});
+
+test('重试轮: 第二次仍失败则保留 skipped(不掩盖真故障)', async () => {
+  const state = freshState();
+  const fetchExecFn = makeFetchExec({ slowIds: [9], delayMs: 300 });
+  const res = await fetchAllExecutionTasks([{ id: 9 }], '2026-07-27', {
+    fetchExecFn,
+    concurrency: 1,
+    execTimeoutMinMs: 80,
+    execTimeoutMaxMs: 80,
+    state,
+    traceFn: () => {},
   });
-  // Pre-fix: result.rawTasks would be []. Post-fix: 4 sibling tasks survive.
-  assert.notEqual(result.rawTasks.length, 0,
-    'REGRESSION: rawTasks empty would mean whole-batch race regressed');
-  assert.equal(result.rawTasks.length, 4,
-    'exactly 4 siblings should survive (2028 lost, others kept)');
+  assert.deepEqual(res.retriedOk, []);
+  assert.equal(fetchExecFn.attempts.get(9), 2, '应恰好尝试 2 次');
+  assert.deepEqual(state.skipped, [{
+    path: '/executions/*/tasks', reason: 'exec-timeout', executions: [9],
+  }]);
+});
+
+test('重试轮: 预算不足时不重试,并保留 skipped', async () => {
+  const state = freshState();
+  const fetchExecFn = makeFetchExec({ slowIds: [11], delayMs: 200 });
+  let calls = 0;
+  const res = await fetchAllExecutionTasks([{ id: 11 }], '2026-07-27', {
+    fetchExecFn,
+    concurrency: 1,
+    execTimeoutMinMs: 80,
+    execTimeoutMaxMs: 80,
+    wallDeadlineMs: 500,
+    startMs: 0,
+    // 第一次(循环入口)返回 0,之后返回 480 → 剩余 20ms < min,不重试
+    nowFn: () => (calls++ === 0 ? 0 : 480),
+    state,
+    traceFn: () => {},
+  });
+  assert.deepEqual(res.retriedOk, []);
+  assert.equal(fetchExecFn.attempts.get(11), 1, '预算不足时不应发起第二次');
+  assert.equal(state.skipped.length, 1);
+});
+
+test('dropExecSkips 清掉该 exec 的 page 级与汇总级两种记录,不误伤别的 exec', () => {
+  const state = {
+    skipped: [
+      { path: '/executions/*/tasks', page: 1, queryParam: 'order=openedDate_desc', execId: 2028, reason: 'AbortError' },
+      { path: '/executions/*/tasks', reason: 'exec-timeout', executions: [2028] },
+      { path: '/executions/*/tasks', reason: 'exec-timeout', executions: [3436] },
+      { path: '/products/*/bugs', page: 2, reason: 'http' },
+      { path: '/executions/*/tasks', reason: 'wall-clock-budget', remaining: 2, executions: [2028, 3436] },
+    ],
+  };
+  dropExecSkips(state, 2028);
+  assert.deepEqual(state.skipped, [
+    { path: '/executions/*/tasks', reason: 'exec-timeout', executions: [3436] },
+    { path: '/products/*/bugs', page: 2, reason: 'http' },
+    { path: '/executions/*/tasks', reason: 'wall-clock-budget', remaining: 2, executions: [2028, 3436] },
+  ], '多 exec 的 wall-clock 汇总条目不能被单 exec 的成功抹掉');
+});
+
+test('REGRESSION CANARY: 整批 race 若被还原,此测试应失败', async () => {
+  const state = freshState();
+  const res = await fetchAllExecutionTasks(
+    [{ id: 2028 }, { id: 2127 }, { id: 2121 }, { id: 2102 }, { id: 2085 }],
+    '2026-07-27',
+    {
+      fetchExecFn: makeFetchExec({ slowIds: [2028], delayMs: 300 }),
+      concurrency: 5,
+      execTimeoutMinMs: 80,
+      execTimeoutMaxMs: 80,
+      state,
+      traceFn: () => {},
+      retryFailed: false,
+    },
+  );
+  assert.notEqual(res.rawTasks.length, 0, 'REGRESSION: rawTasks 为空说明整批 race 回归了');
+  assert.equal(res.rawTasks.length, 4);
 });

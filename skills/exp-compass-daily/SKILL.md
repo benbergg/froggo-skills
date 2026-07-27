@@ -37,8 +37,12 @@ description: "体验罗盘-每日研发进度播报。从禅道采集单产品(�
 | `DINGTALK_EXP_COMPASS_TEMPLATE_NAME` | ☐ | 钉钉日志模板名,**默认 `体验罗盘日报`**(固化在 skill);仅在切换模板时设置 |
 | `EXP_COMPASS_DATE` | ☐ | **日报目标日期覆盖**,格式 `YYYY-MM-DD`。未设=当天(cron 正常语义);设了=生成该指定日的日报(测试/补跑历史日用)。全流程 7 处日期统一读此 env |
 | `EXP_COMPASS_PRODUCTS` | ☐ | 禅道产品 id,默认 `95` |
-| `EXP_COMPASS_API_BUDGET` | ☐ | 禅道 API 调用预算,默认 `300` |
+| `EXP_COMPASS_API_BUDGET` | ☐ | 禅道 API 调用预算,默认 `600` |
 | `EXP_COMPASS_HARD_TIMEOUT_MS` | ☐ | collect.js 硬超时,默认 `900000`(clamp 60s~30min) |
+| `EXP_COMPASS_TASK_CONCURRENCY` | ☐ | phase2 execution 并发,**默认 `1`(串行)**。2026-07-27 实测该禅道实例 `/executions/*/tasks` 并发会自我拖慢(串行 13.7s → 3 并发 25-60s+),并发无吞吐收益只有超时风险,**不要调大** |
+| `EXP_COMPASS_REQ_TIMEOUT_MS` | ☐ | 单请求超时,默认 `60000`。慢窗下 `/products/*/stories?status=closedstory` 实测撞 25s |
+| `EXP_COMPASS_SLOW_REQ_TIMEOUT_MS` | ☐ | 慢端点(`/executions/*/tasks`)单请求超时,默认 `90000`。该端点实测 11.5-59.3s/次,与任务数无关 |
+| `EXP_COMPASS_EXEC_TIMEOUT_MS` | ☐ | 单 execution 墙钟上限(自适应超时的**上限**),默认 `240000` |
 | `EXP_COMPASS_SEND_DINGTALK` | ☐ | **钉钉广播总开关**,默认 `0`=不真发(测试模式,Step 6 强制走 `--dry-run` 只 echo payload)。设 `1`/`true` 才真广播到钉钉群。**测试数据全部核对通过后再打开** |
 
 **注意**:不再设 `DINGTALK_EXP_COMPASS_TEMPLATE_ID` / `_TO_CHAT` / `_TO_USERIDS` / `_TO_CIDS`。template_id 在 Step 0 由 `resolve-template.js` 按模板名查询并缓存到 `~/.cache/exp-compass-daily/template.json`;广播范围一律走模板的 `default_received_convs`。
@@ -68,11 +72,22 @@ done
 
 任一 MISSING 则中止主流程,提示用户补 env 后重新触发。
 
+**插件根目录解析(每个 exec 都要重跑这两行)**:
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/exp-compass-daily" ] || PLUGIN_ROOT="$HOME/.openclaw"
+```
+
+`CLAUDE_PLUGIN_ROOT` 只有 Claude Code 会注入;**openclaw exec 环境里它是空的**(2026-07-27 实证:`node ${CLAUDE_PLUGIN_ROOT}/...` 展开成 `/skills/...` → `MODULE_NOT_FOUND`,AI 被迫现场 `find /` 摸索安装路径,还撞上 exec preflight 拒绝、整轮 run 标 error)。下面所有命令一律用 `$PLUGIN_ROOT`,**不要**直接写 `${CLAUDE_PLUGIN_ROOT}`。每个 exec 是独立 shell,变量不跨 exec,所以每个命令块开头都要重跑这两行。
+
 **解析模板(必跑,产出 template_id 与字段名校验)**:
 
 ```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/exp-compass-daily" ] || PLUGIN_ROOT="$HOME/.openclaw"
 TPL_NAME="${DINGTALK_EXP_COMPASS_TEMPLATE_NAME:-体验罗盘日报}"
-TPL_ID=$(node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/resolve-template.js \
+TPL_ID=$(node $PLUGIN_ROOT/skills/exp-compass-daily/references/scripts/resolve-template.js \
   --template-name "$TPL_NAME" \
   --userid "$DINGTALK_USERID")
 ```
@@ -93,7 +108,9 @@ stdout 是 `template_id`(单行),stderr 列字段校验结果与默认接收群�
 ### Step 1 数据采集
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.js \
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/exp-compass-daily" ] || PLUGIN_ROOT="$HOME/.openclaw"
+node $PLUGIN_ROOT/skills/exp-compass-daily/references/scripts/collect.js \
   --product ${EXP_COMPASS_PRODUCTS:-95} \
   --date ${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)} \
   --out /tmp/exp-compass-${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.json
@@ -128,11 +145,16 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/collect.j
 ### Step 5 build-draft 切片 + 友好化
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/build-draft.js \
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/exp-compass-daily" ] || PLUGIN_ROOT="$HOME/.openclaw"
+node $PLUGIN_ROOT/skills/exp-compass-daily/references/scripts/build-draft.js \
   --md ~/Knowledge-Library/05-Reports/daily/${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.md \
   --date ${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)} \
+  --json /tmp/exp-compass-${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.json \
   --out /tmp/exp-compass-${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}.contents.json
 ```
+
+**`--json` 是 V5 物理断路(必传)**:指向 Step 1 collect.js 的采集 JSON。build-draft 会硬校验 MD↔JSON 一致性——概览 12 数字、二段详情表 `is_active` 全集、"待修复 Bug" 段 ⊆ `status=active`,任一不符 **exit 5** 并列出差异,**阻断广播(不发错误数据)**。这是弱模型撰写不可靠的兜底防线(约束/自检可能被弱模型绕过,脚本硬校验不会)。exit 5 时:MD 已写知识库,按差异修正后重跑 Step 5+6。
 
 - 退出非 0 → 中止流程,echo stderr
 - exit 4 = H1 锚点缺失或乱序,知识库 MD 已存,可手工修后重跑此步
@@ -141,6 +163,8 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/exp-compass-daily/references/scripts/build-dra
 ### Step 6 创建钉钉日志(广播到模板默认群)
 
 ```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/exp-compass-daily" ] || PLUGIN_ROOT="$HOME/.openclaw"
 DATE=${EXP_COMPASS_DATE:-$(date +%Y-%m-%d)}
 CONTENTS_JSON=$(jq -c .contents /tmp/exp-compass-$DATE.contents.json)
 TPL_ID=$(jq -r .template_id ~/.cache/exp-compass-daily/template.json)
@@ -151,7 +175,7 @@ case "${EXP_COMPASS_SEND_DINGTALK:-0}" in
   1|true|TRUE|yes|on) SEND_FLAG="" ;;
   *) SEND_FLAG="--dry-run" ;;
 esac
-node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
+node $PLUGIN_ROOT/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
   --template-id "$TPL_ID" \
   --userid "$DINGTALK_USERID" \
   --contents "$CONTENTS_JSON" \
@@ -171,7 +195,7 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-re
 **调试 / DRY_RUN**:用 `--dry-run` flag(dingtalk-log 仅识别此 flag,**不识别 `DRY_RUN` env**)。dry-run 时 `dingtalk-log` 不真调 OpenAPI,只 echo `create_report_param` payload JSON,可在生产前 verify。例:
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
+node $PLUGIN_ROOT/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
   --template-id "$TPL_ID" --userid "$DINGTALK_USERID" --contents "$CONTENTS_JSON" \
   --to-chat true --to-cids "$TO_CIDS" --dry-run
 ```
@@ -371,7 +395,7 @@ MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 | 异常 | 处理 |
 |---|---|
 | `collect.js` 退出非 0 | 中止主流程,echo stderr,提示检查 zentao 凭据。**严禁用任何残留 JSON 继续**(exit 2 时正式路径已被脚本删除,partial 数据只在 `*.json.partial`,仅供诊断) |
-| `collect.js` exit 2(source skipped) | 数据不完整,JSON 落 `/tmp/exp-compass-{DATE}.json.partial`,正式路径不存在 → Step 2+ 物理上无法继续。中止并在 announce 报失败 |
+| `collect.js` exit 2(source skipped) | 数据不完整,JSON 落 `/tmp/exp-compass-{DATE}.json.partial`,正式路径不存在 → Step 2+ 物理上无法继续。中止并在 announce 报失败。**注意:脚本内部已对失败的 execution 用剩余预算自动串行重试过一轮**,走到 exit 2 意味着同一个源连续两次都没取到,不要在对话里再手动重跑 collect.js(2026-07-27 起) |
 | `collect.js` exit 5(phase1 超预算) | 禅道服务端抖动(phase1 > 硬超时 30%,常态 ~35s),提前止损未进 phase2。中止,建议错峰重跑 |
 | Token 401 自动刷新失败 | `collect.js` 已退出,提示用户在终端跑 `zt_init && zt_acquire_token` |
 | `summary` 字段缺失 | JSON 损坏,中止 Step 2,echo `cat /tmp/exp-compass-{DATE}.json \| jq .` |

@@ -158,7 +158,16 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
-async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
+// 单请求超时。2026-07-27 实测:该禅道实例 /executions/{id}/tasks 串行单调用
+// 就要 11.5-59.3s(与任务数无关,total=73 的 exec 3436 反而最慢 59.3s),15s
+// 上限低于端点常态耗时 → 每次调用必 abort。慢端点走 SLOW_REQ_TIMEOUT_MS。
+// 60s 而非 25s:实测慢窗下 /products/95/stories?status=closedstory 单次
+// 就撞 25s(2026-07-27 实跑 +25.1s abort),而"今日完成需求"是日报核心字段,
+// 宁可多等也不能让它静默为空。
+const REQ_TIMEOUT_MS = parseInt(process.env.EXP_COMPASS_REQ_TIMEOUT_MS || '60000', 10);
+const SLOW_REQ_TIMEOUT_MS = parseInt(process.env.EXP_COMPASS_SLOW_REQ_TIMEOUT_MS || '90000', 10);
+
+async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIMEOUT_MS } = {}) {
   if (STATE.apiCalls >= STATE.budget) {
     STATE.budgetExceeded = true;
     return { ok: false, status: 0, body: null, reason: 'budget' };
@@ -171,12 +180,16 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
   // unresponsive endpoint could previously eat 4×30+15 = 135s of the 600s
   // hard budget before failure. Zentao P95 against this instance is ~10s;
   // 15s still covers the slow-tail without enabling cascading retries.
+  //
+  // 2026-07-27 修正:15s 假设失效(见 REQ_TIMEOUT_MS 注释)。超时值改可配,
+  // 且**自身超时(AbortError)不再重试**——重试只是把一次 90s 的慢响应放大成
+  // 3×(90s+backoff) 的纯等待,拿不到任何数据。只有真网络错误才重试。
   const backoff = [1000, 2000];
   let lastErr = null;
 
   for (let attempt = 0; attempt <= backoff.length; attempt++) {
     const ctrl = new AbortController();
-    const timer = setTimeout(() => ctrl.abort(), 15_000);
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -191,7 +204,9 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
           const fresh = readTokenFile();
           if (!fresh) throw new Error('token cache empty after refresh');
           STATE.token = fresh;
-          return ztFetch(pathAndQuery, { allowRefresh: false });
+          // 保持 timeoutMs:慢端点 401 重取后若退回默认 25s,会把常态 59s 的
+          // 响应误判成故障。
+          return ztFetch(pathAndQuery, { allowRefresh: false, timeoutMs });
         } catch (e) {
           throw new Error(`401 refresh failed: ${sanitizeMessage(e.message)}`);
         }
@@ -224,12 +239,18 @@ async function ztFetch(pathAndQuery, { allowRefresh = true } = {}) {
       // (backport 自 tencent-vm 线上热修,2026-07-22 部署 V4 时回传)
       const causeCode = e.cause && e.cause.code;
       const retryableCodes = ['ECONNREFUSED', 'ETIMEDOUT', 'ENOTFOUND', 'EAI_AGAIN', 'ECONNRESET', 'EPIPE'];
-      const isNetwork =
+      // 2026-07-27: AbortError(本地超时)移出重试白名单。禅道慢端点响应 11-59s,
+      // 超时重试的每一次都会再等满 timeoutMs 才失败,把"慢"放大成"全灭":
+      // 20:20 那轮 3 个 exec 各烧 48s(3×15s+backoff) 后 rawTasks=0 → exit 2。
+      // 该慢的端点给足超时即可,重试无收益。
+      // undici 在不同 node 版本下可能把 abort 包成 TypeError: fetch failed
+      // 并把 AbortError 塞进 cause,所以两层都要认,否则"超时不重试"会漏。
+      const isAbort = e.name === 'AbortError' || (e.cause && e.cause.name === 'AbortError');
+      const isNetwork = !isAbort && (
         retryableCodes.includes(e.code) ||
         retryableCodes.includes(causeCode) ||
-        e.name === 'AbortError' ||
         (typeof causeCode === 'string' && causeCode.startsWith('UND_ERR')) ||
-        e.message === 'fetch failed';
+        e.message === 'fetch failed');
       if (isNetwork && attempt < backoff.length) {
         await sleep(backoff[attempt]);
         continue;
@@ -353,16 +374,31 @@ async function loadUserMap() {
 //
 // Falls back to a full paginate + client filter on transport failure,
 // preserving correctness if the order parameter is ever rejected.
-async function fetchClosedTodayStories(productId, date) {
+async function fetchClosedTodayStories(productId, date, opts = {}) {
+  const { fetchFn = ztFetch, attempts = 2, state = STATE } = opts;
   const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=100&page=1`;
-  const r = await ztFetch(url);
+  // 2026-05-12: fallback to full paginate burns 200-400s pulling 540+ rows
+  // to match 0-5 today-closed entries — net zero ROI when Zentao is slow.
+  // 该结论只否定"全量分页 fallback",不否定重试同一条轻量查询。
+  //
+  // 2026-07-27:原实现失败即静默返回 [] 且不记 skipped —— 日报"今日完成需求"
+  // 会无声归零,读者看到的是"今天没完成任何需求"这个**错误断言**,比不发日报
+  // 更糟。改为:重试一次(成本仅一次调用);仍失败则记入 skipped 走 fatal 路径,
+  // 让流程停在"不发"而不是"发错"。
+  let r = null;
+  for (let i = 0; i < attempts; i++) {
+    r = await fetchFn(url);
+    if (r.ok) break;
+    if (i < attempts - 1) trace(`closedToday stories fetch failed (${r.reason}); retry ${i + 2}/${attempts}`);
+  }
   if (!r.ok) {
-    // 2026-05-12: fallback to full paginate burns 200-400s pulling 540+ rows
-    // to match 0-5 today-closed entries — net zero ROI when Zentao is slow,
-    // and the SKILL.md "do not retry" contract means the surrounding cron
-    // already gave up anyway. Return [] and let the report run with today's
-    // closed-story field empty rather than self-kill the whole pipeline.
-    trace(`closedToday stories fetch failed (${r.reason}); skipping (no fallback)`);
+    trace(`closedToday stories fetch failed after ${attempts} attempts (${r.reason}); marking skipped (critical)`);
+    state.skipped.push({
+      path: '/products/*/stories',
+      page: 1,
+      queryParam: 'status=closedstory&order=closedDate_desc',
+      reason: r.reason,
+    });
     return [];
   }
   const items = r.body.stories || [];
@@ -385,9 +421,17 @@ async function fetchClosedTodayStories(productId, date) {
 //
 // Note on the Zentao bugs API: status=active|resolved|closed all return 0;
 // only status=all and status=unclosed (= active + resolved) are accepted.
-async function fetchTodayClosedBugs(productId, date) {
+async function fetchTodayClosedBugs(productId, date, opts = {}) {
+  const { fetchFn = ztFetch, attempts = 2 } = opts;
   const url = `/products/${productId}/bugs?status=all&order=closedDate_desc&limit=100&page=1`;
-  const r = await ztFetch(url);
+  // 2026-07-27:与 fetchClosedTodayStories 同样加一次重试(轻量单调用),
+  // 失败仍返回 null,由 fetchBugsInScope 记 skipped 使其可见。
+  let r = null;
+  for (let i = 0; i < attempts; i++) {
+    r = await fetchFn(url);
+    if (r.ok) break;
+    if (i < attempts - 1) trace(`bugs closed-today fetch failed (${r.reason}); retry ${i + 2}/${attempts}`);
+  }
   if (!r.ok) return null;
   const items = r.body.bugs || [];
   const out = [];
@@ -433,7 +477,15 @@ async function fetchTodayClosedBugs(productId, date) {
 //   /executions/2028/tasks?order=openedDate_desc    → server-sort honored, page1 starts with today
 //   /executions/2028/tasks?order=finishedDate_desc  → null clusters at tail (confirmed)
 async function fetchExecutionTasksScoped(execId, date, opts = {}) {
-  const { lookbackDays = 30, fetchFn = ztFetch, maxPages = 3 } = opts;
+  const {
+    lookbackDays = 30,
+    fetchFn = ztFetch,
+    maxPages = 3,
+    // 2026-07-27: 该端点是全流程最慢的一个(实测 11.5-59.3s/调用),必须用
+    // 独立的长超时,否则默认 25s 会把常态响应误判成故障。
+    reqTimeoutMs = SLOW_REQ_TIMEOUT_MS,
+  } = opts;
+  const fetchSlow = (url) => fetchFn(url, { timeoutMs: reqTimeoutMs });
 
   const lookback = new Date(`${date}T00:00:00Z`);
   lookback.setUTCDate(lookback.getUTCDate() - lookbackDays);
@@ -451,7 +503,7 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
         rows = preloadedPage1;
       } else {
         const url = `${base}?${queryParam}&limit=100&page=${page}`;
-        const r = await fetchFn(url);
+        const r = await fetchSlow(url);
         if (!r.ok) {
           STATE.skipped.push({ path: sanitizedPath, page, queryParam, execId, reason: r.reason });
           return { ok: false, items };
@@ -488,7 +540,7 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
   // 既有 3 腿路径,探针结果复用为 lastEditedDate 腿 page1,零额外开销。
   // 注意:不允许按 execution.status/end 上游过滤——exec 2028 实测
   // status=doing、end=2024-08-31,两个字段都会误杀核心班牛 sprint。
-  const probe = await fetchFn(`${base}?order=lastEditedDate_desc&limit=100&page=1`);
+  const probe = await fetchSlow(`${base}?order=lastEditedDate_desc&limit=100&page=1`);
   let probeRows = null;
   let probeFailedResult = null;
   if (!probe.ok) {
@@ -528,6 +580,174 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
     }
   }
   return { ok: true, items: Array.from(byId.values()) };
+}
+
+// ---- phase2: execution → tasks ------------------------------------------
+
+// phase2 结束后留给下游(派生/写文件)的余量。
+const PHASE2_BUDGET_RESERVE_MS = 60_000;
+// 2026-07-27:并发 3 → 1。实测同一禅道实例上 /executions/{id}/tasks 并发会
+// 自我拖慢:串行 13.7s 的调用在 3 并发下变 25.1/36.2/>60s,三个源一起撞
+// EXEC_TIMEOUT 全灭(rawTasks=0 → exit 2)。对照实验(仅放宽超时、保留并发 3)
+// 仍然丢掉 exec 3436;串行版同一时段 3 个 exec 全部取到(184s, exit 0)。
+// 该端点服务端近乎串行处理,并发没有吞吐收益,只有超时风险。
+const TASK_CONCURRENCY_DEFAULT = Math.max(
+  1,
+  parseInt(process.env.EXP_COMPASS_TASK_CONCURRENCY || '1', 10) || 1,
+);
+// 单个 execution 的墙钟上限。不再是死值:按"剩余预算 / 剩余 execution 数"
+// 自适应,并 clamp 到 [MIN, MAX]。exec 少时给足(实测慢窗单 exec 需 67s),
+// exec 多时自动收紧,保证永远不会因个别慢源吃光整轮预算。
+const EXEC_TIMEOUT_MIN_MS = 60_000;
+const EXEC_TIMEOUT_MAX_MS = parseInt(process.env.EXP_COMPASS_EXEC_TIMEOUT_MS || '240000', 10);
+
+function pickExecTimeoutMs(remainingMs, remainingExecs, minMs = EXEC_TIMEOUT_MIN_MS, maxMs = EXEC_TIMEOUT_MAX_MS) {
+  const per = Math.floor(remainingMs / Math.max(1, remainingExecs));
+  return Math.min(maxMs, Math.max(minMs, per));
+}
+
+// 把某个 execution 在 STATE.skipped 里留下的所有痕迹抹掉(重试成功后调用)。
+// fetchExecutionTasksScoped 内部按 page/queryParam 逐条 push,外层按 exec
+// push 汇总条目,两种都要清,否则重试成功了 finalizeOutput 仍判 fatal。
+function dropExecSkips(state, execId) {
+  const id = Number(execId);
+  state.skipped = state.skipped.filter((s) => {
+    if (s.path !== '/executions/*/tasks') return true;
+    if (Number(s.execId) === id) return false;
+    if (Array.isArray(s.executions) && s.executions.length === 1 && Number(s.executions[0]) === id) return false;
+    return true;
+  });
+}
+
+// phase2 主循环。2026-05-13 起每个 execution 独立 race 自己的超时(慢源只丢
+// 自己,兄弟源保留);2026-07-27 起并发默认降到 1、超时自适应,并在首轮结束后
+// 用剩余预算对失败源做一轮串行重试。
+//
+// 重试轮存在的理由:20:20 那次整轮硬预算 900s 只用了 302s 就 exit 2 —— 600s
+// 预算完全没用上,却让"禅道抖动 2 分钟"等价于"当天日报不发"。重试把瞬时抖动
+// 变成可自愈,只有连续两次都失败才 fatal。
+async function fetchAllExecutionTasks(allExecs, date, opts = {}) {
+  const {
+    vocOwnedExecutionIds = new Set(),
+    fetchExecFn = fetchExecutionTasksScoped,
+    concurrency = TASK_CONCURRENCY_DEFAULT,
+    wallDeadlineMs = Infinity,
+    startMs = TRACE_T0,
+    nowFn = Date.now,
+    traceFn = trace,
+    state = STATE,
+    execTimeoutMinMs = EXEC_TIMEOUT_MIN_MS,
+    execTimeoutMaxMs = EXEC_TIMEOUT_MAX_MS,
+    retryFailed = true,
+  } = opts;
+
+  // 2026-05-13: VOC-owned executions go first. If the wall-clock budget
+  // ever runs out, non-VOC sprints (cross-team borrows) get sacrificed
+  // before the core daily-report data.
+  const sorted = [...allExecs].sort((a, b) => {
+    const av = vocOwnedExecutionIds.has(Number(a.id)) ? 0 : 1;
+    const bv = vocOwnedExecutionIds.has(Number(b.id)) ? 0 : 1;
+    return av - bv;
+  });
+
+  const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
+  const rawTasks = [];
+  const failedExecIds = [];
+  let wallClockEarlyExit = false;
+
+  const raceOne = async (execId, timeoutMs) => {
+    let timer = null;
+    const timeoutPromise = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), timeoutMs);
+    });
+    try {
+      return await Promise.race([fetchExecFn(execId, date), timeoutPromise]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
+  for (let i = 0; i < sorted.length; i += concurrency) {
+    const elapsedMs = nowFn() - startMs;
+    if (elapsedMs > wallDeadlineMs) {
+      const remaining = sorted.length - i;
+      traceFn(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} executions to leave ${PHASE2_BUDGET_RESERVE_MS / 1000}s for downstream`);
+      state.skipped.push({
+        path: '/executions/*/tasks',
+        reason: 'wall-clock-budget',
+        remaining,
+        // 2026-07-23: 记录被砍 execution id,fatal 判定需区分 VOC/非 VOC
+        executions: sorted.slice(i).map((e) => Number(e.id)),
+      });
+      wallClockEarlyExit = true;
+      break;
+    }
+    const batch = sorted.slice(i, i + concurrency);
+    // 首轮不把预算一次分完:留一半给重试轮,慢源第二次通常就过了。
+    const execTimeoutMs = pickExecTimeoutMs(
+      (wallDeadlineMs - elapsedMs) / 2,
+      Math.ceil((sorted.length - i) / concurrency),
+      execTimeoutMinMs,
+      execTimeoutMaxMs,
+    );
+    traceFn(`fetch executions batch start [${batch.map((e) => e.id).join(',')}] timeout=${(execTimeoutMs / 1000).toFixed(0)}s`);
+    const batchResults = await Promise.all(
+      batch.map(async (ex) => ({ id: ex.id, result: await raceOne(ex.id, execTimeoutMs) })),
+    );
+    for (const { id, result } of batchResults) {
+      if (result === EXEC_TIMEOUT_SENTINEL) {
+        traceFn(`WARN: execution=${id} exceeded ${(execTimeoutMs / 1000).toFixed(0)}s; skipping`);
+        state.skipped.push({ path: '/executions/*/tasks', reason: 'exec-timeout', executions: [id] });
+        failedExecIds.push(Number(id));
+        continue;
+      }
+      if (!result.ok) {
+        traceFn(`WARN: execution=${id} all scoped task queries failed; skipping`);
+        state.skipped.push({ path: '/executions/*/tasks', reason: 'scoped-fetch-failed', executions: [id] });
+        failedExecIds.push(Number(id));
+        continue;
+      }
+      traceFn(`fetch execution=${id} tasks done (${result.items.length})`);
+      rawTasks.push(...result.items);
+    }
+  }
+
+  // 重试轮:串行、逐个用剩余预算重跑首轮失败的 execution。
+  const retriedOk = [];
+  if (retryFailed && failedExecIds.length && !wallClockEarlyExit) {
+    for (let k = 0; k < failedExecIds.length; k++) {
+      const remainingMs = wallDeadlineMs - (nowFn() - startMs);
+      if (remainingMs < execTimeoutMinMs) {
+        traceFn(`WARN: no budget left for retrying ${failedExecIds.length - k} failed execution(s)`);
+        break;
+      }
+      const execId = failedExecIds[k];
+      const timeoutMs = pickExecTimeoutMs(remainingMs, failedExecIds.length - k, execTimeoutMinMs, execTimeoutMaxMs);
+      traceFn(`retry execution=${execId} (timeout=${(timeoutMs / 1000).toFixed(0)}s, budget left ${(remainingMs / 1000).toFixed(0)}s)`);
+      // 先清首轮痕迹再重跑,这样无论成败 skipped 里都只留最新一次的结论,
+      // 不会因两轮各 push 一遍而重复计数。
+      dropExecSkips(state, execId);
+      const result = await raceOne(execId, timeoutMs);
+      if (result !== EXEC_TIMEOUT_SENTINEL && result.ok) {
+        // fetchExecutionTasksScoped 内部可能在部分腿失败时留下 page 级记录,
+        // 整体 ok 的情况下这些是可容忍的降级,不该阻断 → 一并清掉。
+        dropExecSkips(state, execId);
+        rawTasks.push(...result.items);
+        retriedOk.push(execId);
+        traceFn(`retry execution=${execId} ok (${result.items.length} tasks)`);
+      } else {
+        dropExecSkips(state, execId);
+        state.skipped.push({
+          path: '/executions/*/tasks',
+          reason: result === EXEC_TIMEOUT_SENTINEL ? 'exec-timeout' : 'scoped-fetch-failed',
+          executions: [Number(execId)],
+        });
+        traceFn(`retry execution=${execId} failed again; keeping it skipped`);
+      }
+    }
+  }
+
+  return { rawTasks, wallClockEarlyExit, failedExecIds, retriedOk };
 }
 
 // 2026-07-24 V5: 查白名单项目的 executions,构建 vocOwnedExecutionIds
@@ -589,19 +809,29 @@ async function fetchStoryExecutionIds(storyIds, opts = {}) {
   return { ok: !anyFailed, execIds };
 }
 
-async function fetchBugsInScope(productId, date) {
+async function fetchBugsInScope(productId, date, opts = {}) {
+  const { paginateFn = ztPaginate, closedTodayFn = fetchTodayClosedBugs, state = STATE } = opts;
   const [unclosed, closedTodayMaybe] = await Promise.all([
-    ztPaginate(`/products/${productId}/bugs?status=unclosed`, 'bugs'),
-    fetchTodayClosedBugs(productId, date),
+    paginateFn(`/products/${productId}/bugs?status=unclosed`, 'bugs'),
+    closedTodayFn(productId, date),
   ]);
   if (closedTodayMaybe === null) {
     // 2026-05-12: same reasoning as fetchClosedTodayStories. Full paginate on
     // ?status=all is the longest single operation against this Zentao
     // (1100+ rows, 3 pages of 500); when the fast-path already failed under
     // load, fanning out a heavier query on the same backend is a guaranteed
-    // hard-timeout path. Return just unclosed bugs and accept that today's
-    // closed-bug delta will be missing from the daily report.
-    trace('bugs closed-today fetch failed; returning unclosed only (no fallback)');
+    // hard-timeout path — 该结论仍然成立,**不做**全量 fallback。
+    //
+    // 2026-07-27:但"不 fallback"不等于"可以静默"。原实现直接 return unclosed,
+    // 日报"今日完成 Bug"无声归零(2026-07-27 实跑:bugs 9 → 3,今日关闭的 6 条
+    // 全丢且 exit 0)。改为记 skipped 走 fatal —— 宁可不发,不可发错。
+    trace('bugs closed-today fetch failed after retry; marking skipped (critical)');
+    state.skipped.push({
+      path: '/products/*/bugs',
+      page: 1,
+      queryParam: 'status=all&order=closedDate_desc',
+      reason: 'closed-today-fetch-failed',
+    });
     return unclosed;
   }
   const seen = new Set();
@@ -960,11 +1190,17 @@ _hardKill.unref();
 // phase1 提前止损(2026-07-22 下午实证):禅道服务端抖动日 phase1 从常态
 // ~35s 涨到 323s,吃掉 wall-clock 预算一半后 phase2 的 87 个 executions
 // 注定跑不完(5 source skip → exit 2),不如在 phase1 结束时就 FATAL,
-// 省下白耗的 ~5 分钟。阈值取硬超时的 30%(600s → 180s),正常 35s 有
-// 5 倍余量,抖动 323s 稳触发。
-const PHASE1_FATAL_FRACTION = 0.3;
-function phase1BudgetExceeded(tPhase1Ms, hardTimeoutMs) {
-  return tPhase1Ms > hardTimeoutMs * PHASE1_FATAL_FRACTION;
+// 省下白耗的 ~5 分钟。
+//
+// 2026-07-27 改判据:原规则是"phase1 > 硬超时的 30%"。它的隐含前提——
+// phase2 要遍历 87 个 execution——已被 V5 story-driven 重构消除(现在只有
+// 3 个 exec,实测 phase2 113s)。固定比例于是变成误杀:本次实跑 phase1 317s
+// 但数据完整、剩余 583s 预算足够 phase2 跑完 3 次,却被判死 exit 5。
+// 新判据直接问真正的约束——**剩下的时间够不够 phase2 跑完**。
+// PHASE2_MIN_NEEDED_MS 覆盖 story 反查(~80s) + 串行 exec(~120s) + 重试轮余量。
+const PHASE2_MIN_NEEDED_MS = 240_000;
+function phase1BudgetExceeded(tPhase1Ms, hardTimeoutMs, minNeededMs = PHASE2_MIN_NEEDED_MS) {
+  return hardTimeoutMs - tPhase1Ms < minNeededMs;
 }
 
 // 落盘物理断路(2026-07-22 seq 83 事件):skipped>0 时 JSON 只写
@@ -1054,8 +1290,8 @@ async function main() {
   // 跑不完,与其耗满硬超时再 exit 2,不如现在就 FATAL(exit 5)。
   if (phase1BudgetExceeded(tPhase1Ms, HARD_TIMEOUT_MS)) {
     console.error(
-      `FATAL: phase1 took ${tPhase1Ms}ms > ${Math.round(HARD_TIMEOUT_MS * PHASE1_FATAL_FRACTION)}ms ` +
-      `(${PHASE1_FATAL_FRACTION * 100}% of hard timeout) — Zentao too slow, aborting before phase2`
+      `FATAL: phase1 took ${tPhase1Ms}ms, only ${HARD_TIMEOUT_MS - tPhase1Ms}ms left ` +
+      `(< ${PHASE2_MIN_NEEDED_MS}ms needed for phase2) — Zentao too slow, aborting before phase2`
     );
     process.exit(5);
   }
@@ -1112,92 +1348,11 @@ async function main() {
   const allExecs = [...candidateExecIds].map((id) => ({ id }));
   trace(`total executions to fetch tasks: ${allExecs.length} (story ${storyExecIds.size} ∪ backfill ${looseBackfillExecs.size}); storyExecOk=${storyExecOk}`);
 
-  const rawTasks = [];
-  let wallClockEarlyExit = false;
   const tPhase2Start = Date.now();
-  // 2026-05-13: VOC-owned executions go first. If the wall-clock budget
-  // ever runs out, non-VOC sprints (cross-team borrows) get sacrificed
-  // before the core daily-report data.
-  allExecs.sort((a, b) => {
-    const av = vocOwnedExecutionIds.has(Number(a.id)) ? 0 : 1;
-    const bv = vocOwnedExecutionIds.has(Number(b.id)) ? 0 : 1;
-    return av - bv;
+  const { rawTasks, wallClockEarlyExit } = await fetchAllExecutionTasks(allExecs, args.date, {
+    vocOwnedExecutionIds,
+    wallDeadlineMs: HARD_TIMEOUT_MS - PHASE2_BUDGET_RESERVE_MS,
   });
-  // Cross-project flat batching with per-execution timeout.
-  //
-  // 2026-05-12: introduced whole-batch race (Promise.race(Promise.all([5
-  // execs]), 60s)) to keep slow cross-team sprints from hanging phase2
-  // past the 600s hard timeout.
-  //
-  // 2026-05-13: redesigned to per-execution race. The whole-batch design
-  // dropped *all* sibling exec results in a batch when any single exec
-  // exceeded the deadline. On 2026-05-13 a slow exec=2028 (VOC 班牛
-  // sprint, 1576 cumulative tasks, page1=14s, total ≥70s) killed batch
-  // [2127, 2121, 2102, 2085, 2028]; rawTasks lost the only active VOC
-  // task T44013 (storyID 21311) and summary.task.* fell to 0. Each exec
-  // now races itself against EXEC_TIMEOUT_MS independently — a slow exec
-  // only loses its own data, siblings' tasks are preserved.
-  const TASK_CONCURRENCY = 3;
-  const BUDGET_RESERVE_MS = 60_000;
-  const wallDeadlineMs = HARD_TIMEOUT_MS - BUDGET_RESERVE_MS;
-  // 2026-07-23: 90s → 120s。慢时段冷 execution(首次拉取无缓存)3 个
-  // scoped query 实测 >90s(3002/2786/2485 连环 exec-timeout);wall 预算
-  // 已扩到 840s,3 并发下容得起个别 120s 慢源。
-  const EXEC_TIMEOUT_MS = 120_000;
-  const EXEC_TIMEOUT_SENTINEL = Symbol('exec-timeout');
-  for (let i = 0; i < allExecs.length; i += TASK_CONCURRENCY) {
-    const elapsedMs = Date.now() - TRACE_T0;
-    if (elapsedMs > wallDeadlineMs) {
-      const remaining = allExecs.length - i;
-      trace(`WARN: wall-clock budget exhausted at ${(elapsedMs / 1000).toFixed(1)}s; skipping ${remaining} executions to leave ${BUDGET_RESERVE_MS / 1000}s for downstream`);
-      STATE.skipped.push({
-        path: '/executions/*/tasks',
-        reason: 'wall-clock-budget',
-        remaining,
-        // 2026-07-23: 记录被砍 execution id,fatal 判定需区分 VOC/非 VOC
-        executions: allExecs.slice(i).map((e) => Number(e.id)),
-      });
-      wallClockEarlyExit = true;
-      break;
-    }
-    const batch = allExecs.slice(i, i + TASK_CONCURRENCY);
-    trace(`fetch executions batch start [${batch.map((e) => e.id).join(',')}]`);
-    const batchResults = await Promise.all(
-      batch.map(async (ex) => {
-        // 2026-05-13: replaced unfiltered ztPaginate with scoped multi-order
-        // fetch. exec 2028 (1576 cum tasks) drops from 16 pages × ~14s to
-        // 3 parallel order=...desc queries with 30-day lookback early-exit.
-        const fetchPromise = fetchExecutionTasksScoped(ex.id, args.date);
-        const timeoutPromise = new Promise((resolve) => {
-          setTimeout(() => resolve(EXEC_TIMEOUT_SENTINEL), EXEC_TIMEOUT_MS);
-        });
-        const result = await Promise.race([fetchPromise, timeoutPromise]);
-        return { id: ex.id, result };
-      }),
-    );
-    for (const { id, result } of batchResults) {
-      if (result === EXEC_TIMEOUT_SENTINEL) {
-        trace(`WARN: execution=${id} exceeded ${EXEC_TIMEOUT_MS / 1000}s; skipping`);
-        STATE.skipped.push({
-          path: '/executions/*/tasks',
-          reason: 'exec-timeout',
-          executions: [id],
-        });
-        continue;
-      }
-      if (!result.ok) {
-        trace(`WARN: execution=${id} all scoped task queries failed; skipping`);
-        STATE.skipped.push({
-          path: '/executions/*/tasks',
-          reason: 'scoped-fetch-failed',
-          executions: [id],
-        });
-        continue;
-      }
-      trace(`fetch execution=${id} tasks done (${result.items.length})`);
-      rawTasks.push(...result.items);
-    }
-  }
   const tPhase2Ms = Date.now() - tPhase2Start;
   trace(`phase2 done in ${tPhase2Ms}ms (rawTasks=${rawTasks.length}${wallClockEarlyExit ? ', partial' : ''})`);
 
@@ -1358,6 +1513,13 @@ if (require.main === module) {
   clearTimeout(_hardKill);
   module.exports = {
     fetchExecutionTasksScoped, STATE,
+    // HTTP 层(tests/run-ztfetch-timeout-tests.js):超时可配 + 超时不重试
+    ztFetch, REQ_TIMEOUT_MS, SLOW_REQ_TIMEOUT_MS,
+    // 今日完成需求/Bug(tests/run-closed-today-tests.js):失败重试 + 失败必须可见
+    fetchClosedTodayStories, fetchTodayClosedBugs, fetchBugsInScope,
+    // phase2 循环(tests/run-phase2-race-tests.js):并发/自适应超时/重试轮
+    fetchAllExecutionTasks, pickExecTimeoutMs, dropExecSkips,
+    TASK_CONCURRENCY_DEFAULT,
     // V5 story-driven 采集(tests/run-story-driven-tests.js)
     fetchVocOwnedExecutions, fetchStoryExecutionIds,
     // V4 派生函数(tests/run-derive-v4-tests.js)

@@ -58,15 +58,23 @@ test('finalizeOutput: 输出文件权限 0600', () => {
   assert.equal(mode, 0o600);
 });
 
-test('phase1BudgetExceeded: 正常耗时(35s/600s)不触发', () => {
-  assert.equal(phase1BudgetExceeded(35_397, 600_000), false);
+// 2026-07-27:判据从"phase1 > 硬超时 30%"改为"剩余预算 < phase2 所需"。
+// 原规则的前提(phase2 要遍历 87 个 execution)已被 V5 story-driven 消除,
+// 固定比例变成误杀:phase1 317s/900s 数据完整、剩 583s 足够跑 phase2(实测
+// 113s),旧规则却直接 exit 5。
+test('phase1BudgetExceeded: 正常耗时(35s/900s)不触发', () => {
+  assert.equal(phase1BudgetExceeded(35_397, 900_000), false);
 });
 
-test('phase1BudgetExceeded: 抖动日(323s/600s)触发', () => {
-  assert.equal(phase1BudgetExceeded(323_441, 600_000), true);
+test('phase1BudgetExceeded: 慢但预算仍够(317s/900s,剩 583s)不触发', () => {
+  assert.equal(phase1BudgetExceeded(317_695, 900_000), false);
 });
 
-test('phase1BudgetExceeded: 恰好 30% 边界不触发(严格大于)', () => {
-  assert.equal(phase1BudgetExceeded(180_000, 600_000), false);
-  assert.equal(phase1BudgetExceeded(180_001, 600_000), true);
+test('phase1BudgetExceeded: 预算真不够(700s/900s,剩 200s < 240s)触发', () => {
+  assert.equal(phase1BudgetExceeded(700_000, 900_000), true);
+});
+
+test('phase1BudgetExceeded: 边界恰好等于所需不触发(严格小于才触发)', () => {
+  assert.equal(phase1BudgetExceeded(660_000, 900_000, 240_000), false);
+  assert.equal(phase1BudgetExceeded(660_001, 900_000, 240_000), true);
 });
