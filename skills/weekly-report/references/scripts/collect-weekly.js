@@ -813,36 +813,32 @@ async function main() {
   // faster end-to-end. Override scope via WEEKLY_PRODUCT_IDS or --products
   // when temporarily borrowing into other products.
   const sprintBaseDate = range.wk_end.slice(0, 10);
-  const SPRINT_CONC = 10;
+  // 2026-07-27 实测:并发 10 → 20 **无效**,同一周 W30 耗时 156s vs 154s。
+  // 瓶颈在禅道服务端对同账号请求的排队,不在客户端并发度,别再试着调大它。
+  // (同日另一条否决记录:按 execution 元数据预过滤同样不可行 —— exec 2028
+  // "voc日常迭代" end 停在 2024-08-31 却持续贡献当周 26% 的任务,
+  // 任何基于 end/status 的判据都会切掉真实数据。)
+  const SPRINT_CONC = parseInt(process.env.WEEKLY_SPRINT_CONC || '10', 10);
   const rawTasks = [];
   const allExecs = [];
   for (const pid of args.productIds) {
-    const projResp = await ztFetch(`/products/${pid}/projects`);
-    if (!projResp.ok) {
-      trace(`WARN /products/${pid}/projects failed: ${projResp.reason}`);
-      STATE.skipped.push({ path: `/products/*/projects`, reason: projResp.reason });
-      continue;
-    }
-    const projects = projResp.body.projects || [];
+    // 2026-07-27:改走 ztPaginate。原先是裸 ztFetch 不带 limit,而禅道 v1
+    // 不带 limit 时默认只回 20 条且不报错、不提示截断
+    // ([[project-zentao-pagination-pitfalls]])。实测 product 95 下 3 个 VOC
+    // 主项目各有 30/29/26 个 execution,因此长期静默丢掉 25 个(112 → 87)。
+    // 当时没出事只是因为禅道默认 id 倒序,被截掉的恰好都是历史迭代 ——
+    // 排序方向一变丢的就是当周迭代。分页失败由 ztPaginate 记进 STATE.skipped,
+    // 下游 assertDataComplete 会断路。
+    const projects = await ztPaginate(`/products/${pid}/projects`, 'projects');
     trace(`product=${pid} projects=${projects.length}`);
 
     const execResults = await Promise.all(
-      projects.map(async (proj) => {
-        const r = await ztFetch(`/projects/${proj.id}/executions`);
-        return {
-          projId: proj.id,
-          ok: r.ok,
-          execs: r.ok ? (r.body.executions || []) : [],
-          reason: r.ok ? null : r.reason,
-        };
-      }),
+      projects.map(async (proj) => ({
+        projId: proj.id,
+        execs: await ztPaginate(`/projects/${proj.id}/executions`, 'executions'),
+      })),
     );
     for (const er of execResults) {
-      if (!er.ok) {
-        trace(`WARN /projects/${er.projId}/executions failed: ${er.reason}`);
-        STATE.skipped.push({ path: '/projects/*/executions', reason: er.reason });
-        continue;
-      }
       for (const ex of er.execs) allExecs.push(ex);
     }
   }
