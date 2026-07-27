@@ -124,11 +124,27 @@ function runChecks(doc, transcript, selected) {
   }
   if (!doc.title) add('C1', '缺少 H1 标题');
 
-  // C2 时间戳格式合法且 ≤ 视频总时长
+  // C2 时间戳格式合法且 ≤ 视频总时长上界
+  // fix round(端到端验收缺陷2):duration_sec 来自 YouTube Data API 的
+  // contentDetails.duration,segments 来自实际下载的字幕轴 —— 两个来源可能不一致
+  // (实测 transcript-real.json:duration_sec=2480,但最后一段 start=2928,76 段里
+  // 12 段(16%)超出 duration_sec;这份转录本身是真的,错的是 duration_sec 那个值)。
+  // C2 的目的是拦荒谬的、编造的时间戳(如 [99:99]),不是拦真实字幕里存在的时间点,
+  // 因此上界改取 duration_sec 与 segments 实际最大 start 中较大者,再加
+  // SEGMENT_TAIL_MARGIN_SEC 余量 —— 该值取自 fetch-transcript.js 里
+  // mergeSegments({maxSec:60}) 的 60s:最后一段自身的实际时长上限是 60s,
+  // 时间戳落在"最后一段 start + 60s"以内仍可能是该段内的真实内容,不应被当成编造。
+  const SEGMENT_TAIL_MARGIN_SEC = 60;
+  const maxSegStart = (transcript.segments && transcript.segments.length > 0)
+    ? Math.max(...transcript.segments.map((s) => s.start))
+    : 0;
+  const durationUpperBound = Math.max(transcript.duration_sec, maxSegStart) + SEGMENT_TAIL_MARGIN_SEC;
   for (const q of doc.quotes) {
     if (!Number.isFinite(q.sec)) { add('C2', `时间戳无法解析: ${q.label}`); continue; }
-    if (q.sec > transcript.duration_sec) {
-      add('C2', `时间戳 ${q.label}(${q.sec}s) 超过视频总时长 ${transcript.duration_sec}s`);
+    if (q.sec > durationUpperBound) {
+      add('C2', `时间戳 ${q.label}(${q.sec}s) 超过视频总时长上界 ${durationUpperBound}s`
+        + `(取 duration_sec=${transcript.duration_sec} 与字幕最后一段 start=${maxSegStart}`
+        + ` 中较大者 + ${SEGMENT_TAIL_MARGIN_SEC}s 余量)`);
     }
   }
 
@@ -165,6 +181,26 @@ function runChecks(doc, transcript, selected) {
     if (!hay.includes(needle)) add('C4', `金句在 transcript 中检索不到: "${q.en}"`);
   }
   if (doc.quotes.length === 0) add('C4', '未提供任何原声金句');
+
+  // C4 补充:金句部分损坏被静默丢弃(端到端验收缺陷1)
+  // qRe 只认 ASCII 直引号 "…",一条金句只要英文部分误用中文弯引号 "…" 就会从
+  // doc.quotes 里彻底消失且不留痕迹 —— 旧实现只在"全部"金句都坏掉(上面的
+  // doc.quotes.length===0)时才报错,5 条里坏 1 条这种部分丢失完全无感、exit 0 照常渲染。
+  // 这里在原始 quotes 段落文本里数"看起来像金句行"(以 "> [mm:ss]" 开头)的数量,
+  // 与实际解析出的条数比对 —— 不相等说明有金句行"看起来是金句但没解析出来",报违规,
+  // 且报错要点名最常见成因(弯引号),否则 AI 的 3 轮修复循环会往错误方向猜。
+  const quoteHeadRe = /^>\s*\[\d{1,3}:\d{2}(?::\d{2})?\]/;
+  const quoteLikeLines = (doc.sections.quotes || '').split('\n')
+    .filter((line) => quoteHeadRe.test(line.trim()));
+  if (quoteLikeLines.length !== doc.quotes.length) {
+    const suspects = quoteLikeLines.filter((line) => !/"[^"]+"/.test(line));
+    const hint = suspects.length > 0
+      ? `疑似原因:以下行未使用 ASCII 直引号 "…"(很可能误用了中文弯引号 “…”): `
+        + suspects.map((line) => line.trim()).join(' | ')
+      : '疑似原因:金句缺少下一行的 "> —— 中文译文",或格式与 `> [mm:ss] "english"` 不完全匹配。';
+    add('C4', `原声金句部分丢失:段落中有 ${quoteLikeLines.length} 行疑似金句(以 "> [mm:ss]" 开头),`
+      + `但只成功解析出 ${doc.quotes.length} 条。${hint}`);
+  }
 
   // C5 方法论 ≥3 步且无空步骤
   if (doc.steps.length < 3) add('C5', `方法论步骤仅 ${doc.steps.length} 个,要求 ≥3`);

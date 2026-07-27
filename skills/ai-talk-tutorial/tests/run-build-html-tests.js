@@ -265,3 +265,61 @@ test('T19: C4 独有拦截带 — 语序改写、词全在、时间戳真实,仅
   assert.ok(!v.some((x) => x.code === 'C3'), `语序改写不应触发 C3(token 重叠应放行): ${JSON.stringify(v)}`);
   assert.ok(v.some((x) => x.code === 'C4'), `语序改写应被 C4 精确子串匹配拦住: ${JSON.stringify(v)}`);
 });
+
+// ---- 端到端验收缺陷 1:金句部分损坏(中文弯引号)被静默丢弃,自检无感 -------------
+// tutorial-partial-broken-quote.md 写了 2 条金句,第 2 条把英文部分的 ASCII 直引号
+// 换成了中文弯引号 "…"。qRe 只认 ASCII "",这一条会从 doc.quotes 里彻底消失且不报错,
+// 只有当"全部"金句都坏掉(doc.quotes.length===0)才会触发旧的 C4「未提供任何原声金句」。
+// 本条验证:解析阶段能区分"这行看起来是金句但没解析出来"与"这里根本没有金句行",
+// 数量不一致时必须报违规,且报错要点名弯引号这个最常见成因(不能让 3 轮修复循环瞎猜)。
+
+test('T20: C4 — 部分金句因弯引号被静默丢弃时必须报违规(缺陷1)', () => {
+  const doc = B.parseTutorialMd(load('tutorial-partial-broken-quote.md'));
+  // 先确认这份夹具确实复现了"静默丢弃"这个现象本身(不是测试写错了)
+  assert.equal(doc.quotes.length, 1, '夹具应复现:弯引号那条解析失败,只剩 1 条金句');
+  const v = B.runChecks(doc, TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C4' && /弯引号/.test(x.message)),
+    `期望 C4 报出部分金句丢失且点名弯引号成因,实际: ${JSON.stringify(v)}`);
+});
+
+// ---- 端到端验收缺陷 2:C2 拿 duration_sec 当权威,与实际字幕时间轴不一致时误杀真金句 ----
+// transcript-real.json(未被任何既有测试引用的真实夹具,Task 3 遗留的 deferred Minor)原本
+// duration_sec=2480,但最后一段 start=2928(48:48),76 段里有 12 段(16%)超出 duration_sec ——
+// 这份转录本身是真的(结尾文本连贯,约 49 分钟的真实演讲),错的是 duration_sec 这个值
+// (来自 YouTube Data API 的 contentDetails.duration,与实际下载的字幕轴来源不同,可能不一致)。
+// 本轮修复已把夹具自身的 duration_sec 改成与字幕轴自洽的 2970(见 fixtures 变更说明),
+// 所以这里用同一份真实 segments/full_text,单独构造一个更小的 duration_sec(取验收实测
+// 发现的真实错值 2480)来复现"来源不一致"这个场景本身 —— 不依赖夹具自身再存一个错值。
+// 本条验证:落在最后一段真实时间点上的真金句不应被 C2 误杀。
+
+test('T21: C2 — duration_sec 与实际字幕轴不一致时,真实存在的金句不应被误杀(缺陷2,用 transcript-real.json)', () => {
+  const transcriptReal = JSON.parse(fs.readFileSync(FIXTURE('transcript-real.json'), 'utf-8'));
+  const selectedReal = JSON.parse(fs.readFileSync(FIXTURE('selected-real.json'), 'utf-8'));
+  assert.equal(transcriptReal.video_id, selectedReal.id, '夹具前提:video_id 与 selected.id 一致(排除 C7 干扰)');
+  const lastSeg = transcriptReal.segments[transcriptReal.segments.length - 1];
+
+  // 用真实 segments/full_text,叠加验收实测发现的真实错值 duration_sec=2480,
+  // 复现"YouTube Data API 的 duration_sec 与实际字幕轴不一致"这个场景本身
+  const transcriptWithStaleDuration = { ...transcriptReal, duration_sec: 2480 };
+  assert.ok(lastSeg.start > transcriptWithStaleDuration.duration_sec,
+    '夹具前提:最后一段 start 应超出模拟的 stale duration_sec(复现"来源不一致"这个现象本身)');
+
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  doc.quotes[0].sec = lastSeg.start;
+  doc.quotes[0].label = lastSeg.startLabel;
+  doc.quotes[0].en = "And then you're just going to tell yourself I'm going to learn my way there.";
+  const v = B.runChecks(doc, transcriptWithStaleDuration, selectedReal);
+  assert.ok(!v.some((x) => x.code === 'C2'),
+    `真实字幕轴上存在的金句不应被 C2 误杀: ${JSON.stringify(v)}`);
+});
+
+test('T22: C2 — 放宽上界后,真正编造的时间戳(远超字幕轴与 duration_sec)依然被拦(用 transcript-real.json)', () => {
+  const transcriptReal = JSON.parse(fs.readFileSync(FIXTURE('transcript-real.json'), 'utf-8'));
+  const selectedReal = JSON.parse(fs.readFileSync(FIXTURE('selected-real.json'), 'utf-8'));
+
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  doc.quotes[0].sec = 99999;
+  doc.quotes[0].label = '1666:39';
+  const v = B.runChecks(doc, transcriptReal, selectedReal);
+  assert.ok(v.some((x) => x.code === 'C2'), `明显编造的时间戳应仍被 C2 拦住: ${JSON.stringify(v)}`);
+});
