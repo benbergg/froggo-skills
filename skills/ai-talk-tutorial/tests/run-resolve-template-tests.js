@@ -20,6 +20,9 @@ test('T1: stdin OK → exit 0 + stdout=template_id + 写缓存', () => {
     );
     assert.equal(cache.template_id, 'tpl_ai_talk_placeholder');
     assert.equal(cache.default_received_convs[0].conversation_id, 'cidPLACEHOLDER==');
+    // 覆盖 brief 强制改动的 EXPECTED_FIELDS(此前 T1-T5 从不看 stderr,
+    // 回退成 exp-compass 的四个锚点也照样全绿 —— 这行让"字段改没改对"真正有测试网)
+    assert.match(r.stderr, /fields ok: AI 演讲教程/);
   } finally {
     r.cleanup();
   }

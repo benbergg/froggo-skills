@@ -20,14 +20,29 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 
 | 变量 | 必填 | 说明 |
 |---|---|---|
-| `YOUTUBE_API_KEY` | ✅ | YouTube Data API v3 key,Step 1 发现层用 |
+| `YOUTUBE_API_KEY` | ✅ | YouTube Data API v3 key,Step 1 发现层用;缺失时 `discover.js` exit 1 |
 | `DINGTALK_APPKEY` / `DINGTALK_APPSECRET` / `DINGTALK_USERID` | ✅ | 钉钉推送(全局共享) |
 | `AI_TALK_COOKIES_PATH` | ☐ | YouTube cookie 文件,默认 `/home/ubuntu/.openclaw/workspace/astraeus/video素材/youtube-cookies.txt` |
 | `AI_TALK_TEMPLATE_NAME` | ☐ | 钉钉模板名,**默认 `AI 演讲教程`**(固化在 skill) |
 | `AI_TALK_DATE` | ☐ | 目标日期覆盖 `YYYY-MM-DD`,补跑历史日用 |
 | `AI_TALK_ARCHIVE_DIR` | ☐ | 归档根目录,默认 `$HOME/workspace/Knowledge-Library/08-Research/AI-Talks` |
-| `SEND_DINGTALK` | ☐ | `1/true/yes/on` 才真发;其余走 `--dry-run`。**仅 gate Step 6,不跳过 Step 1-5** |
-| `YT_DLP_PATH` | ☐ | yt-dlp 路径,默认 `yt-dlp` |
+| `SEND_DINGTALK` | ☐ | `1/true/yes/on` 才真发;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
+| `YT_DLP_PATH` | ☐ | yt-dlp 二进制路径。未设时 `fetch-transcript.js` 依次探测 `/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/bin/yt-dlp`、`/usr/local/bin/yt-dlp`、`/opt/homebrew/bin/yt-dlp`,都不存在才回落到 PATH 里的 `yt-dlp` |
+
+## 插件根目录解析
+
+`CLAUDE_PLUGIN_ROOT` 只有 Claude Code 会注入,**openclaw exec 环境里它是空的**——`node ${CLAUDE_PLUGIN_ROOT}/...` 会展开成 `node /skills/...` 直接 `MODULE_NOT_FOUND`。本 skill 的 cookie 默认路径就是 `/home/ubuntu/.openclaw/...`,说明目标部署环境正是 openclaw exec,不能假设 `CLAUDE_PLUGIN_ROOT` 存在。
+
+**每个 exec 都是独立 shell,变量不跨 exec**——下面每个代码块开头都重复这两行,不要因为"上一步刚定义过"就省略:
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+```
+
+后续脚本调用一律用 `$PLUGIN_ROOT`,**不要**直接写 `${CLAUDE_PLUGIN_ROOT}`。
 
 ## 执行流程
 
@@ -37,35 +52,62 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 ### Step 0 · 解析钉钉模板
 
 ```bash
-export DATE="${AI_TALK_DATE:-$(date +%F)}"
-export WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 mkdir -p "$WORK"
 
-node ${CLAUDE_PLUGIN_ROOT}/skills/ai-talk-tutorial/references/scripts/resolve-template.js \
-  --template-name "${AI_TALK_TEMPLATE_NAME:-AI 演讲教程}" > "$WORK/template_id.txt"
+TPL_ID=$(node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/resolve-template.js" \
+  --template-name "${AI_TALK_TEMPLATE_NAME:-AI 演讲教程}")
+RC=$?
+if [ $RC -ne 0 ] || [ -z "$TPL_ID" ]; then
+  echo "FATAL: resolve-template.js exit $RC,模板解析失败,中止全流程" >&2
+  exit $RC
+fi
+printf '%s' "$TPL_ID" > "$WORK/template_id.tmp" && mv "$WORK/template_id.tmp" "$WORK/template_id.txt"
 ```
+
+用命令替换(`$(...)`)取 `TPL_ID` 而不是 `node ... > "$WORK/template_id.txt"` 直接重定向 —— shell 对 `>` 是**先创建/截断目标文件,再执行命令**,无论脚本退出码是什么,文件都会存在(失败时是空文件),会把下游"文件存在即可跑"的物理断路判断骗过去。`template_id.txt` 只在**确认成功**(exit 0 且 `TPL_ID` 非空)后原子落盘(先写 `.tmp` 再 `mv`)。**下游任何 exec,只要发现 `$WORK/template_id.txt` 不存在或为空,一律视为 Step 0 未成功,不得继续**,这是物理断路,不是提示词约束。
 
 exit≠0 则**中止全流程**。
 
 ### Step 1 · 发现候选
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/skills/ai-talk-tutorial/references/scripts/discover.js \
-  --out "$WORK" --today "$DATE"
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+
+[ -s "$WORK/template_id.txt" ] || { echo "FATAL: Step 0 未成功(缺 $WORK/template_id.txt),中止" >&2; exit 1; }
+
+node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/discover.js" \
+  --out "$WORK" --today "$DATE" \
+  --state "$HOME/.cache/ai-talk-tutorial/state/processed.json"
 ```
 
+`--state` 显式传(默认值恰好等于 `<out>/../state/processed.json` = 同一路径,显式传是为了不让这条依赖藏在两个脚本的默认值巧合里 —— 改了 `$WORK` 定义就会静默失去去重能力)。
+
 - exit 0 → 继续 Step 2
-- **exit 4(零候选)→ 跳到 Step 6 推「今日无内容」,正常结束**,不是失败
-- exit 2 → 中止并告警
+- exit 1(缺 `YOUTUBE_API_KEY` 或参数错)→ 中止,提示补齐 env 后重跑
+- exit 2(YouTube API 全部调用失败)→ 中止并告警
+- **exit 4(零候选)→ 不是失败,正常结束**:在同一个 exec 里 `export MSG="今日 AI 演讲教程:YouTube 白名单频道内未发现满足条件的新演讲,跳过本次生成。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
 
 ### Step 2 · 取字幕
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/skills/ai-talk-tutorial/references/scripts/fetch-transcript.js \
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+
+node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.js" \
   --candidates "$WORK/candidates.json" --out "$WORK"
 ```
 
-exit 6(全部候选取不到字幕)→ **中止 + 钉钉告警**,不产出半成品。
+- exit 0 → 继续 Step 3
+- **exit 6(全部候选取不到字幕)→ 中止,不产出半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:所有候选视频取字幕均失败(fetch-transcript.js exit 6),已中止,请人工核查候选与 cookie/yt-dlp 状态。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
 
 ### Step 3 · AI 撰写(本步在对话内完成,无脚本)
 
@@ -121,11 +163,19 @@ exit 6(全部候选取不到字幕)→ **中止 + 钉钉告警**,不产出半成
 4. 方法论**至少 3 步**,每步须有标题和正文。
 5. 正文必须**完全独立可读** —— 禁止「详见视频 12:30」这类把内容外包给视频的写法(国内无代理时 iframe 与跳转链均不可用)。
 6. 正文段落用中文;需要保留英文术语时嵌在中文句内,**不得**整段英文。
+7. **金句的英文部分必须用 ASCII 直引号 `"..."`,不得用中文/弯引号 `“…”`**。`build-html.js` 的金句正则
+   `/^>\s*\[...\]\s*"([^"]+)"\s*\n>\s*——\s*(.+)$/gm` 只认 ASCII `"`,用弯引号会导致整段解析不到任何金句,
+   报成 C4「未提供任何原声金句」——报错信息和真实原因(引号字符)完全对不上,自检修复很容易被带偏方向。
 
 ### Step 4 · 自检与渲染
 
 ```bash
-node ${CLAUDE_PLUGIN_ROOT}/skills/ai-talk-tutorial/references/scripts/build-html.js \
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+
+node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/build-html.js" \
   --md "$WORK/tutorial.md" \
   --transcript "$WORK/transcript.json" \
   --selected "$WORK/selected.json" \
@@ -134,11 +184,18 @@ node ${CLAUDE_PLUGIN_ROOT}/skills/ai-talk-tutorial/references/scripts/build-html
 
 - exit 0 → 继续 Step 5
 - **exit 5 → 读 stderr 的 `[Cx] 说明` 逐条修 `tutorial.md`,重跑本步。最多 3 轮**
-- 3 轮仍不过 → 中止 + 钉钉发失败告警,**不推送半成品**
+- **3 轮仍不过 → 中止,不推送半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:tutorial.md 自检 3 轮仍未通过 C1-C8(build-html.js exit 5),已中止,不推送半成品,请人工核查 $WORK/tutorial.md 与上一次 stderr 报错。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
 
 ### Step 5 · 归档知识库
 
+**单 exec 原子执行**(Knowledge-Library 有每小时自动 commit,拆成多个 exec 必撞车;`ARCHIVE`/`YEAR`/`SLUG` 也是 shell 局部变量,不跨 exec,归档 + 记录去重状态 + git 提交必须在同一个代码块里首尾相连跑完):
+
 ```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+
 ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/workspace/Knowledge-Library/08-Research/AI-Talks}"
 YEAR="${DATE%%-*}"
 SLUG=$(node -e "
@@ -150,10 +207,10 @@ mkdir -p "$ARCHIVE/$YEAR"
 cp "$WORK/tutorial.html" "$ARCHIVE/$YEAR/$DATE-$SLUG.html"
 cp "$WORK/tutorial.md"   "$ARCHIVE/$YEAR/$DATE-$SLUG.md"
 
-node ${CLAUDE_PLUGIN_ROOT}/skills/ai-talk-tutorial/references/scripts/build-index.js --dir "$ARCHIVE"
+node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/build-index.js" --dir "$ARCHIVE"
 
 # 记录已处理,避免明日重复选中
-node - <<'JS'
+WORK="$WORK" node - <<'JS'
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
 const work = process.env.WORK;
 const state = path.join(os.homedir(), '.cache', 'ai-talk-tutorial', 'state', 'processed.json');
@@ -165,22 +222,71 @@ const vid = JSON.parse(fs.readFileSync(path.join(work, 'selected.json'), 'utf-8'
 if (!seen.includes(vid)) seen.push(vid);
 fs.writeFileSync(state, JSON.stringify({ processed: seen.slice(-500) }, null, 2) + '\n');
 JS
-```
 
-git 提交(**单 exec 原子执行**,Knowledge-Library 有每小时自动 commit,必撞车):
-
-```bash
-cd "$(dirname "$ARCHIVE")/.." && \
+# AI_TALK_ARCHIVE_DIR 可覆盖,归档目录不一定是仓库根往下正好两级 —— 用 git rev-parse
+# 动态定位仓库根与相对路径,不硬编码 "08-Research/AI-Talks" 这层深度
+REPO=$(cd "$ARCHIVE" && git rev-parse --show-toplevel)
+REL=${ARCHIVE#"$REPO"/}
+cd "$REPO" && \
 git pull --rebase --autostash origin master && \
-git add "08-Research/AI-Talks/$YEAR/$DATE-$SLUG.html" "08-Research/AI-Talks/$YEAR/$DATE-$SLUG.md" "08-Research/AI-Talks/index.html" && \
+git add "$REL/$YEAR/$DATE-$SLUG.html" "$REL/$YEAR/$DATE-$SLUG.md" "$REL/index.html" && \
 git commit -m "docs: AI 演讲教程 $DATE" && \
 (git push origin master || (git pull --rebase --autostash origin master && git push origin master))
 ```
 
-### Step 6 · 推送钉钉摘要
+### Step 6 · 推送钉钉摘要(正常完成路径)
+
+**构造摘要正文**(标题 + 频道 + 时长 + TL;DR + 归档路径):
 
 ```bash
-TPL_ID=$(cat "$WORK/template_id.txt")
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/workspace/Knowledge-Library/08-Research/AI-Talks}"
+YEAR="${DATE%%-*}"
+SLUG=$(node -e "
+const s = require('$WORK/selected.json');
+const t = s.title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+\$/g, '').slice(0, 60);
+process.stdout.write(t || s.id);
+")
+
+export MSG=$(node -e "
+const fs = require('node:fs'), path = require('node:path');
+const sel = JSON.parse(fs.readFileSync(path.join('$WORK', 'selected.json'), 'utf-8'));
+const md = fs.readFileSync(path.join('$WORK', 'tutorial.md'), 'utf-8');
+const title = md.match(/^#\s+(.+)\$/m)[1].trim();
+const block = md.match(/##\s*一、\s*TL;DR\s*\n([\s\S]*?)(?=\n##\s)/)[1];
+const tldr = block.trim().split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
+const archivePath = '$ARCHIVE/$YEAR/$DATE-$SLUG.html';
+process.stdout.write(
+  '**' + title + '**\n\n'
+  + '🎙 ' + sel.channelTitle + ' · ' + Math.round(sel.durationSec / 60) + ' 分钟\n\n'
+  + tldr + '\n\n'
+  + '🔗 [原视频](' + sel.url + ')\n'
+  + '📄 归档:' + archivePath
+);
+")
+```
+
+**紧接着在同一个 exec 里**,首尾相连贴上并执行下面「简讯推送(共用块)」的完整代码(依赖上面刚 `export` 的 `$MSG`)。
+
+#### 简讯推送(共用块)
+
+**exit 4 / exit 6 / 自检 3 轮失败 / Step 6 正常完成 四处共用**,自包含(自己解析 `PLUGIN_ROOT`/`DATE`/`WORK`,不依赖前面 exec 留下的 shell 变量,只吃调用方在同一个 exec 里已经 `export` 好的 `$MSG`):
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
+DATE="${AI_TALK_DATE:-$(date +%F)}"
+WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
+
+TPL_ID=$(cat "$WORK/template_id.txt" 2>/dev/null)
+if [ -z "$TPL_ID" ]; then
+  echo "FATAL: $WORK/template_id.txt 缺失或为空,Step 0 未成功,无法推送" >&2
+  exit 1
+fi
+
 TO_CIDS=$(node -e "
 const fs = require('node:fs'), os = require('node:os'), path = require('node:path');
 const p = path.join(os.homedir(), '.cache', 'ai-talk-tutorial', 'template.json');
@@ -188,32 +294,19 @@ const convs = JSON.parse(fs.readFileSync(p, 'utf-8')).default_received_convs || 
 process.stdout.write(JSON.stringify(convs.map((c) => c.conversation_id)));
 ")
 
-# 摘要正文:标题 + 频道 + 时长 + TL;DR + 归档路径
-CONTENTS_JSON=$(node - <<'JS'
-const fs = require('node:fs'), path = require('node:path');
-const work = process.env.WORK;
-const sel = JSON.parse(fs.readFileSync(path.join(work, 'selected.json'), 'utf-8'));
-const md = fs.readFileSync(path.join(work, 'tutorial.md'), 'utf-8');
-const title = md.match(/^#\s+(.+)$/m)[1].trim();
-const block = md.match(/##\s*一、\s*TL;DR\s*\n([\s\S]*?)(?=\n##\s)/)[1];
-const tldr = block.trim().split('\n').map((l) => l.trim()).filter(Boolean).join('\n');
-const body = `**${title}**\n\n`
-  + `🎙 ${sel.channelTitle} · ${Math.round(sel.durationSec / 60)} 分钟\n\n`
-  + `${tldr}\n\n`
-  + `🔗 [原视频](${sel.url})`;
+CONTENTS_JSON=$(node -e "
 process.stdout.write(JSON.stringify([{
   key: 'AI 演讲教程', sort: '0', type: '1',
-  content_type: 'markdown', content: body,
+  content_type: 'markdown', content: process.env.MSG,
 }]));
-JS
-)
+")
 
 case "${SEND_DINGTALK:-0}" in
   1|true|TRUE|yes|on) SEND_FLAG="" ;;
   *) SEND_FLAG="--dry-run" ;;
 esac
 
-node ${CLAUDE_PLUGIN_ROOT}/skills/dingtalk-log/scripts/dingtalk-log.js create-report \
+node "$PLUGIN_ROOT/skills/dingtalk-log/scripts/dingtalk-log.js" create-report \
   --template-id "$TPL_ID" \
   --userid "$DINGTALK_USERID" \
   --contents "$CONTENTS_JSON" \
