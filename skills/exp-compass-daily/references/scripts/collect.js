@@ -103,15 +103,35 @@ function ztCacheDir() {
   return path.join(process.env.HOME, '.cache', 'zentao');
 }
 
-function readTokenFile() {
+function readTokenMeta() {
   const p = path.join(ztCacheDir(), 'token.json');
   if (!fs.existsSync(p)) return null;
   try {
-    const j = JSON.parse(fs.readFileSync(p, 'utf-8'));
-    return j.token || null;
+    return JSON.parse(fs.readFileSync(p, 'utf-8'));
   } catch (_) {
     return null;
   }
+}
+
+function readTokenFile() {
+  const j = readTokenMeta();
+  return (j && j.token) || null;
+}
+
+// token 前置刷新阈值。cron 每 24h 才跑一次,缓存里的 token 到点必然已失效,
+// 于是 phase1 的 6 路并发会**整批** 401(2026-07-28 实证)。与其撞上去再收拾,
+// 不如启动时就换掉:一次 ~1-2s 的登录,换掉一场把 phase1 从 10s 拖到 31.6s
+// 的风暴。阈值只需"显著小于 cron 间隔",不必逼近禅道真实存活期。
+const TOKEN_MAX_AGE_MIN = parseInt(process.env.EXP_COMPASS_TOKEN_MAX_AGE_MIN || '120', 10);
+
+function tokenNeedsProactiveRefresh(meta, nowMs, maxAgeMinutes) {
+  if (!meta || !meta.token) return true;
+  const t = Date.parse(meta.acquired_at || '');
+  // 缺字段/不可解析一律当过期:多刷一次的代价是 1-2s,判错的代价是 401 风暴。
+  if (Number.isNaN(t)) return true;
+  const ageMin = (nowMs - t) / 60000;
+  // 时钟漂移导致 acquired_at 在未来时 ageMin 为负,不当成过期。
+  return ageMin >= maxAgeMinutes;
 }
 
 function refreshTokenViaBash() {
@@ -126,9 +146,18 @@ function refreshTokenViaBash() {
   // 当天日报 active/resolved bug 全部静默丢失(B57142 事件)。
   let lastErr = '';
   for (let i = 0; i < 3; i++) {
+    // 每次登录各记一条:spawnSync 同步阻塞事件循环,它的耗时会摊到**所有**
+    // 并发中请求的观测耗时上。不显式记账的话,分析表上只会看到一批端点
+    // 集体变慢,根本指不到 token 刷新头上(2026-07-28 就是靠人肉比对时间线
+    // 才发现的)。source 单列一行,单飞一旦回归,这里的次数立刻变成 6。
+    const tk = obs.requestStart();
     const r = spawnSync('bash', ['-c', `source "${zentaoFn}" && zt_init && zt_acquire_token >/dev/null`], {
       stdio: ['ignore', 'pipe', 'pipe'],
       timeout: 30_000,
+    });
+    obs.requestEnd(tk, {
+      path: '(token refresh)', source: 'token-refresh', attempt: i + 1, ok: r.status === 0,
+      status: r.status === 0 ? 200 : 0, reason: r.status === 0 ? undefined : 'refresh-failed',
     });
     if (r.status === 0) return;
     lastErr = (r.stderr || '').toString().slice(0, 200);
@@ -136,6 +165,19 @@ function refreshTokenViaBash() {
   }
   throw new Error(`zt_acquire_token failed after 3 attempts: ${lastErr}`);
 }
+
+// token 刷新的**单飞**闸门。`gen` 是刷新代次:请求发起前抄一份,401 时只有
+// "抄到的代次 == 当前代次"的那一条才真正去刷新,其余直接用新 token 重试。
+//
+// 为什么必须有:refreshTokenViaBash 用 spawnSync,同步阻塞整个事件循环。
+// 一批并发请求各刷各的,就是 N 次串行登录,期间所有 in-flight 响应都处理不了
+// 而服务端计时照走(2026-07-28 实证:6 条并发全 401,phase1 10s→31.6s)。
+// refresh/read 做成字段是为了让测试能替换 —— spawnSync 无法在单测里跑。
+const TOKEN = {
+  gen: 0,
+  refresh: refreshTokenViaBash,
+  read: readTokenFile,
+};
 
 // ---- HTTP layer ---------------------------------------------------------
 
@@ -204,6 +246,9 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
       });
       return result;
     };
+    // 刷新代次快照必须在 fetch **之前**取:401 回来时 TOKEN.gen 可能已被
+    // 同批的其他请求推进,两者不等即说明 token 已经被别人换过了。
+    const genAtRequest = TOKEN.gen;
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -215,10 +260,15 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
       if (res.status === 401 && allowRefresh) {
         obs.requestEnd(tk, { path: pathAndQuery, source, phase, ctx, attempt: attempt + 1, ok: false, status: 401 });
         try {
-          refreshTokenViaBash();
-          const fresh = readTokenFile();
-          if (!fresh) throw new Error('token cache empty after refresh');
-          STATE.token = fresh;
+          if (TOKEN.gen === genAtRequest) {
+            // 本批里第一个发现 token 失效的,由它承担这次 spawnSync 登录。
+            TOKEN.refresh();
+            const fresh = TOKEN.read();
+            if (!fresh) throw new Error('token cache empty after refresh');
+            STATE.token = fresh;
+            TOKEN.gen++;
+          }
+          // else:别人已经刷过了,直接拿现成的新 token 重试,不再登录一次。
           // 保持 timeoutMs:慢端点 401 重取后若退回默认 25s,会把常态 59s 的
           // 响应误判成故障。
           return ztFetch(pathAndQuery, { allowRefresh: false, timeoutMs, source, phase, ctx });
@@ -1275,7 +1325,7 @@ async function main() {
   // 判定 loose task 的 execution 归属、取产品名、反查 story 关联的 exec)。
   // 不标记的话贡献度分析会把它们判成"返回的数据一条都没进报告"的浪费,
   // 诱导人去砍掉必需的查表 —— 指标误导比没有指标更危险。
-  for (const s of ['/users', '/products/*', '/projects/*/executions', '/stories/*']) {
+  for (const s of ['/users', '/products/*', '/projects/*/executions', '/stories/*', 'token-refresh']) {
     obs.markRole(s, 'lookup');
   }
   STATE.baseUrl = requireEnv('ZENTAO_BASE_URL');
@@ -1283,13 +1333,20 @@ async function main() {
   requireEnv('ZENTAO_PASSWORD');
   trace('env validated');
 
-  let token = readTokenFile();
-  trace(`readTokenFile: ${token ? 'cached' : 'absent'}`);
-  if (!token) {
-    trace('refreshTokenViaBash start');
-    refreshTokenViaBash();
+  // 前置刷新:token 过旧就在这里换掉,别让 phase1 的 6 路并发整批撞 401。
+  // 撞上去的代价不是"多一次登录",而是 6 次 spawnSync 串行阻塞事件循环
+  // (2026-07-28 实证 phase1 10s→31.6s);单飞已把它压到 1 次,前置刷新
+  // 进一步让它一次都不发生。
+  const tokenMeta = readTokenMeta();
+  const stale = tokenNeedsProactiveRefresh(tokenMeta, Date.now(), TOKEN_MAX_AGE_MIN);
+  trace(`token cache: ${tokenMeta && tokenMeta.token ? `acquired_at=${tokenMeta.acquired_at || 'n/a'}` : 'absent'} stale=${stale}`);
+  let token = tokenMeta && tokenMeta.token;
+  if (stale) {
+    trace('refreshTokenViaBash start (proactive)');
+    TOKEN.refresh();
+    TOKEN.gen++;
     trace('refreshTokenViaBash done');
-    token = readTokenFile();
+    token = TOKEN.read();
     if (!token) {
       console.error('FATAL: failed to acquire token via zentao-api bridge');
       process.exit(1);
@@ -1588,6 +1645,8 @@ if (require.main === module) {
     fetchExecutionTasksScoped, STATE,
     // HTTP 层(tests/run-ztfetch-timeout-tests.js):超时可配 + 超时不重试
     ztFetch, REQ_TIMEOUT_MS, SLOW_REQ_TIMEOUT_MS,
+    // token 单飞 + 前置刷新(tests/run-token-refresh-tests.js)
+    TOKEN, tokenNeedsProactiveRefresh, TOKEN_MAX_AGE_MIN, readTokenMeta,
     // 今日完成需求/Bug(tests/run-closed-today-tests.js):失败重试 + 失败必须可见
     fetchClosedTodayStories, fetchTodayClosedBugs, fetchBugsInScope,
     // phase2 循环(tests/run-phase2-race-tests.js):并发/自适应超时/重试轮

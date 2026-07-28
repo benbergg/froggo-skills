@@ -43,6 +43,7 @@ description: "体验罗盘-每日研发进度播报。从禅道采集单产品(�
 | `EXP_COMPASS_REQ_TIMEOUT_MS` | ☐ | 单请求超时,默认 `60000`。慢窗下 `/products/*/stories?status=closedstory` 实测撞 25s |
 | `EXP_COMPASS_SLOW_REQ_TIMEOUT_MS` | ☐ | 慢端点(`/executions/*/tasks`)单请求超时,默认 `90000`。该端点实测 11.5-59.3s/次,与任务数无关 |
 | `EXP_COMPASS_EXEC_TIMEOUT_MS` | ☐ | 单 execution 墙钟上限(自适应超时的**上限**),默认 `240000` |
+| `EXP_COMPASS_TOKEN_MAX_AGE_MIN` | ☐ | token 前置刷新阈值(分钟),默认 `120`。cron 每 24h 跑一次,缓存 token 到点必已失效,phase1 的 6 路并发会整批 401;启动时先换掉,让风暴不发生。**不要调到接近 24h**,否则前置刷新等于没有 |
 | `EXP_COMPASS_OBS` | ☐ | 采集可观测性开关,默认开;设 `0` 关闭全部日志 |
 | `EXP_COMPASS_LOG_DIR` | ☐ | 日志目录,默认 `~/.cache/exp-compass-daily/logs/` |
 | `EXP_COMPASS_LOG_RETAIN_DAYS` | ☐ | 请求明细保留天数,默认 `14` |
