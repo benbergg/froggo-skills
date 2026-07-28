@@ -430,6 +430,9 @@ MD=~/Knowledge-Library/05-Reports/daily/$DATE.md
 |---|---|
 | `collect.js` 退出非 0 | 中止主流程,echo stderr,提示检查 zentao 凭据。**严禁用任何残留 JSON 继续**(exit 2 时正式路径已被脚本删除,partial 数据只在 `*.json.partial`,仅供诊断) |
 | `collect.js` exit 2(source skipped) | 数据不完整,JSON 落 `/tmp/exp-compass-{DATE}.json.partial`,正式路径不存在 → Step 2+ 物理上无法继续。中止并在 announce 报失败。**注意:脚本内部已对失败的 execution 用剩余预算自动串行重试过一轮**,走到 exit 2 意味着同一个源连续两次都没取到,不要在对话里再手动重跑 collect.js(2026-07-27 起) |
+| `collect.js` exit 2 且 reason=`closed-scan-window-exhausted` | 「今日关闭」单页扫了 100 条仍未跨过目标日 —— 当天关闭量超出单页窗口,第 101 条起的数据取不到。**不是故障是容量问题**:需要把该查询改成翻页,不要靠重跑绕过(重跑结果一样) |
+| `collect.js` exit 2 且 reason=`max-pages-truncated` | 某个分页端点 total 超出 20 页上限(2000 条),已截断。同样是容量问题,需调 `MAX_PAGES` 或收窄查询条件 |
+| `WARN: 采集监控启动失败` / `HEALTH 采集监控不可用` | 日志目录写不了(磁盘满/权限变更/目录被删)。采集本身不受影响,但这次运行没有任何监控数据,归因分析会缺这一天。先修目录再说 |
 | `collect.js` exit 5(phase1 超预算) | 禅道服务端抖动(phase1 > 硬超时 30%,常态 ~35s),提前止损未进 phase2。中止,建议错峰重跑 |
 | Token 401 自动刷新失败 | `collect.js` 已退出,提示用户在终端跑 `zt_init && zt_acquire_token` |
 | `summary` 字段缺失 | JSON 损坏,中止 Step 2,echo `cat /tmp/exp-compass-{DATE}.json \| jq .` |

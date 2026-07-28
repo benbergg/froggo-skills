@@ -166,8 +166,13 @@ function startRun(meta = {}) {
     STATE.roleBySource = new Map();
     STATE.finished = false;
     pruneOldRequestLogs(dir, date);
-  } catch (_) {
+  } catch (e) {
     STATE.enabled = false; // 日志系统起不来就彻底关掉,绝不拖累采集
+    // 但**关掉不等于可以不说**(2026-07-28 白盒审计)。磁盘满、权限变更、
+    // 目录被删都会走到这里,之后每次运行都没有 requests 日志、没有 runs
+    // 摘要、没有 HEALTH 行 —— 而这几样恰恰是发现问题的唯一手段。
+    // 静默失效比没有监控更危险:我们会以为一切正常,实际上是瞎的。
+    console.error(`WARN: 采集监控启动失败,本次运行不产生任何日志: ${e.message}`);
   }
 }
 
@@ -336,7 +341,11 @@ function finishRun(summary = {}) {
     appendLine(STATE.runsFile, record);
     pruneRuns(STATE.runsFile);
     return record;
-  } catch (_) {
+  } catch (e) {
+    // run 摘要是排查时最先看的东西(exit 5 那次完全不留痕就是吃了这个亏),
+    // 写不进去必须出声,否则这次运行会从历史里凭空消失,而基线对比还会
+    // 把缺失当成"没跑过"。
+    console.error(`WARN: run 摘要写入失败,本次运行不会进入历史基线: ${e.message}`);
     return null;
   }
 }

@@ -375,7 +375,21 @@ async function ztPaginate(basePath, listKey) {
 
   if (total !== null) {
     if (out.length >= total) return out;
-    const numPages = Math.min(Math.ceil(total / limit), MAX_PAGES);
+    const totalPages = Math.ceil(total / limit);
+    const numPages = Math.min(totalPages, MAX_PAGES);
+    // 2026-07-28 白盒审计:安全阀撞上时原本直接 return,不留任何痕迹。
+    // 当前调用点 total 都是个位到百位数(unclosed bugs 6 / stories 96 /
+    // executions 91),离 2000 极远;但安全阀本就是为"没预料到的增长"设的,
+    // 真撞上的那天正是最需要知道的时刻,而那天恰恰什么都不会说。
+    if (totalPages > MAX_PAGES) {
+      trace(`WARN: ${sanitizedPath} total=${total} 需 ${totalPages} 页,超出 ${MAX_PAGES} 页上限 (critical)`);
+      STATE.skipped.push({
+        path: sanitizedPath,
+        reason: 'max-pages-truncated',
+        total,
+        fetched: MAX_PAGES * limit,
+      });
+    }
     if (numPages <= 1) return out;
     const PAGE_CONCURRENCY = 4;
     const remaining = [];
@@ -453,9 +467,14 @@ async function loadUserMap() {
 //
 // Falls back to a full paginate + client filter on transport failure,
 // preserving correctness if the order parameter is ever rejected.
+// 单页扫描窗口大小。两个"今日关闭"查询共用:各取一页按 closedDate 倒序,
+// 靠"扫到更早的行"判定已覆盖当日全集。窗口耗尽的判据依赖这个值,
+// 所以必须与 URL 里的 limit 同源,不能两处各写一个 100。
+const CLOSED_SCAN_LIMIT = 100;
+
 async function fetchClosedTodayStories(productId, date, opts = {}) {
   const { fetchFn = ztFetch, attempts = 2, state = STATE } = opts;
-  const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=100&page=1`;
+  const url = `/products/${productId}/stories?status=closedstory&order=closedDate_desc&limit=${CLOSED_SCAN_LIMIT}&page=1`;
   // 2026-05-12: fallback to full paginate burns 200-400s pulling 540+ rows
   // to match 0-5 today-closed entries — net zero ROI when Zentao is slow.
   // 该结论只否定"全量分页 fallback",不否定重试同一条轻量查询。
@@ -482,12 +501,29 @@ async function fetchClosedTodayStories(productId, date, opts = {}) {
   }
   const items = r.body.stories || [];
   const out = [];
+  // 2026-07-28 白盒审计:这个循环靠"扫到比目标日更早的行"判定已覆盖全部
+  // 当日数据。若 100 条**全部**落在目标日或之后,循环自然走完,第 101 条起的
+  // 今日关闭需求就静默丢了 —— 与 401 静默自愈同构:能降级不等于可以不说。
+  // 实测余量(2026-07-28 product 95):第 100 条 closedDate=2026-04-15,
+  // 距目标日 104 天,当前极安全;但判据本身零成本,没有理由不设。
+  let reachedEnd = false;
   for (const s of items) {
     if (!s.closedDate) continue;
     const day = String(s.closedDate).slice(0, 10);
-    if (day < date) break;
+    if (day < date) { reachedEnd = true; break; }
     if (day === date) out.push(s);
     // day > date: clock skew or future-dated row — keep scanning, don't break
+  }
+  // rows < limit 说明服务端把符合条件的全给了,没被截断,不算耗尽。
+  if (!reachedEnd && items.length >= CLOSED_SCAN_LIMIT) {
+    trace(`closedToday stories: 扫完 ${items.length} 条仍未跨过 ${date},窗口可能不足 (critical)`);
+    state.skipped.push({
+      path: '/products/*/stories',
+      page: 1,
+      queryParam: 'status=closedstory&order=closedDate_desc',
+      reason: 'closed-scan-window-exhausted',
+      scanned: items.length,
+    });
   }
   return out;
 }
@@ -501,8 +537,8 @@ async function fetchClosedTodayStories(productId, date, opts = {}) {
 // Note on the Zentao bugs API: status=active|resolved|closed all return 0;
 // only status=all and status=unclosed (= active + resolved) are accepted.
 async function fetchTodayClosedBugs(productId, date, opts = {}) {
-  const { fetchFn = ztFetch, attempts = 2 } = opts;
-  const url = `/products/${productId}/bugs?status=all&order=closedDate_desc&limit=100&page=1`;
+  const { fetchFn = ztFetch, attempts = 2, state = STATE } = opts;
+  const url = `/products/${productId}/bugs?status=all&order=closedDate_desc&limit=${CLOSED_SCAN_LIMIT}&page=1`;
   // 2026-07-27:与 fetchClosedTodayStories 同样加一次重试(轻量单调用),
   // 失败仍返回 null,由 fetchBugsInScope 记 skipped 使其可见。
   let r = null;
@@ -514,14 +550,28 @@ async function fetchTodayClosedBugs(productId, date, opts = {}) {
   if (!r.ok) return null;
   const items = r.body.bugs || [];
   const out = [];
+  // 与 fetchClosedTodayStories 同一判据。这条的余量小得多:实测
+  // total=1381、第 100 条 closedDate=2026-06-30,距目标日 28 天 —— 某天
+  // 批量关闭历史 bug 就可能把窗口填满,而那正是最需要知道的时刻。
+  let reachedEnd = false;
   for (const b of items) {
     // Active + resolved bugs have closedDate=null and Zentao sorts them at
     // the tail under closedDate_desc; encountering one means we've passed
     // every closed row newer than `date`.
-    if (!b.closedDate) break;
+    if (!b.closedDate) { reachedEnd = true; break; }
     const day = String(b.closedDate).slice(0, 10);
-    if (day < date) break;
+    if (day < date) { reachedEnd = true; break; }
     if (day === date) out.push(b);
+  }
+  if (!reachedEnd && items.length >= CLOSED_SCAN_LIMIT) {
+    trace(`closedToday bugs: 扫完 ${items.length} 条仍未跨过 ${date},窗口可能不足 (critical)`);
+    state.skipped.push({
+      path: '/products/*/bugs',
+      page: 1,
+      queryParam: 'status=all&order=closedDate_desc',
+      reason: 'closed-scan-window-exhausted',
+      scanned: items.length,
+    });
   }
   return out;
 }
@@ -801,6 +851,11 @@ async function fetchAllExecutionTasks(allExecs, date, opts = {}) {
         failedExecIds.push(Number(id));
         continue;
       }
+      // 2026-07-28 白盒审计:整体 ok 说明三腿里存活的那些已经覆盖了数据,
+      // 失败腿留下的 page 级记录是可容忍的降级 —— 重试轮成功时就是这么处理的
+      // (见下方 dropExecSkips)。首轮原本不清,于是同样的数据完整度,首轮遇到
+      // 走 .partial 日报不发、重试轮遇到正常发,两条路径结论相反。
+      dropExecSkips(state, id);
       traceFn(`fetch execution=${id} tasks done (${result.items.length})`);
       rawTasks.push(...result.items);
     }
@@ -1611,6 +1666,11 @@ async function main() {
   if (runRecord) {
     const line = obs.healthLine(runRecord, obs.readRuns({ limit: 30 }).slice(0, -1));
     if (line) process.stdout.write(`HEALTH ${line}\n`);
+  } else {
+    // HEALTH 行缺席本身不会被任何人注意到 —— 它平时只是 announce 里的一行,
+    // 少了就是少了。监控失效时必须占住这个位置说明原因,否则"看不到告警"
+    // 会被读成"没有告警"(2026-07-28 白盒审计)。
+    process.stdout.write('HEALTH 采集监控不可用,本次运行无健康数据(详见上方 WARN)\n');
   }
 
   if (criticalSkipped.length > 0) {
@@ -1658,6 +1718,8 @@ if (require.main === module) {
     TOKEN, tokenNeedsProactiveRefresh, TOKEN_MAX_AGE_MIN, readTokenMeta,
     // 今日完成需求/Bug(tests/run-closed-today-tests.js):失败重试 + 失败必须可见
     fetchClosedTodayStories, fetchTodayClosedBugs, fetchBugsInScope,
+    // 静默截断防护(tests/run-silent-truncation-tests.js)
+    ztPaginate, CLOSED_SCAN_LIMIT,
     // phase2 循环(tests/run-phase2-race-tests.js):并发/自适应超时/重试轮
     fetchAllExecutionTasks, pickExecTimeoutMs, dropExecSkips,
     TASK_CONCURRENCY_DEFAULT,

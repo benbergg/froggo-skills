@@ -293,21 +293,63 @@ test('healthLine 生成 announce 用的一行摘要', () => {
 
 // ---- 鲁棒性(监控不能成为故障源) ----------------------------------------
 
-test('SAFETY: 日志目录不可写时静默降级,不抛异常', () => {
+test('SAFETY: 日志目录不可写时降级不抛异常,但**必须出声**', () => {
   // 用「已存在的普通文件」当目录 —— mkdirSync 必然 ENOTDIR/EEXIST,
   // 且 Linux/macOS 行为一致。(早先用 /proc/... 会把 node v24 的测试
   // 运行器挂住 60s,平台差异导致的假故障。)
+  //
+  // 2026-07-28 白盒审计:原实现 catch 里只写 STATE.enabled=false,一个字
+  // 都不说。磁盘满/权限变更/目录被删都走这条路,之后每次运行都没有请求
+  // 日志、没有 run 摘要、没有 HEALTH 行 —— 而这几样正是发现问题的唯一
+  // 手段。静默失效比没有监控更危险:会以为一切正常,其实已经瞎了。
   const blocker = path.join(tmpDir, 'not-a-dir');
   fs.writeFileSync(blocker, 'x');
   process.env.EXP_COMPASS_LOG_DIR = path.join(blocker, 'logs');
   delete require.cache[require.resolve('../references/scripts/lib/obs.js')];
   const obs = require('../references/scripts/lib/obs.js');
-  assert.doesNotThrow(() => {
-    obs.startRun({ date: '2026-07-28' });
-    const tk = obs.requestStart();
-    obs.requestEnd(tk, { path: '/users', ok: true, body: {} });
-    obs.finishRun({ exitCode: 0 });
-  }, '监控故障绝不能拖垮采集');
+
+  const warns = [];
+  const realErr = console.error;
+  console.error = (m) => warns.push(String(m));
+  try {
+    assert.doesNotThrow(() => {
+      obs.startRun({ date: '2026-07-28' });
+      const tk = obs.requestStart();
+      obs.requestEnd(tk, { path: '/users', ok: true, body: {} });
+      obs.finishRun({ exitCode: 0 });
+    }, '监控故障绝不能拖垮采集');
+  } finally {
+    console.error = realErr;
+  }
+
+  assert.ok(warns.length >= 1, '监控自我关闭必须打 WARN,否则我们会瞎着继续跑');
+  assert.match(warns[0], /监控/, 'WARN 要点明是监控失效,而不是含糊的报错');
+});
+
+test('SAFETY: run 摘要写不进去时必须出声(这次运行会从历史里消失)', () => {
+  process.env.EXP_COMPASS_LOG_DIR = tmpDir;
+  delete require.cache[require.resolve('../references/scripts/lib/obs.js')];
+  const obs = require('../references/scripts/lib/obs.js');
+  obs.startRun({ date: '2026-07-28' });
+
+  // 起来之后再把 runs.jsonl 变成不可写的目录:startRun 成功、finishRun 失败,
+  // 精确命中"监控活着但摘要丢了"这条路径 —— 排查时最先看的就是它,
+  // 而 exit 5 那次完全不留痕正是吃了这个亏。
+  fs.mkdirSync(path.join(tmpDir, 'runs.jsonl'), { recursive: true });
+
+  const warns = [];
+  const realErr = console.error;
+  console.error = (m) => warns.push(String(m));
+  let rec;
+  try {
+    rec = obs.finishRun({ exitCode: 0 });
+  } finally {
+    console.error = realErr;
+  }
+
+  assert.equal(rec, null, '写失败仍返回 null,调用方据此走降级分支');
+  assert.equal(warns.length, 1, 'run 摘要丢失必须恰好报一次');
+  assert.match(warns[0], /摘要|基线/, 'WARN 要说明后果:这次运行不会进入历史基线');
 });
 
 test('SAFETY: 畸形响应体不影响记录', () => {
