@@ -137,7 +137,18 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
 **撰写约束(违反必被 C1-C8 拦下)**:
 
 1. 数字、术语、人名一律来自 `transcript.json`,**不得**用模型自身知识补充。
-2. 金句必须**逐字引用**原文,不得改写、不得润色、不得拼接两句。
+2. **金句允许有界清洗,但不得改写**。可以做的只有两件事:
+   - 删掉填充音:`um` / `uh` / `er` / `ah` / `mm` / `hmm` 及其拉长形式;
+   - 折叠口吃式重复词:`we we look` → `we look`。
+
+   **不可以**做的:增词、删实词、换词、改词序、拼接两句、修正语法。
+   `like` / `actually` / `you know` / `basically` / `sort of` **是实词,不是填充音**,不得删。
+
+   C3/C4 会把金句和转录**两边**都做同样的去填充音 + 折叠重复词处理再比对,
+   所以清洗过的金句照样能匹配上;而删实词、改词序、整句编造依然不是子串,exit 5。
+   这条 2026-07-28 放宽:此前"不得润色"叠加 C4 精确子串,必然产出
+   `Um and the way we we look at things in my team is uh we don't trust anything.`
+   这种噪音金句 —— 金句是这份产物的核心呈现物,可读性不该为防伪造买单。
 3. **时间戳标注惯例(硬约束,决定 C3 能否通过)**:`transcript.json` 的 `segments` 是
    `mergeSegments({minSec:30, maxSec:60})` 合并后的大段(段间距 31-62 秒),不是逐句字幕。
    `build-html.js` 的 C3 检查用「金句时间戳 ±10 秒窗口 + 该时间戳所在段及其**紧邻后继段**」

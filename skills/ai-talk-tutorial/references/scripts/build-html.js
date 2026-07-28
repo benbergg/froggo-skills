@@ -66,6 +66,29 @@ function normalize(s) {
   return String(s).toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
 }
 
+// 金句匹配专用归一化:在 normalize 之上再去掉填充音、折叠连续重复词。
+//
+// 为什么需要(方案 D,2026-07-28 实证):C4 要求金句是 full_text 的精确子串,撰写约束
+// 又写着"不得改写、不得润色" —— 两条叠加的必然产物是金句原样收录口语噪音,
+// 实测产出过 "Um and the way we we look at things in my team is uh we don't trust anything."。
+// 金句是这份产物的核心呈现物,可读性不该为防伪造买单。
+//
+// 两边(金句与转录)做同样处理,子串关系不变,所以防伪造能力一点不降:
+// 删实词、改词序、整句编造依然不是子串,照样被 C4 拦下。
+//
+// 集合必须只收**无实词歧义**的填充音。like / actually / you know / basically / sort of
+// 都承载语义,放进来等于给任意改写开后门 —— 见 T44。
+const FILLER_RE = /\b(?:u+m+|u+h+|u+h+m+|e+r+m?|a+h+|h?mm+)\b/g;
+
+function normalizeQuote(s) {
+  return normalize(s)
+    .replace(FILLER_RE, ' ')
+    .replace(/\s+/g, ' ')
+    // 折叠重复词放在去填充音之后:"we uh we" 先变 "we we",才折得掉
+    .replace(/\b(\w+)(?: \1)+\b/g, '$1')
+    .trim();
+}
+
 // token 重叠率:needle 的词在 hay 词集合中的命中比例,顺序无关。
 // 仅供 C3 子串匹配失败后的宽松兜底(时间戳窗口内文本可能因分词切分错位导致子串不中)。
 // fix round F8:needle 内重复词先去重再算比例 —— 不去重时,一句几乎全是高频功能词
@@ -236,8 +259,8 @@ function runChecks(doc, transcript, selected) {
   for (const q of doc.quotes) {
     if (!Number.isFinite(q.sec)) continue;
     const windowSegs = windowSegmentsFor(transcript.segments, q.sec, C3_WINDOW_SEC);
-    const windowHay = normalize(windowSegs.map((s) => s.text).join(' '));
-    const needle = normalize(q.en);
+    const windowHay = normalizeQuote(windowSegs.map((s) => s.text).join(' '));
+    const needle = normalizeQuote(q.en);
     const substringHit = windowHay.length > 0 && windowHay.includes(needle);
     // 子串不中时退到 token 重叠阈值,容忍窗口边界把长句切成两半导致的子串错位
     const overlapHit = !substringHit && tokenOverlapRatio(needle, windowHay) >= 0.8;
@@ -247,9 +270,9 @@ function runChecks(doc, transcript, selected) {
   }
 
   // C4 英文金句能在 transcript 原文中检索到
-  const hay = normalize(transcript.full_text);
+  const hay = normalizeQuote(transcript.full_text);
   for (const q of doc.quotes) {
-    const needle = normalize(q.en);
+    const needle = normalizeQuote(q.en);
     if (needle.length < 8) { add('C4', `金句过短无法校验: "${q.en}"`); continue; }
     if (!hay.includes(needle)) add('C4', `金句在 transcript 中检索不到: "${q.en}"`);
   }
@@ -493,7 +516,8 @@ function main() {
 }
 
 module.exports = {
-  parseTutorialMd, runChecks, renderHtml, normalize, tsToSec, parseCallout, CALLOUT_TYPES,
+  parseTutorialMd, runChecks, renderHtml, normalize, normalizeQuote, tsToSec,
+  parseCallout, CALLOUT_TYPES,
 };
 
 if (require.main === module) main();

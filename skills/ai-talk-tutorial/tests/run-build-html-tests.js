@@ -573,3 +573,77 @@ test('T38: 模板提供 callout 样式,浅色与深色都有定义(渲染出 cla
     assert.match(tpl, new RegExp(`\\.callout-${t}\\s*\\{`), `模板缺少 .callout-${t} 样式`);
   }
 });
+
+// ---- 方案 D(2026-07-28):金句允许有界清洗。
+// 实证问题:7-28 产出的金句原样收录了口语噪音 ——
+// "Um and the way we we look at things in my team is uh we don't trust anything."
+// 这不是 AI 失误,是约束的必然产物:C4 要求金句是 full_text 的精确子串,
+// 撰写约束又写着"不得改写、不得润色",AI 想清洗也不敢。
+// 改法:C3/C4 匹配前两边都去掉无实词歧义的填充音(um/uh/er/ah/mm)并折叠连续重复词,
+// 于是"删 filler"合法,而"增删实词/改词序"依旧被拦 —— 防伪造能力一点不降。
+
+const FILLER_TRANSCRIPT = {
+  video_id: 'aaaaaaaaaaa', title: 'Scaling talk', channel: 'AI Engineer',
+  duration_sec: 1051, via: 'web+cookies', cue_count: 200,
+  segments: [
+    { start: 0, startLabel: '0:00', text: 'okay so um today we want to talk about scaling' },
+    { start: 573, startLabel: '9:32',
+      text: "um and the way we we look at things in my team is uh we don't trust anything "
+          + 'there is so many things that can go wrong when you scale models' },
+  ],
+  full_text: 'okay so um today we want to talk about scaling '
+    + "um and the way we we look at things in my team is uh we don't trust anything "
+    + 'there is so many things that can go wrong when you scale models',
+};
+
+function mdWithQuote(en, label = '9:32') {
+  return load('tutorial-good.md').replace(
+    /> \[12:34\][\s\S]*$/,
+    `> [${label}] "${en}"\n> —— 中文译解:团队的工程信条是什么都不信任。\n`
+  );
+}
+
+test('T39: 金句删掉填充音(um/uh)与重复词后 C4/C3 仍通过(方案 D 核心正例)', () => {
+  const cleaned = "and the way we look at things in my team is we don't trust anything";
+  const v = B.runChecks(B.parseTutorialMd(mdWithQuote(cleaned)), FILLER_TRANSCRIPT, SELECTED);
+  assert.deepEqual(v, [], `清洗后的金句应零违规,实际: ${JSON.stringify(v)}`);
+});
+
+test('T40: 判别 — 删掉实词(don\'t)改变语义,C4 依然拦下(清洗不是通行证)', () => {
+  const tampered = 'and the way we look at things in my team is we trust anything';
+  const v = B.runChecks(B.parseTutorialMd(mdWithQuote(tampered)), FILLER_TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C4'),
+    `删实词必须被 C4 拦,否则"允许清洗"就成了任意改写的后门: ${JSON.stringify(v)}`);
+});
+
+test('T41: 判别 — 词序改写(词全在)C4 依然拦下', () => {
+  const reordered = "we don't trust anything is the way we look at things in my team";
+  const v = B.runChecks(B.parseTutorialMd(mdWithQuote(reordered)), FILLER_TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C4'), `改词序必须被 C4 拦: ${JSON.stringify(v)}`);
+});
+
+test('T42: 判别 — 完全编造的金句 C4 依然拦下(归一化放宽没开天窗)', () => {
+  const fabricated = 'we always trust our infrastructure and never verify the invariants';
+  const v = B.runChecks(B.parseTutorialMd(mdWithQuote(fabricated)), FILLER_TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C4'), `编造金句必须被 C4 拦: ${JSON.stringify(v)}`);
+});
+
+test('T43: 判别 — 清洗后的金句配错误时间戳,C3 依然拦下', () => {
+  const cleaned = "and the way we look at things in my team is we don't trust anything";
+  const v = B.runChecks(B.parseTutorialMd(mdWithQuote(cleaned, '0:00')), FILLER_TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C3'), `错时间戳必须被 C3 拦: ${JSON.stringify(v)}`);
+});
+
+test('T44: 填充音集合只收无实词歧义的音,like / actually / you know 不在其中', () => {
+  // 删掉这些"半实词"必须仍被 C4 拦 —— 它们承载语义,放进 filler 集合等于给改写开口子
+  const T = {
+    ...FILLER_TRANSCRIPT,
+    segments: [{ start: 573, startLabel: '9:32',
+      text: 'we actually like this approach because you know it basically works' }],
+    full_text: 'we actually like this approach because you know it basically works',
+  };
+  const stripped = 'we this approach because it works';
+  const v = B.runChecks(B.parseTutorialMd(mdWithQuote(stripped)), T, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C4'),
+    `actually/like/you know/basically 是实词,删掉必须被拦: ${JSON.stringify(v)}`);
+});
