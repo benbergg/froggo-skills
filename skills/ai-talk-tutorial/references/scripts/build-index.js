@@ -50,23 +50,38 @@ function render(rows) {
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>AI 演讲教程 · 归档</title>
 <style>
-:root{--bg:#EEF1F6;--ink:#14161F;--soft:#5A6072;--brand:#5B44E4;--line:#C9D0DE;--panel:#fff}
-@media (prefers-color-scheme:dark){:root{--bg:#111319;--ink:#ECEEF5;--soft:#A2A9BC;--brand:#8F7CF5;--line:#2C3140;--panel:#191C25}}
-body{margin:0;background:var(--bg);color:var(--ink);line-height:1.7;
-  font-family:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif}
-.wrap{max-width:820px;margin:0 auto;padding:48px 20px}
-h1{font-size:28px;margin:0 0 8px}
-p.sub{color:var(--soft);margin:0 0 28px}
+/* 配色与字体与 templates/tutorial.html 保持一致 —— 索引页和内容页视觉断层
+   会让归档看起来像两个网站。改任一处都要同步另一处。 */
+:root{--bg:#F4F1EC;--ink:#1C1A17;--soft:#6B6558;--faint:#948D80;
+  --accent:#8C3A2B;--brand:#2A4A7B;--line:#DED8CD;--panel:#FFFDFA;
+  --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong",Georgia,serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace}
+@media (prefers-color-scheme:dark){:root{--bg:#16151A;--ink:#EDEAE3;--soft:#9A948A;
+  --faint:#726C64;--accent:#D98570;--brand:#8AB0E0;--line:#302E36;--panel:#1D1C22}}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);line-height:1.8;font-size:16.5px;
+  -webkit-font-smoothing:antialiased;
+  font-family:system-ui,-apple-system,"SF Pro Text","PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:760px;margin:0 auto;padding:72px 24px 64px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.2em;text-transform:uppercase;
+  color:var(--accent);margin-bottom:12px}
+h1{font-family:var(--serif);font-size:clamp(26px,4vw,36px);font-weight:700;
+  line-height:1.35;margin:0 0 10px}
+p.sub{color:var(--soft);margin:0 0 40px;font-size:14.5px}
 ul{list-style:none;padding:0;margin:0}
-li{display:flex;gap:14px;align-items:baseline;padding:12px 14px;background:var(--panel);
-  border:1px solid var(--line);border-radius:10px;margin-bottom:8px}
-.d{color:var(--soft);font-size:13px;font-variant-numeric:tabular-nums;flex:0 0 auto}
-a{color:var(--brand);text-decoration:none}
-a:hover{text-decoration:underline}
-@media (max-width:600px){li{flex-direction:column;gap:2px}}
+li{display:flex;gap:18px;align-items:baseline;padding:16px 20px;background:var(--panel);
+  border:1px solid var(--line);border-radius:12px;margin-bottom:10px;
+  box-shadow:0 1px 2px rgba(28,26,23,.05)}
+.d{color:var(--faint);font-family:var(--mono);font-size:12.5px;
+  font-variant-numeric:tabular-nums;flex:0 0 auto}
+a{color:var(--ink);text-decoration:none;font-family:var(--serif);font-size:17px;
+  font-weight:700;line-height:1.5}
+a:hover{color:var(--accent)}
+@media (max-width:600px){li{flex-direction:column;gap:4px}.wrap{padding:44px 20px 48px}}
 </style>
 </head>
 <body><div class="wrap">
+<div class="kicker">AI Talk Tutorial</div>
 <h1>AI 演讲教程 · 归档</h1>
 <p class="sub">共 ${rows.length} 篇 · 由 ai-talk-tutorial 每日自动生成</p>
 <ul>
