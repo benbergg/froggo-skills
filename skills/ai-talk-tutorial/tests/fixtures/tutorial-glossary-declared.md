@@ -49,7 +49,13 @@ XGen-2(Laguna XS, 33B 参数)作为"试验床"承担了所有数据改进、数�
 
 评估上,他们明确用的是 base model evals —— 部分预示 final model 表现,但 post-training 还会改写,不会完全一对一。重点看 coding 维度:MultiPL-E / BigCodeBench 上 Laguna S 强于 XGen-2,也强于更大的 Laguna M.1,并超过 GLM 4.5 Air、Qwen3-360、DeepSeek V4 Flash Max 等对比对象。**swe-bench agentless multilingual** 上 Laguna S 显著领先所有对比对象,这是他们用来 proxy 预训练期 agentic 表现的 benchmark。Big Bench Hard 和 EvalPlus 上接近 top 但未夺冠。MMLU Pro 不在他们重点关注范围,因为专注 agentic coding;他们也承认这是"数据缺口,想补就能补"。
 
-## 四、可落地 checklist
+## 四、常见误区
+
+- 先挑模型再补评估 → 先用真实失败样本建评估集，再让评估结果去挑模型
+- 评估集一次建好就不再动 → 每次线上出新的失败形态就把它补进评估集
+- 用感觉判断模型换代有没有变好 → 在同一套评估集上跑完整对比，只认数据
+
+## 五、可落地 checklist
 
 - [ ] 把合成数据管道抽象成六个组件:seeds、primary inputs、metadata、secondary inputs、generator(agent or prompt template)、supplementary functions(filters / validators)。所有新管道都从这套抽象里组装,而不是堆 ad-hoc 脚本。
 - [ ] 设定合成数据占总混合的预算比例(参考 poolside 的 13%,仅 pre-training),同时强制 teacher model 在拆解后的子任务上验证 correctness + diversity,任务过难就拆得更细。
@@ -61,7 +67,13 @@ XGen-2(Laguna XS, 33B 参数)作为"试验床"承担了所有数据改进、数�
 - [ ] 选评测基准时区分"训练期 proxy"和"最终模型判定" —— poolside 用 swe-bench agentless multilingual 当 pre-training 期的 agentic coding proxy,而不是直接看 MMLU Pro 这种饱和知识题。
 - [ ] 把"数据改进"和"训练代码正确性 + 数值精度"当成一个整体看待,不要分别优化 —— 这是 Robert 强调的 holistic 原则,单边改进会被另一边抵消。
 
-## 五、原声金句
+## 六、落地到你的场景
+
+如果你手上已经有一个跑在生产上的 agent，最小的起步动作是把最近一段时间的客诉和人工兜底记录翻出来，从里面挑出真正出错的请求，原样存成用例。不需要一开始就追求覆盖率，先把"改动之后能不能重跑一遍"这条路打通，比用例数量重要得多。
+
+等到重跑变成一件不费力的事，再回头扩充评估集的覆盖面。此时你会发现，决定要不要换模型、要不要改提示词这类问题，已经从争论变成了看一眼对比结果就能定的事。
+
+## 七、原声金句
 
 > [5:56] "Because the rule of thumb is if task is too hard for your model, then your model will start to fall on its face. Lose correctness, lose diversity. So break down the task, make it simpler."
 > —— 中文译解:核心工程直觉 —— 任务过难模型就崩,所以要持续拆解。poolside 所有合成数据架构之所以"敢做激进编排",根植于这条规则。
@@ -74,7 +86,7 @@ XGen-2(Laguna XS, 33B 参数)作为"试验床"承担了所有数据改进、数�
 
 > [12:25] "So, we took the checkpoint from the purple curve. We moved that accumulation into FP32 and from there on the model started converging again."
 > —— 中文译解:BF16 accumulation 在 LM head 处精度耗尽是 Laguna M.1 训练停滞的根因 —— 把 accumulation 切到 FP32,模型立刻恢复收敛。这种"一行修复"建立在先把根因定位到数值精度上。
-## 六、术语对照
+## 八、术语对照
 
 | 教程写法 | 转录原文 | 依据 |
 |---|---|---|

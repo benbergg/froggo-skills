@@ -26,6 +26,15 @@ const SELECTED = {
 
 function load(name) { return fs.readFileSync(FIXTURE(name), 'utf-8'); }
 
+// 整段替换 —— 按中文序号定位而不是锚一句原文。
+// 夹具正文会随内容密度要求变动,锚死某一句会让一次夹具改写连带打崩四五个
+// 与它毫无关系的测试(2026-07-28 段落扩容时实际发生过)。
+function replaceSection(md, numeral, body) {
+  const re = new RegExp(`(^##\\s*${numeral}、[^\\n]*\\n)[\\s\\S]*?(?=^## )`, 'm');
+  if (!re.test(md)) throw new Error(`replaceSection: 找不到第 ${numeral} 段`);
+  return md.replace(re, (_m, head) => `${head}\n${body}\n\n`);
+}
+
 test('T1: 五段结构解析', () => {
   const doc = B.parseTutorialMd(load('tutorial-good.md'));
   assert.ok(doc.title.length > 0);
@@ -44,7 +53,7 @@ test('T2: 合格文档 → 零违规', () => {
 });
 
 test('T3: C1 — 缺段落被拦', () => {
-  const md = load('tutorial-good.md').replace(/## 四、可落地 checklist[\s\S]*?(?=## 五、)/, '');
+  const md = load('tutorial-good.md').replace(/## 五、可落地 checklist[\s\S]*?(?=## 六、)/, '');
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C1'), `期望 C1,实际 ${JSON.stringify(v)}`);
 });
@@ -76,7 +85,7 @@ test('T7: C5 — 方法论步骤 <3 被拦', () => {
 });
 
 test('T8: C6 — 占位符被拦', () => {
-  const md = load('tutorial-good.md').replace('先搭最小评估集', 'TODO: 补充');
+  const md = load('tutorial-good.md').replace('先搭一个最小可重放的评估集', 'TODO: 补充');
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C6'));
 });
@@ -88,10 +97,11 @@ test('T9: C7 — video_id 与 selected.json 不符被拦(注:全流程无标题�
 });
 
 test('T10: C8 — 正文成段英文被拦', () => {
-  const md = load('tutorial-good.md').replace(
-    '他把评估放在模型之前。',
-    'He argues that evaluation should always come before any model selection decision whatsoever.'
-  );
+  const md = replaceSection(load('tutorial-good.md'), '二',
+    '团队常常先挑模型再补评估。'
+    + 'He argues that evaluation should always come before any model selection decision whatsoever.'
+    + '这样一来每次改动之后谁也说不清到底变好了还是变差了，回滚时才发现没有任何基线可以对照，'
+    + '而这正是讲者主张把评估放在模型之前的原因所在。');
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C8'));
 });
@@ -199,10 +209,11 @@ test('T15: C6 — 中文占位符"待补充"被拦(不依赖 TODO 这类英文�
 // ---- 评审 fix round F5:C8 句级判定回归了长度阈值,整行纯英文短句拼接被放行 -----
 
 test('T16: C8 — 整行纯英文但拆句后逐句都 <40 字符仍被拦(F5 回归修复)', () => {
-  const md = load('tutorial-good.md').replace(
-    '团队在把 agent 推上生产时，常常先挑模型再补评估，结果无法判断改动是否带来提升。他把评估放在模型之前。',
-    'Eval first. Model second. Data always. Ship fast and measure.'
-  );
+  const md = replaceSection(load('tutorial-good.md'), '二',
+    'Eval first. Model second. Data always. Ship fast and measure.\n\n'
+    + '这一段的其余部分用中文写足长度，确保触发的是 C8 而不是"背景段过短"的 C1。'
+    + '团队在把 agent 推上生产时常常先挑模型再补评估，结果是每次改动之后谁也说不清'
+    + '到底变好了还是变差了，两周后线上出问题、回滚时才发现没有任何基线可以对照。');
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C8'), `整行纯英文短句拼接未被 C8 拦住: ${JSON.stringify(v)}`);
 });
@@ -395,8 +406,8 @@ test('T26: C1 — TL;DR 只有 1 条 bullet 被拦(FR1)', () => {
 
 test('T27: C1 — checklist 只有 1 项被拦(FR1)', () => {
   const md = load('tutorial-good.md').replace(
-    /## 四、可落地 checklist\n\n[\s\S]*?(?=\n## 五、)/,
-    '## 四、可落地 checklist\n\n- [ ] 只有一项。\n'
+    /## 五、可落地 checklist\n\n[\s\S]*?(?=\n## 六、)/,
+    '## 五、可落地 checklist\n\n- [ ] 只有一项。\n'
   );
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C1' && /checklist/.test(x.message)),
@@ -404,10 +415,7 @@ test('T27: C1 — checklist 只有 1 项被拦(FR1)', () => {
 });
 
 test('T28: C1 — 背景段落过短(<30 字符)被拦(FR1)', () => {
-  const md = load('tutorial-good.md').replace(
-    '团队在把 agent 推上生产时，常常先挑模型再补评估，结果无法判断改动是否带来提升。他把评估放在模型之前。',
-    '略。'
-  );
+  const md = replaceSection(load('tutorial-good.md'), '二', '略。');
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C1' && /背景段落过短/.test(x.message)),
     `期望背景过短被 C1 拦住,实际: ${JSON.stringify(v)}`);
@@ -825,8 +833,8 @@ test('T61: C10 判别 — flow 节点名与正文步骤名不一致被拦', () =
 });
 
 test('T62: C10 判别 — 图示写在 checklist 段(渲染层不处理)被拦', () => {
-  const md = load('tutorial-visual.md').replace('## 四、可落地 checklist\n',
-    '## 四、可落地 checklist\n\n:::stats\n80% | 评估集对失败样本的覆盖率\n3 次 | 覆盖率达标后的月均线上回归\n:::\n');
+  const md = load('tutorial-visual.md').replace('## 五、可落地 checklist\n',
+    '## 五、可落地 checklist\n\n:::stats\n80% | 评估集对失败样本的覆盖率\n3 次 | 覆盖率达标后的月均线上回归\n:::\n');
   const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
   assert.ok(v.some((x) => x.code === 'C10' && /渲染层只在/.test(x.message)),
     `写错位置必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
@@ -878,4 +886,95 @@ test('T66: CLI — --thumbnail 指向不存在的文件时仍出 HTML(封面不�
   assert.match(r.stderr, /WARN/, '应给出封面缺失的告警');
   fs.rmSync(tmp, { recursive: true, force: true });
   r.cleanup();
+});
+
+// ── 内容丰富(2026-07-28):常见误区 C11 / 落地场景 C12 / 主题分模板 ──────
+
+test('T67: C11 判别 — 误区只写"别做 X"没给替代做法被拦', () => {
+  const md = replaceSection(load('tutorial-good.md'), '四',
+    '- 先挑模型再补评估\n- 评估集一次建好就不再动');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C11' && /两段/.test(x.message)),
+    `缺替代做法必须被拦,否则这一段会退化成普通列表: ${JSON.stringify(v.filter((x) => x.code === 'C11'))}`);
+});
+
+test('T68: C11 判别 — 箭头一侧为空被拦', () => {
+  const md = replaceSection(load('tutorial-good.md'), '四',
+    '- 先挑模型再补评估 → \n- 评估集不动 → 出新失败形态就补进去');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C11'), JSON.stringify(v.filter((x) => x.code === 'C11')));
+});
+
+test('T69: C11 判别 — 条数不足被拦', () => {
+  const md = replaceSection(load('tutorial-good.md'), '四', '- 先挑模型 → 先建评估集');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C11' && /仅 1 条/.test(x.message)),
+    JSON.stringify(v.filter((x) => x.code === 'C11')));
+});
+
+test('T70: C12 判别 — 落地场景编造正文没有的数字被拦(外推段唯一的锁)', () => {
+  const good = load('tutorial-good.md');
+  const md = replaceSection(good, '六',
+    '先把最近的客诉记录翻出来，挑出真正出错的请求存成用例。按这个做法，'
+    + '通常 7 天之内就能把重跑链路打通，而且不需要额外的基础设施投入，'
+    + '之后再回头扩充覆盖面就轻松很多，团队讨论也有了共同事实。');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C12' && /7/.test(x.message)),
+    `外推段编造数字必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C12'))}`);
+  // 正文里出现过的数字则放行 —— 证明这条规则不是"外推段一律禁数字"的粗暴实现
+  const md2 = replaceSection(good, '六',
+    '先把最近的客诉记录翻出来，挑出真正出错的请求存成用例，目标同样是 50 条真实失败样本，'
+    + '不需要一开始就追求覆盖率，先把改动之后能不能重跑一遍这条路打通更重要。'
+    + '等到重跑变成一件不费力的事，再回头扩充覆盖面；此时要不要换模型这类问题，'
+    + '已经从争论变成了看一眼对比结果就能定的事，团队讨论也终于有了共同事实。');
+  const v2 = B.runChecks(B.parseTutorialMd(md2), TRANSCRIPT, SELECTED);
+  assert.equal(v2.filter((x) => x.code === 'C12').length, 0,
+    `checklist 里写过的 50 应当放行: ${JSON.stringify(v2.filter((x) => x.code === 'C12'))}`);
+});
+
+test('T71: C12 判别 — 落地场景过短被拦', () => {
+  const md = replaceSection(load('tutorial-good.md'), '六', '自己看着办。');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C12' && /过短/.test(x.message)),
+    JSON.stringify(v.filter((x) => x.code === 'C12')));
+});
+
+test('T72: 主题分模板 — 第三段标题可自由改写,不影响切段与 C5', () => {
+  // 产品类用「关键决策与权衡」,技术类用「核心方法论」;SECTION_HEADS 只认序号
+  const md = load('tutorial-good.md').replace('## 三、核心方法论', '## 三、关键决策与权衡');
+  const doc = B.parseTutorialMd(md);
+  assert.equal(doc.headings.method, '关键决策与权衡');
+  assert.equal(doc.steps.length, 3, '换标题不该影响步骤解析');
+  assert.deepEqual(B.runChecks(doc, TRANSCRIPT, SELECTED), []);
+});
+
+test('T73: 章节标题注入 h2,模板不再写死(否则模板与正文会各说各话)', () => {
+  const md = load('tutorial-good.md').replace('## 三、核心方法论', '## 三、关键决策与权衡');
+  const html = B.renderHtml(B.parseTutorialMd(md), SELECTED, TPL());
+  assert.match(html, /<h2 data-idx="03">关键决策与权衡<\/h2>/);
+  assert.doesNotMatch(bodyOf(html), /核心方法论/, '模板里不该残留写死的旧标题');
+  assert.doesNotMatch(html, /<!--H2_[A-Z]+-->/, 'h2 锚点必须全部替换');
+});
+
+test('T74: C1 判别 — 只写序号不写标题被拦(会渲染出没有名字的章节)', () => {
+  const md = load('tutorial-good.md').replace('## 三、核心方法论', '## 三、');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C1' && /只写了序号/.test(x.message)),
+    JSON.stringify(v.filter((x) => x.code === 'C1')));
+});
+
+test('T75: 新增两段渲染成结构化 HTML,不是裸文本', () => {
+  const html = B.renderHtml(B.parseTutorialMd(load('tutorial-good.md')), SELECTED, TPL());
+  assert.match(html, /<ul class="pitfalls">/);
+  assert.match(html, /<span class="pf-no">先挑模型再补评估<\/span>/);
+  assert.match(html, /<span class="pf-yes">先用真实失败样本建评估集/);
+  assert.doesNotMatch(bodyOf(html), /→/, '箭头是标记不是内容,渲染后应由左右两栏表达');
+  assert.match(html, /<section id="apply">/);
+});
+
+test('T76: 金句段位置从五移到七后仍能正确解析(段落重排的回归护栏)', () => {
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  assert.equal(doc.quotes.length, 1, '金句被当成 checklist 段解析会静默丢失');
+  assert.equal(doc.quotes[0].sec, 754);
+  assert.doesNotMatch(doc.sections.checklist, /12:34/, 'checklist 段不该吞进金句');
 });

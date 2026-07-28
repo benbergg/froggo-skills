@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// tutorial.md → C1-C9 自检 → 自包含 tutorial.html。
+// tutorial.md → C1-C12 自检 → 自包含 tutorial.html。
 //
 // 物理断路:任一自检不过则 exit 5 且不写 HTML,下游 git/推送步骤自然无文件可用。
 // 注入逻辑逐单元构建(禁全局跨块正则),沿用 V1 youtube-tutorial-maker/scripts/integrate.py 的教训。
@@ -10,25 +10,34 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
-const SECTION_KEYS = ['tldr', 'background', 'method', 'checklist', 'quotes'];
+const SECTION_KEYS = ['tldr', 'background', 'method', 'pitfalls', 'checklist', 'apply', 'quotes'];
 // 术语对照是可选段:正文所有英文术语都能在转录里查到时不必写。
 // 不进 SECTION_KEYS —— 那是 C1 的"必须齐全"清单;但必须参与切段,
-// 否则 `## 六、` 会被第五段整个吞进去,连带毁掉金句解析和 C4。
+// 否则 `## 八、` 会被金句段整个吞进去,连带毁掉金句解析和 C4。
 const OPTIONAL_SECTION_KEYS = ['glossary'];
 const ALL_SECTION_KEYS = [...SECTION_KEYS, ...OPTIONAL_SECTION_KEYS];
+// 只认序号不认标题文字 —— 第三段的标题按主题变化(技术类「核心方法论」/
+// 产品类「关键决策与权衡」),标题文字写死在正则里会让分模板寸步难行。
+// 标题文字改由 doc.headings 从 md 里取,注入模板,模板与正文因此不可能各说各话。
 const SECTION_HEADS = {
-  tldr: /^##\s*一、\s*TL;DR/m,
+  tldr: /^##\s*一、/m,
   background: /^##\s*二、/m,
   method: /^##\s*三、/m,
-  checklist: /^##\s*四、/m,
-  quotes: /^##\s*五、/m,
-  glossary: /^##\s*六、/m,
+  pitfalls: /^##\s*四、/m,
+  checklist: /^##\s*五、/m,
+  apply: /^##\s*六、/m,
+  quotes: /^##\s*七、/m,
+  glossary: /^##\s*八、/m,
+};
+const SECTION_INDEX = {
+  tldr: '01', background: '02', method: '03', pitfalls: '04',
+  checklist: '05', apply: '06', quotes: '07',
 };
 // 正文段(参与 C6 / C8 / C9 的内容检查);金句段与术语对照段各有专门规则,不在其中
-const BODY_SECTION_KEYS = ['tldr', 'background', 'method', 'checklist'];
-// 结构化图示与表格只在这两段生效 —— 它们走 renderParagraphs,
-// 而 tldr/checklist 走 renderList(会把 ::: 和 | 当普通文本吞掉)。C10 据此判位置。
-const DIRECTIVE_SECTION_KEYS = ['background', 'method'];
+const BODY_SECTION_KEYS = ['tldr', 'background', 'method', 'pitfalls', 'checklist', 'apply'];
+// 结构化图示与表格只在这三段生效 —— 它们走 renderParagraphs,
+// 而 tldr/checklist/pitfalls 走各自的列表渲染(会把 ::: 和 | 当普通文本吞掉)。C10 据此判位置。
+const DIRECTIVE_SECTION_KEYS = ['background', 'method', 'apply'];
 // 英文项用 \b 词边界(避免误伤如 "TODOLIST" 这类复合词);
 // 中文项不能用 \b —— 无 u 标志时 \b 定义在 ASCII [A-Za-z0-9_] 上,CJK 字符两侧根本不存在词边界,
 // 混进同一个 \b(...)\b 组会导致中文占位符永远匹配不到(fix round: 评审实测 test('待补充')===false)。
@@ -204,14 +213,21 @@ function parseTutorialMd(md) {
     const m = md.match(SECTION_HEADS[k]);
     positions.push({ key: k, idx: m ? m.index : -1 });
   }
+  const headings = {};
   const present = positions.filter((p) => p.idx >= 0).sort((a, b) => a.idx - b.idx);
   for (let i = 0; i < present.length; i++) {
     const start = present[i].idx;
     const end = i + 1 < present.length ? present[i + 1].idx : md.length;
-    const body = md.slice(start, end).replace(/^##[^\n]*\n/, '').trim();
-    sections[present[i].key] = body;
+    const chunk = md.slice(start, end);
+    const headLine = (chunk.match(/^##[^\n]*/) || [''])[0];
+    // 标题文字 = 去掉 "## " 与中文序号后剩下的部分,供模板注入
+    headings[present[i].key] = headLine.replace(/^##\s*[一二三四五六七八]、\s*/, '').trim();
+    sections[present[i].key] = chunk.replace(/^##[^\n]*\n/, '').trim();
   }
-  for (const k of ALL_SECTION_KEYS) if (!(k in sections)) sections[k] = '';
+  for (const k of ALL_SECTION_KEYS) {
+    if (!(k in sections)) sections[k] = '';
+    if (!(k in headings)) headings[k] = '';
+  }
 
   // 金句:> [mm:ss] "english"  \n > —— 中文
   const quotes = [];
@@ -240,7 +256,7 @@ function parseTutorialMd(md) {
     });
   }
 
-  return { title, sections, quotes, steps, glossary: parseGlossary(sections.glossary), raw: md };
+  return { title, sections, headings, quotes, steps, glossary: parseGlossary(sections.glossary), raw: md };
 }
 
 // 解析术语对照表:| 教程写法 | 转录原文 | 依据 |
@@ -284,11 +300,22 @@ function countListItems(body) {
 const PROPER_NOUN_RE = /[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*/g;
 const PROPER_NOUN_MIN_LEN = 2;
 
-const STEP_BODY_MIN_CHARS = 15;
-const TLDR_MIN_BULLETS = 2;
-const CHECKLIST_MIN_ITEMS = 2;
-const BACKGROUND_MIN_CHARS = 30;
+// 内容密度下限 —— 2026-07-28 用真实产出重新标定。
+// 7-28 那篇实测:背景段 578 字符、四步正文 344/470/489/601、checklist 7 条、TL;DR 3 条。
+// 旧值(背景 30、每步 15、checklist 2)低到一份骨架文档也能过,等于没有下限。
+// 新值取实测的 1/3 左右留足余量:C 类检查该拦的是"残缺",不是"写得一般" ——
+// 阈值卡太贴近实测值,某天一个合格但简洁的步骤就会中止整条流水线。
+const STEP_BODY_MIN_CHARS = 100;
+const TLDR_MIN_BULLETS = 3;
+const CHECKLIST_MIN_ITEMS = 4;
+const BACKGROUND_MIN_CHARS = 150;
+const APPLY_MIN_CHARS = 120;
+const PITFALL_MIN_ITEMS = 2;
 const H1_MIN_CHARS = 6;
+// 常见误区每条的形态:`<误区> → <讲者的做法>`
+const PITFALL_SEP = '→';
+// 落地场景段里出现的数字,必须在正文别处出现过(见 C12)
+const NUMBER_RE = /\d+(?:[.,]\d+)*\s*%?/g;
 
 function runChecks(doc, transcript, selected) {
   const v = [];
@@ -308,6 +335,12 @@ function runChecks(doc, transcript, selected) {
   }
   if (doc.sections.background && doc.sections.background.length < BACKGROUND_MIN_CHARS) {
     add('C1', `背景段落过短(${doc.sections.background.length} 字符,要求 ≥${BACKGROUND_MIN_CHARS} 字符),内容空洞`);
+  }
+  for (const k of SECTION_KEYS) {
+    if (doc.sections[k] && !doc.headings[k]) {
+      add('C1', `第 ${SECTION_INDEX[k]} 段只写了序号没写标题 —— 标题文字会注入页面 h2,`
+        + '空标题会渲染出一个没有名字的章节');
+    }
   }
   if (!doc.title) add('C1', '缺少 H1 标题');
   else if (doc.title.length < H1_MIN_CHARS) add('C1', `H1 标题过短(${doc.title.length} 字符,要求 ≥${H1_MIN_CHARS} 字符)`);
@@ -500,8 +533,8 @@ function runChecks(doc, transcript, selected) {
 
       if (!inRenderedSection) {
         add('C10', `${key} 段里写了${d ? ` ${kinds} 结构化块` : ' markdown 表格'},`
-          + `但渲染层只在「二、背景」与「三、核心方法论」两段处理它们,`
-          + '写在这里会退化成一段裸文本。请移到那两段,或改写成普通列表');
+          + `但渲染层只在第二、三、六段(背景 / 方法论 / 落地场景)处理它们,`
+          + '写在这里会退化成一段裸文本。请移到那三段,或改写成普通列表');
         continue;
       }
 
@@ -543,6 +576,55 @@ function runChecks(doc, transcript, selected) {
         if (t.rows.length === 0) {
           add('C10', `${key} 段的表格只有表头和分隔行,没有数据行`);
         }
+      }
+    }
+  }
+
+  // C11 常见误区:每条必须是 `<误区> → <讲者的做法>` 两段式
+  //
+  // 为什么要求两段:只写"别做 X"对读者没有可操作性,必须同时给出讲者主张的替代做法。
+  // 用 → 而不是自由散文,是为了让"有没有给替代做法"这件事机器可判 ——
+  // 否则这一段会退化成又一段泛泛而谈的正文,而它存在的意义恰恰是提供正文没有的对照。
+  const pitfallItems = (doc.sections.pitfalls || '').split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^(?:[-*]|\d+[.、])\s*\S/.test(l))
+    .map((l) => l.replace(/^(?:[-*]|\d+[.、])\s*/, ''));
+  if (doc.sections.pitfalls) {
+    if (pitfallItems.length < PITFALL_MIN_ITEMS) {
+      add('C11', `常见误区仅 ${pitfallItems.length} 条,要求 ≥${PITFALL_MIN_ITEMS} 条`
+        + '(行首用 - 或 1.)');
+    }
+    for (const item of pitfallItems) {
+      const parts = item.split(PITFALL_SEP);
+      if (parts.length !== 2 || !parts[0].trim() || !parts[1].trim()) {
+        add('C11', `常见误区每条必须写成「<误区> ${PITFALL_SEP} <讲者的做法>」两段(两侧都不能空,`
+          + `且只能有一个 ${PITFALL_SEP}): "${item.slice(0, 50)}"`);
+      }
+    }
+  }
+
+  // C12 落地到你的场景:这是全篇唯一允许模型超出转录做外推的段落,
+  // 所以要给它单独上锁 —— 不得引入正文没出现过的数字。
+  //
+  // 专有名词由 C9 兜住(它已覆盖全部 BODY_SECTION_KEYS),数字是 C9 管不到的那一半:
+  // 一个"把周迭代压缩到 3 天"式的具体数字读起来最像结论,却完全可能是模型顺手编的。
+  // 规则与 C10 的 stats 同源:外推段可以重组正文的事实,不能新增事实。
+  if (doc.sections.apply) {
+    if (doc.sections.apply.length < APPLY_MIN_CHARS) {
+      add('C12', `落地场景段过短(${doc.sections.apply.length} 字符,要求 ≥${APPLY_MIN_CHARS} 字符);`
+        + '这一段要把方法论映射到读者自己的工作,一两句话做不到');
+    }
+    const elsewhere = BODY_SECTION_KEYS.filter((k) => k !== 'apply')
+      .map((k) => doc.sections[k] || '').join('\n');
+    const seenNum = new Set();
+    for (const raw of (doc.sections.apply.match(NUMBER_RE) || [])) {
+      const num = raw.replace(/\s+/g, '');
+      if (seenNum.has(num)) continue;
+      seenNum.add(num);
+      if (!elsewhere.replace(/\s+/g, '').includes(num)) {
+        add('C12', `落地场景段出现了正文别处没有的数字「${num}」——`
+          + '这一段是外推,只能重组前面已经写过的事实,不能引入新数据;'
+          + '要么去掉这个数字,要么先在正文里把它的来源写清楚');
       }
     }
   }
@@ -668,6 +750,23 @@ function renderGlossary(rows) {
     '</details></div></section>'].join('\n');
 }
 
+// 误区渲染成左右对照:左边是别做什么、右边是讲者主张什么。
+// 两栏而不是一行文字 —— 这一段的价值全在对照关系上,压成一行就跟普通列表没区别了。
+function renderPitfalls(body) {
+  const items = String(body || '').split('\n')
+    .map((l) => l.trim())
+    .filter((l) => /^(?:[-*]|\d+[.、])\s*\S/.test(l))
+    .map((l) => l.replace(/^(?:[-*]|\d+[.、])\s*/, ''))
+    .map((item) => {
+      const parts = item.split(PITFALL_SEP);
+      if (parts.length !== 2) return `<li class="pf-plain">${mdInlineToHtml(item)}</li>`;
+      return `<li><span class="pf-no">${mdInlineToHtml(parts[0].trim())}</span>`
+        + `<span class="pf-yes">${mdInlineToHtml(parts[1].trim())}</span></li>`;
+    });
+  if (items.length === 0) return `<p>${mdInlineToHtml(body)}</p>`;
+  return `<ul class="pitfalls">\n${items.join('\n')}\n</ul>`;
+}
+
 function renderQuotes(quotes, videoId) {
   return quotes.map((q) => {
     const link = `https://www.youtube.com/watch?v=${videoId}&t=${q.sec}s`;
@@ -710,13 +809,22 @@ function renderHtml(doc, selected, template, thumbnail) {
     '<!--TLDR-->': renderList(doc.sections.tldr),
     '<!--BACKGROUND-->': renderParagraphs(doc.sections.background),
     '<!--METHOD-->': renderMethod(doc.sections.method),
+    '<!--PITFALLS-->': renderPitfalls(doc.sections.pitfalls),
     '<!--CHECKLIST-->': renderList(doc.sections.checklist, { check: true }),
+    '<!--APPLY-->': renderParagraphs(doc.sections.apply),
     '<!--QUOTES-->': renderQuotes(doc.quotes, vid),
     '<!--GLOSSARY-->': renderGlossary(doc.glossary),
     '<!--EMBED-->': `<iframe src="https://www.youtube.com/embed/${esc(vid)}" `
       + `title="${esc(doc.title)}" allowfullscreen loading="lazy"></iframe>`,
     '<!--FOOTER-->': `由 ai-talk-tutorial 自动生成 · 内容提炼自 ${esc(selected.channelTitle)} 的公开演讲`,
   };
+
+  // 章节标题从 md 注入,而不是写死在模板里 —— 第三段按主题变名
+  // (技术类「核心方法论」/ 产品类「关键决策与权衡」),写死会让模板和正文各说各话。
+  for (const [key, idx] of Object.entries(SECTION_INDEX)) {
+    units[`<!--H2_${key.toUpperCase()}-->`] = esc(doc.headings[key] || '');
+    void idx;
+  }
 
   let out = template;
   for (const [anchor, html] of Object.entries(units)) {
@@ -797,7 +905,7 @@ function main() {
   );
   fs.mkdirSync(path.dirname(args.out), { recursive: true });
   fs.writeFileSync(args.out, renderHtml(doc, selected, tpl, thumbnail));
-  process.stderr.write(`自检 C1-C10 全通过 → ${args.out}`
+  process.stderr.write(`自检 C1-C12 全通过 → ${args.out}`
     + `${thumbnail ? `(含封面 ${thumbnail.variant})` : '(无封面)'}\n`);
   process.exit(0);
 }
@@ -806,6 +914,7 @@ module.exports = {
   parseTutorialMd, runChecks, renderHtml, normalize, normalizeQuote, tsToSec,
   parseCallout, CALLOUT_TYPES,
   parseDirective, directiveOk, parseTable, DIRECTIVE_KINDS, DIRECTIVE_SECTION_KEYS,
+  renderPitfalls, SECTION_KEYS, SECTION_INDEX,
 };
 
 if (require.main === module) main();

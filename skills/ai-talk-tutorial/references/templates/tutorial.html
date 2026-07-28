@@ -120,6 +120,23 @@ ol.flow li:last-child::after{display:none}
 .flow-t{display:block;font-family:var(--serif);font-weight:700;font-size:18px;line-height:1.6}
 .flow-d{display:block;color:var(--ink-soft);font-size:15.5px;line-height:1.75;margin-top:2px}
 
+/* ── 常见误区:左右对照 ──────────────────────────────
+   两栏而非一行 —— 这一段的价值全在"别做 X / 而要做 Y"的对照关系上。
+   窄屏折成上下两行,靠色条区分,不靠左右位置。 */
+ul.pitfalls{list-style:none;padding:0;margin:30px 0}
+ul.pitfalls li{display:grid;grid-template-columns:1fr 1fr;gap:0;
+  margin-bottom:12px;border:1px solid var(--rule);border-radius:12px;overflow:hidden;
+  background:var(--panel);box-shadow:var(--shadow)}
+.pf-no,.pf-yes{padding:16px 18px;font-size:15.5px;line-height:1.75}
+.pf-no{background:var(--warn-soft);border-left:3px solid var(--warn)}
+.pf-yes{background:var(--panel);border-left:3px solid var(--gold)}
+.pf-no::before{content:"常见做法";display:block;font-size:11px;letter-spacing:.14em;
+  font-family:var(--mono);color:var(--warn);margin-bottom:6px}
+.pf-yes::before{content:"讲者主张";display:block;font-size:11px;letter-spacing:.14em;
+  font-family:var(--mono);color:var(--gold);margin-bottom:6px}
+ul.pitfalls li.pf-plain{display:block;padding:16px 18px}
+@media (max-width:600px){ ul.pitfalls li{grid-template-columns:1fr} }
+
 /* ── 数字卡 :::stats ──────────────────────────────── */
 .stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));
   gap:14px;margin:30px 0}
@@ -181,11 +198,13 @@ footer{padding:44px 0 64px;color:var(--ink-faint);font-size:13px;
   <div class="meta"><!--META--></div>
 </div></header>
 
-<section id="tldr"><div class="wrap"><h2 data-idx="01">TL;DR</h2><div class="panel"><!--TLDR--></div></div></section>
-<section id="background"><div class="wrap"><h2 data-idx="02">背景 · 他要解决什么问题</h2><!--BACKGROUND--></div></section>
-<section id="method"><div class="wrap"><h2 data-idx="03">核心方法论</h2><!--METHOD--></div></section>
-<section id="checklist"><div class="wrap"><h2 data-idx="04">可落地 checklist</h2><div class="panel"><!--CHECKLIST--></div></div></section>
-<section id="quotes"><div class="wrap"><h2 data-idx="05">原声金句</h2><!--QUOTES--><div class="embed"><!--EMBED--></div></div></section>
+<section id="tldr"><div class="wrap"><h2 data-idx="01"><!--H2_TLDR--></h2><div class="panel"><!--TLDR--></div></div></section>
+<section id="background"><div class="wrap"><h2 data-idx="02"><!--H2_BACKGROUND--></h2><!--BACKGROUND--></div></section>
+<section id="method"><div class="wrap"><h2 data-idx="03"><!--H2_METHOD--></h2><!--METHOD--></div></section>
+<section id="pitfalls"><div class="wrap"><h2 data-idx="04"><!--H2_PITFALLS--></h2><!--PITFALLS--></div></section>
+<section id="checklist"><div class="wrap"><h2 data-idx="05"><!--H2_CHECKLIST--></h2><div class="panel"><!--CHECKLIST--></div></div></section>
+<section id="apply"><div class="wrap"><h2 data-idx="06"><!--H2_APPLY--></h2><!--APPLY--></div></section>
+<section id="quotes"><div class="wrap"><h2 data-idx="07"><!--H2_QUOTES--></h2><!--QUOTES--><div class="embed"><!--EMBED--></div></div></section>
 
 <!--GLOSSARY-->
 <footer><div class="wrap"><!--FOOTER--></div></footer>
