@@ -26,6 +26,9 @@ const SECTION_HEADS = {
 };
 // 正文段(参与 C6 / C8 / C9 的内容检查);金句段与术语对照段各有专门规则,不在其中
 const BODY_SECTION_KEYS = ['tldr', 'background', 'method', 'checklist'];
+// 结构化图示与表格只在这两段生效 —— 它们走 renderParagraphs,
+// 而 tldr/checklist 走 renderList(会把 ::: 和 | 当普通文本吞掉)。C10 据此判位置。
+const DIRECTIVE_SECTION_KEYS = ['background', 'method'];
 // 英文项用 \b 词边界(避免误伤如 "TODOLIST" 这类复合词);
 // 中文项不能用 \b —— 无 u 标志时 \b 定义在 ASCII [A-Za-z0-9_] 上,CJK 字符两侧根本不存在词边界,
 // 混进同一个 \b(...)\b 组会导致中文占位符永远匹配不到(fix round: 评审实测 test('待补充')===false)。
@@ -52,6 +55,62 @@ function parseCallout(block) {
   if (!rest.every((l) => l.startsWith('>'))) return null; // 块内混了非引用行
   const body = rest.map((l) => l.replace(/^>\s?/, '')).join(' ').trim();
   return { type, title: m[2].trim(), body };
+}
+
+// 结构化图示 —— 封闭两种,理由同 CALLOUT_TYPES:开放语法等于把破版风险交给模型即兴发挥。
+//
+// 为什么做这个(2026-07-28 实证):那天的产出全篇零图示,三千字中文段落连排;
+// 而 AI 其实**已经在自发写表格**了 —— 「核心方法论」里一张 markdown 表格因渲染层不支持,
+// 整张以裸文本 `| 编排方式 | 适用场景 | 本质 | |---|---|---|` 泄漏进正文,C1-C9 无一能发现。
+// 所以这里同时做两件事:补上表格渲染(堵住已经在漏的洞),再给流程与数字两种表达方式
+// (疏导"想画图"的需求),都走纯 CSS/HTML —— 不引 mermaid.js,内联要 ~1MB,
+// 归档一年就是 300MB+,为几个流程图不值。
+//
+//   :::flow                      :::stats
+//   1. 步骤名 | 一句话说明        13% | 团队内部使用比例
+//   2. 步骤名 | 一句话说明        6T  | 预训练 token 量
+//   :::                          :::
+const DIRECTIVE_KINDS = ['flow', 'stats'];
+const DIRECTIVE_FENCE_RE = /^:::\s*([a-zA-Z]*)\s*$/;
+const DIRECTIVE_MIN_ITEMS = 2;
+
+// 以 ::: 开头的块 → 结构描述(合法与否都返回,由 directiveOk 判定);不是 → null。
+// 渲染与 C10 共用这一个解析,避免"渲染认它、自检不认"的错配(同 parseCallout 的教训)。
+function parseDirective(block) {
+  const lines = String(block).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  const m = lines[0].match(DIRECTIVE_FENCE_RE);
+  if (!m) return null;
+  const kind = (m[1] || '').toLowerCase();
+  const closed = lines.length >= 2 && lines[lines.length - 1] === ':::';
+  const bodyLines = closed ? lines.slice(1, -1) : lines.slice(1);
+  const items = [];
+  const bad = [];
+  for (const line of bodyLines) {
+    // 容忍 AI 顺手加的 `1.` / `-` 前缀:flow 本身就是有序的,序号由 CSS counter 画
+    const clean = line.replace(/^(?:[-*]|\d+[.、])\s*/, '').trim();
+    const parts = clean.split('|').map((c) => c.trim());
+    if (parts.length === 2 && parts[0] && parts[1]) items.push({ a: parts[0], b: parts[1] });
+    else bad.push(line);
+  }
+  return { kind, closed, items, bad };
+}
+
+function directiveOk(d) {
+  return !!d && d.closed && DIRECTIVE_KINDS.includes(d.kind)
+    && d.bad.length === 0 && d.items.length >= DIRECTIVE_MIN_ITEMS;
+}
+
+// 标准 markdown 表格 → { head, rows };不是表格 → null。
+// 首行表头、次行 |---|---| 分隔、其余为数据行;行尾 `|` 可有可无。
+function parseTable(block) {
+  const lines = String(block).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+  if (!lines.every((l) => l.startsWith('|'))) return null;
+  const cells = (l) => l.replace(/^\|/, '').replace(/\|$/, '').split('|').map((c) => c.trim());
+  const sep = cells(lines[1]);
+  if (sep.length === 0 || !sep.every((c) => /^:?-+:?$/.test(c))) return null;
+  return { head: cells(lines[0]), rows: lines.slice(2).map(cells) };
 }
 
 // fix round(FR3):原实现不转义 ",但 esc() 被用在 HTML 属性上下文(title="..."/href="...")——
@@ -405,6 +464,89 @@ function runChecks(doc, transcript, selected) {
     }
   }
 
+  // C10 结构化图示(:::flow / :::stats / markdown 表格)语法完整且内容可溯源
+  //
+  // 为什么需要:这三种块只在 renderParagraphs 里被识别,也就是只在背景段与方法论段生效。
+  // 写在 TL;DR / checklist 里会被 renderList 当普通文本吞掉;写坏了(没闭合、少一列)
+  // 会静默退化成一个装满 `|` 和 `:` 的段落 —— 正是 2026-07-28 表格泄漏事故的形态,
+  // 当时全部 8 项自检无一能发现。语法与位置都必须由脚本判定,不能只写在提示词里。
+  //
+  // 溯源规则(b/c 两条)与 C9 同源:图示是对正文的**提炼**,不是新增信息来源。
+  // 流程节点名、数字卡的值都必须在正文里出现过,否则等于给模型开了一个
+  // "在图里编造正文没有的数字"的口子,而图恰恰是读者最容易当结论记住的部分。
+  const stripBlocks = (text) => String(text || '').split(/\n{2,}/)
+    .filter((p) => !parseDirective(p.trim()) && !parseTable(p.trim())).join('\n\n');
+  const bodyProse = BODY_SECTION_KEYS.map((k) => stripBlocks(doc.sections[k])).join('\n');
+  const methodProse = stripBlocks(doc.sections.method);
+  const kinds = DIRECTIVE_KINDS.map((k) => `:::${k}`).join(' / ');
+
+  for (const key of BODY_SECTION_KEYS) {
+    const inRenderedSection = DIRECTIVE_SECTION_KEYS.includes(key);
+    for (const raw of (doc.sections[key] || '').split(/\n{2,}/)) {
+      const block = raw.trim();
+      if (!block) continue;
+      const d = parseDirective(block);
+      const t = d ? null : parseTable(block);
+
+      if (!d && !t) {
+        // 块被中间的空行切断时,收尾的 ``:::`` 会独立成块 —— 它不以 ::: 开头的合法
+        // fence 形态出现在首行以外的位置也算,这里统一按"出现游离 :::"报出来。
+        if (block.split('\n').some((l) => l.trim() === ':::')) {
+          add('C10', `${key} 段出现游离的 \`:::\` 行 —— ${kinds} 块内部不能有空行,`
+            + '否则会被按段落切开,收尾的 ::: 变成孤立文本');
+        }
+        continue;
+      }
+
+      if (!inRenderedSection) {
+        add('C10', `${key} 段里写了${d ? ` ${kinds} 结构化块` : ' markdown 表格'},`
+          + `但渲染层只在「二、背景」与「三、核心方法论」两段处理它们,`
+          + '写在这里会退化成一段裸文本。请移到那两段,或改写成普通列表');
+        continue;
+      }
+
+      if (d) {
+        if (!d.closed) {
+          add('C10', `${key} 段的 \`:::${d.kind}\` 块没有以单独一行 \`:::\` 收尾`);
+          continue;
+        }
+        if (!DIRECTIVE_KINDS.includes(d.kind)) {
+          add('C10', `${key} 段使用了不支持的结构化块 \`:::${d.kind || '(空)'}\`,只允许 ${kinds}`);
+          continue;
+        }
+        if (d.bad.length > 0) {
+          add('C10', `${key} 段的 \`:::${d.kind}\` 块有 ${d.bad.length} 行不符合 `
+            + `\`左侧 | 右侧\` 两段式(两侧都不能为空): "${d.bad[0].slice(0, 50)}"`);
+          continue;
+        }
+        if (d.items.length < DIRECTIVE_MIN_ITEMS) {
+          add('C10', `${key} 段的 \`:::${d.kind}\` 块只有 ${d.items.length} 项,`
+            + `要求 ≥${DIRECTIVE_MIN_ITEMS} 项 —— 一项的图示没有信息量,直接写成句子`);
+          continue;
+        }
+        for (const it of d.items) {
+          if (d.kind === 'flow' && !methodProse.includes(it.a)) {
+            add('C10', `\`:::flow\` 的节点「${it.a}」在方法论正文里找不到对应说法 ——`
+              + '流程图是对正文步骤的提炼,节点名请与正文里的步骤名保持一致,不要另起新词');
+          }
+          if (d.kind === 'stats' && !bodyProse.includes(it.a)) {
+            add('C10', `\`:::stats\` 的数值「${it.a}」在正文里没有出现过 ——`
+              + '数字卡只能提炼正文已经写过的数字,不能在图里引入正文没有的数据');
+          }
+        }
+      } else {
+        const badRow = t.rows.find((r) => r.length !== t.head.length);
+        if (badRow) {
+          add('C10', `${key} 段的表格有数据行列数(${badRow.length})与表头(${t.head.length})不一致: `
+            + `"${badRow.join(' | ').slice(0, 60)}"`);
+        }
+        if (t.rows.length === 0) {
+          add('C10', `${key} 段的表格只有表头和分隔行,没有数据行`);
+        }
+      }
+    }
+  }
+
   // C7 与 selected.json 一致
   if (transcript.video_id !== selected.id) {
     add('C7', `transcript.video_id(${transcript.video_id}) 与 selected.id(${selected.id}) 不一致`);
@@ -463,11 +605,39 @@ function renderCallout({ type, title, body }) {
   return `<div class="callout callout-${type}">${head}<p>${mdInlineToHtml(body)}</p></div>`;
 }
 
+function renderFlow(items) {
+  const li = items.map((it) => `<li><span class="flow-t">${mdInlineToHtml(it.a)}</span>`
+    + `<span class="flow-d">${mdInlineToHtml(it.b)}</span></li>`).join('\n');
+  return `<ol class="flow">\n${li}\n</ol>`;
+}
+
+function renderStats(items) {
+  const cards = items.map((it) => `<div class="stat"><div class="stat-v">${mdInlineToHtml(it.a)}</div>`
+    + `<div class="stat-l">${mdInlineToHtml(it.b)}</div></div>`).join('\n');
+  return `<div class="stats">\n${cards}\n</div>`;
+}
+
+function renderDirective(d) {
+  return d.kind === 'flow' ? renderFlow(d.items) : renderStats(d.items);
+}
+
+// 表格外面必须裹 .tw:正文栏宽 720px 放不下三列中文表,
+// 不给横向滚动容器会把 body 撑出横向滚动条(移动端尤其明显)。
+function renderTable({ head, rows }) {
+  const th = head.map((c) => `<th>${mdInlineToHtml(c)}</th>`).join('');
+  const body = rows.map((r) => '<tr>' + r.map((c) => `<td>${mdInlineToHtml(c)}</td>`).join('') + '</tr>').join('\n');
+  return `<div class="tw"><table class="dt">\n<thead><tr>${th}</tr></thead>\n<tbody>\n${body}\n</tbody>\n</table></div>`;
+}
+
 function renderParagraphs(body) {
   return body.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
     .map((p) => {
       const callout = parseCallout(p);
       if (callout) return renderCallout(callout);
+      const directive = parseDirective(p);
+      if (directiveOk(directive)) return renderDirective(directive);
+      const table = parseTable(p);
+      if (table) return renderTable(table);
       return `<p>${mdInlineToHtml(p.replace(/\n/g, ' '))}</p>`;
     }).join('\n');
 }
@@ -510,7 +680,19 @@ function renderQuotes(quotes, videoId) {
   }).join('\n');
 }
 
-function renderHtml(doc, selected, template) {
+// 封面缺失时页头退回暖纸底黑字,不留空洞也不报错 —— 封面是版面增强,不是必需品,
+// 让它有权失败是 fetch-thumbnail.js 敢 exit 0 的前提。
+// data URI 直接进 style 属性:esc() 会把 " 转成 &quot;,浏览器在属性上下文里解回来,
+// 而 base64 字母表(A-Za-z0-9+/=)本身不含 " < > &,不存在被截断的风险。
+function renderHero(thumbnail) {
+  if (!thumbnail || !thumbnail.data_uri) return { cls: '', img: '' };
+  return {
+    cls: ' has-img',
+    img: `<div class="hero-bg" style="background-image:url(${esc(thumbnail.data_uri)})"></div>`,
+  };
+}
+
+function renderHtml(doc, selected, template, thumbnail) {
   const vid = selected.id;
   const meta = [
     esc(selected.channelTitle),
@@ -518,8 +700,11 @@ function renderHtml(doc, selected, template) {
     `${Math.round((selected.durationSec || 0) / 60)} 分钟`,
     `<a href="${esc(selected.url)}">原视频</a>`,
   ].filter(Boolean).join(' · ');
+  const hero = renderHero(thumbnail);
 
   const units = {
+    '<!--HEROCLASS-->': hero.cls,
+    '<!--HEROIMG-->': hero.img,
     '<!--TITLE-->': esc(doc.title),
     '<!--META-->': meta,
     '<!--TLDR-->': renderList(doc.sections.tldr),
@@ -548,6 +733,10 @@ function renderHtml(doc, selected, template) {
 function usage() {
   return [
     'Usage: build-html.js --md <path> --transcript <path> --selected <path> --out <path>',
+    '                     [--thumbnail <path>]',
+    '',
+    '--thumbnail 指向 fetch-thumbnail.js 产出的 thumbnail.json;缺失或读不动时',
+    '            页头退回纯色底,不影响自检与生成。',
     '',
     'Exit: 0=通过 1=参数错 5=自检失败(不写 HTML)',
   ].join('\n');
@@ -555,13 +744,14 @@ function usage() {
 
 function main() {
   const argv = process.argv.slice(2);
-  const args = { md: null, transcript: null, selected: null, out: null };
+  const args = { md: null, transcript: null, selected: null, out: null, thumbnail: null };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--md': args.md = argv[++i]; break;
       case '--transcript': args.transcript = argv[++i]; break;
       case '--selected': args.selected = argv[++i]; break;
       case '--out': args.out = argv[++i]; break;
+      case '--thumbnail': args.thumbnail = argv[++i]; break;
       case '-h': case '--help': process.stdout.write(usage() + '\n'); process.exit(0);
       default:
         process.stderr.write(`Unknown flag: ${argv[i]}\n${usage()}\n`);
@@ -591,18 +781,31 @@ function main() {
     process.exit(5);
   }
 
+  // 封面是可选增强:文件不存在、JSON 坏掉都只 WARN 不中止 —— 因为封面挂了
+  // 而丢掉一整篇已经通过全部自检的教程,是明显不划算的交换。
+  let thumbnail = null;
+  if (args.thumbnail) {
+    try {
+      thumbnail = JSON.parse(fs.readFileSync(args.thumbnail, 'utf-8'));
+    } catch (e) {
+      process.stderr.write(`WARN: 读不到封面 ${args.thumbnail}(${e.message}),页头退回纯色底\n`);
+    }
+  }
+
   const tpl = fs.readFileSync(
     path.join(__dirname, '..', 'templates', 'tutorial.html'), 'utf-8'
   );
   fs.mkdirSync(path.dirname(args.out), { recursive: true });
-  fs.writeFileSync(args.out, renderHtml(doc, selected, tpl));
-  process.stderr.write(`自检 C1-C9 全通过 → ${args.out}\n`);
+  fs.writeFileSync(args.out, renderHtml(doc, selected, tpl, thumbnail));
+  process.stderr.write(`自检 C1-C10 全通过 → ${args.out}`
+    + `${thumbnail ? `(含封面 ${thumbnail.variant})` : '(无封面)'}\n`);
   process.exit(0);
 }
 
 module.exports = {
   parseTutorialMd, runChecks, renderHtml, normalize, normalizeQuote, tsToSec,
   parseCallout, CALLOUT_TYPES,
+  parseDirective, directiveOk, parseTable, DIRECTIVE_KINDS, DIRECTIVE_SECTION_KEYS,
 };
 
 if (require.main === module) main();

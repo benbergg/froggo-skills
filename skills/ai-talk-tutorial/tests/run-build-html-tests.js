@@ -740,3 +740,142 @@ test('T52: 第六段不被第五段吞掉(金句解析不受新段落影响)', (
     '第五段不该把第六段的内容吞进去');
   assert.ok(doc.glossary.length === 8, `对照表应解析出 8 行,实际 ${doc.glossary.length}`);
 });
+
+// ── 视觉增强(2026-07-28 方案 F/G):封面 hero、结构化图示、表格渲染与 C10 ──────
+
+const VIS = () => B.parseTutorialMd(load('tutorial-visual.md'));
+const TPL = () => fs.readFileSync(
+  path.join(__dirname, '..', 'references', 'templates', 'tutorial.html'), 'utf-8');
+// 断言渲染结果时必须只看 <body> —— 模板 <style> 里本来就有 .hero-bg、li::before
+// 这类字符串,拿整份文档做"不得出现 X"的断言会被 CSS 自己顶掉,测出来的是假信号。
+const bodyOf = (html) => html.split('<body>')[1] || '';
+
+test('T53: 含图示与表格的合格文档 → 零违规(C1-C10 不误伤新语法)', () => {
+  const v = B.runChecks(VIS(), TRANSCRIPT, SELECTED);
+  assert.deepEqual(v, [], `期望零违规,实际: ${JSON.stringify(v)}`);
+});
+
+test('T54: markdown 表格渲染成 <table>,不再以裸文本泄漏(2026-07-28 生产事故)', () => {
+  const html = B.renderHtml(VIS(), SELECTED, TPL());
+  assert.match(html, /<table class="dt">/, '表格必须渲染成 table 元素');
+  assert.match(html, /<th>团队规模<\/th>/, '表头单元格应逐格渲染');
+  assert.match(html, /<td>接入流水线全量回归<\/td>/, '数据行应逐格渲染');
+  // 事故形态:整张表被 renderParagraphs 折成一行塞进 <p>,页面上看到一串裸竖线
+  assert.doesNotMatch(html, /<p>[^<]*\|---\|/, '分隔行不得作为正文出现');
+  assert.doesNotMatch(html, /\|---\|/, 'markdown 分隔符不得出现在渲染结果里');
+});
+
+test('T55: :::flow / :::stats 渲染成结构化 HTML', () => {
+  const html = B.renderHtml(VIS(), SELECTED, TPL());
+  assert.match(html, /<ol class="flow">/);
+  assert.match(html, /<span class="flow-t">先定义失败样本<\/span>/);
+  assert.match(html, /<span class="flow-d">从真实流量里捞出出错的请求<\/span>/);
+  assert.match(html, /<div class="stats">/);
+  assert.match(html, /<div class="stat-v">80%<\/div>/);
+  assert.doesNotMatch(bodyOf(html), /:::/, '指令标记不得泄漏到渲染结果里');
+});
+
+test('T56: C10 判别 — :::flow 块未闭合被拦', () => {
+  const md = load('tutorial-visual.md').replace(
+    /3\. 用评估结果驱动模型选择 \| 在同一把尺子上横向比模型\n:::/,
+    '3. 用评估结果驱动模型选择 | 在同一把尺子上横向比模型');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /收尾/.test(x.message)),
+    `未闭合必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T57: C10 判别 — 不支持的块类型被拦(集合必须封闭)', () => {
+  const md = load('tutorial-visual.md').replace(':::flow', ':::timeline');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /timeline/.test(x.message)),
+    `未知类型必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T58: C10 判别 — 块内某行缺 | 分隔被拦', () => {
+  const md = load('tutorial-visual.md')
+    .replace('2. 建立可重放的评估集 | 固化成用例，每次改动全量重跑', '2. 建立可重放的评估集');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /两段式/.test(x.message)),
+    `缺分隔必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T59: C10 判别 — 表格数据行列数与表头不一致被拦', () => {
+  const md = load('tutorial-visual.md')
+    .replace('| 小团队 | 固化成可重放用例 | 每次合并 |', '| 小团队 | 固化成可重放用例 |');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /列数/.test(x.message)),
+    `列数不齐必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T60: C10 判别 — 数字卡引入正文没有的数字被拦(图不是新信息来源)', () => {
+  const md = load('tutorial-visual.md').replace('80% | 评估集对失败样本的覆盖率',
+    '97% | 评估集对失败样本的覆盖率');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /97%/.test(x.message)),
+    `编造数字必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T61: C10 判别 — flow 节点名与正文步骤名不一致被拦', () => {
+  const md = load('tutorial-visual.md')
+    .replace('1. 先定义失败样本 | 从真实流量里捞出出错的请求',
+      '1. 先做用户访谈 | 从真实流量里捞出出错的请求');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /先做用户访谈/.test(x.message)),
+    `节点另起新词必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T62: C10 判别 — 图示写在 checklist 段(渲染层不处理)被拦', () => {
+  const md = load('tutorial-visual.md').replace('## 四、可落地 checklist\n',
+    '## 四、可落地 checklist\n\n:::stats\n80% | 评估集对失败样本的覆盖率\n3 次 | 覆盖率达标后的月均线上回归\n:::\n');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10' && /渲染层只在/.test(x.message)),
+    `写错位置必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T63: C10 判别 — 块内部有空行导致被切开,游离的 ::: 被拦', () => {
+  const md = load('tutorial-visual.md').replace(
+    '2. 建立可重放的评估集 | 固化成用例，每次改动全量重跑\n',
+    '2. 建立可重放的评估集 | 固化成用例，每次改动全量重跑\n\n');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C10'),
+    `块被空行切开必须报出来,不能静默退化成裸文本: ${JSON.stringify(v.filter((x) => x.code === 'C10'))}`);
+});
+
+test('T64: 封面存在 → hero 用大图并加 has-img;不存在 → 退回纯色底且占位符清空', () => {
+  const doc = VIS();
+  const thumb = { variant: 'maxresdefault', data_uri: 'data:image/jpeg;base64,/9j/4AAQSkZJRg==' };
+  const withImg = B.renderHtml(doc, SELECTED, TPL(), thumb);
+  assert.match(withImg, /class="hero has-img"/, '有封面时必须挂 has-img,否则图上压字是黑字看不见');
+  assert.match(withImg, /background-image:url\(data:image\/jpeg;base64,/);
+
+  const noImg = B.renderHtml(doc, SELECTED, TPL(), null);
+  assert.match(noImg, /class="hero"/, '无封面时不应有 has-img');
+  assert.doesNotMatch(bodyOf(noImg), /hero-bg/, '无封面时不应留空的图层');
+  for (const html of [withImg, noImg]) {
+    assert.doesNotMatch(html, /<!--[A-Z_]+-->/, '模板锚点必须全部替换');
+  }
+});
+
+test('T65: 封面 JSON 缺 data_uri → 当作无封面处理(不生成半截 style)', () => {
+  const html = B.renderHtml(VIS(), SELECTED, TPL(), { variant: 'maxresdefault' });
+  assert.doesNotMatch(bodyOf(html), /hero-bg/);
+  assert.doesNotMatch(bodyOf(html), /background-image/);
+});
+
+test('T66: CLI — --thumbnail 指向不存在的文件时仍出 HTML(封面不是关键路径)', () => {
+  const tmp = freshTmp();
+  const out = path.join(tmp, 'tutorial.html');
+  fs.writeFileSync(path.join(tmp, 'transcript.json'), JSON.stringify(TRANSCRIPT));
+  fs.writeFileSync(path.join(tmp, 'selected.json'), JSON.stringify(SELECTED));
+  const r = runCli({ script: 'build-html.js', args: [
+    '--md', FIXTURE('tutorial-visual.md'),
+    '--transcript', path.join(tmp, 'transcript.json'),
+    '--selected', path.join(tmp, 'selected.json'),
+    '--thumbnail', path.join(tmp, 'nope.json'),
+    '--out', out] });
+  assert.equal(r.code, 0, `期望 exit 0,实际 ${r.code}: ${r.stderr}`);
+  assert.ok(fs.existsSync(out), '封面缺失不该阻断 HTML 生成');
+  assert.match(r.stderr, /WARN/, '应给出封面缺失的告警');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  r.cleanup();
+});
