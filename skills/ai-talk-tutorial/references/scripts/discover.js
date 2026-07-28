@@ -52,12 +52,15 @@ function scoreVideo(video, channel, cfg, today) {
 }
 
 // 返回淘汰原因;通过则 null
-function rejectReason(video, cfg, processedSet) {
+// archivedSet 与 processedSet 分开传:两者都表示"已经出过",但来源不同,
+// 混成一个集合会让 rejected 统计说不清是 state 记住的还是归档里翻出来的。
+function rejectReason(video, cfg, processedSet, archivedSet = new Set()) {
   const sec = parseDurationToSeconds(video.duration);
   if (sec > 0 && sec < 60) return 'shorts';
   if (/#shorts/i.test(video.title)) return 'shorts';
   if (sec > cfg.scoring.maxDurationSec) return 'too_long';
   if (processedSet.has(video.id)) return 'processed';
+  if (archivedSet.has(video.id)) return 'archived';
   if (video.liveBroadcastContent === 'live') return 'live';
   return null;
 }
@@ -108,6 +111,8 @@ function usage() {
     '  --out <dir>          输出目录(必填),写入 candidates.json',
     '  --from-file <json>   从文件读视频列表代替调 API(测试用)',
     '  --state <path>       已处理 id 记录(默认 <out>/../state/processed.json)',
+    '  --archive <dir>      归档根目录,扫其中 HTML 反查已出过的 video_id',
+    '                       (默认取 env AI_TALK_ARCHIVE_DIR;不存在则跳过)',
     '  --per-channel <n>    每频道拉取条数(默认 10)',
     '  --today <YYYY-MM-DD> 覆盖当天日期(补跑用)',
     '',
@@ -116,12 +121,13 @@ function usage() {
 }
 
 function parseArgs(argv) {
-  const out = { out: null, fromFile: null, state: null, perChannel: 10, today: null };
+  const out = { out: null, fromFile: null, state: null, archive: null, perChannel: 10, today: null };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--out': out.out = argv[++i]; break;
       case '--from-file': out.fromFile = argv[++i]; break;
       case '--state': out.state = argv[++i]; break;
+      case '--archive': out.archive = argv[++i]; break;
       case '--per-channel': out.perChannel = parseInt(argv[++i], 10); break;
       case '--today': out.today = argv[++i]; break;
       case '-h': case '--help': process.stdout.write(usage() + '\n'); process.exit(0);
@@ -148,6 +154,62 @@ function loadProcessed(statePath) {
   }
 }
 
+// 从归档目录里的 HTML 反查已经出过的 video_id。
+//
+// 为什么需要第二事实源:processed.json 由流水线末尾写入,归档由它前一步写入 ——
+// 中间任何一步崩掉,就会出现"归档里躺着成品、state 里没记录"的状态(2026-07-28 实证),
+// 次日重新选中同一个视频、重跑整条流水线。归档目录里的 HTML 是最硬的"已出过"证据。
+//
+// 只认 .html:归档同时落了 .md,但 HTML 才是 build-html.js 的正式产物,
+// 认 .md 会把手工笔记之类的旁路文件也当成归档凭据。
+function scanArchive(archiveDir) {
+  const found = new Set();
+  if (!archiveDir) return found;
+
+  let st;
+  try {
+    st = fs.statSync(archiveDir);
+  } catch {
+    return found; // 目录尚不存在 = 首次运行,正常状态,不报警
+  }
+  if (!st.isDirectory()) {
+    process.stderr.write(`WARN: --archive ${archiveDir} 不是目录,归档去重本次失效\n`);
+    return found;
+  }
+
+  // 教程 HTML 里 video_id 出现在金句锚点(watch?v=)和文末嵌入(embed/)两处
+  const RE = /youtube\.com\/(?:embed\/|watch\?v=)([A-Za-z0-9_-]{11})/g;
+  const MAX_DEPTH = 3; // <archive>/<year>/<file>.html 只需 2 层,留一层余量
+
+  const walk = (dir, depth) => {
+    if (depth > MAX_DEPTH) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch (e) {
+      process.stderr.write(`WARN: 无法读取归档目录 ${dir}(${e.message}),归档去重本次失效\n`);
+      return;
+    }
+    for (const ent of entries) {
+      const p = path.join(dir, ent.name);
+      if (ent.isDirectory()) { walk(p, depth + 1); continue; }
+      if (!ent.name.endsWith('.html')) continue;
+      let html;
+      try {
+        html = fs.readFileSync(p, 'utf-8');
+      } catch (e) {
+        process.stderr.write(`WARN: 无法读取归档文件 ${p}(${e.message}),归档去重本次失效\n`);
+        continue;
+      }
+      RE.lastIndex = 0;
+      let m;
+      while ((m = RE.exec(html)) !== null) found.add(m[1]);
+    }
+  };
+  walk(archiveDir, 0);
+  return found;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (!args.out) {
@@ -160,6 +222,7 @@ async function main() {
   );
   const statePath = args.state || path.join(args.out, '..', 'state', 'processed.json');
   const processed = loadProcessed(statePath);
+  const archived = scanArchive(args.archive || process.env.AI_TALK_ARCHIVE_DIR || null);
   const byId = new Map(cfg.channels.map((c) => [c.channelId, c]));
 
   let videos = [];
@@ -192,7 +255,7 @@ async function main() {
   for (const v of videos) {
     const ch = byId.get(v.channelId);
     if (!ch) { rejected[v.id] = 'not_whitelisted'; continue; }
-    const why = rejectReason(v, cfg, processed);
+    const why = rejectReason(v, cfg, processed, archived);
     if (why) { rejected[v.id] = why; continue; }
     candidates.push({
       id: v.id,
@@ -214,7 +277,9 @@ async function main() {
   );
 
   const counts = Object.values(rejected).reduce((m, r) => (m[r] = (m[r] || 0) + 1, m), {});
-  process.stderr.write(`candidates=${candidates.length} rejected=${JSON.stringify(counts)}\n`);
+  process.stderr.write(
+    `candidates=${candidates.length} archived=${archived.size} rejected=${JSON.stringify(counts)}\n`
+  );
 
   if (candidates.length === 0) {
     process.stderr.write('no candidates today\n');
@@ -223,7 +288,10 @@ async function main() {
   process.exit(0);
 }
 
-module.exports = { parseDurationToSeconds, keywordFactor, durationFactor, scoreVideo, rejectReason, uploadsPlaylistId };
+module.exports = {
+  parseDurationToSeconds, keywordFactor, durationFactor, scoreVideo,
+  rejectReason, uploadsPlaylistId, scanArchive,
+};
 
 if (require.main === module) {
   main().catch((e) => {

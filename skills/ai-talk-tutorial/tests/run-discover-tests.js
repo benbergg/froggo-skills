@@ -129,3 +129,143 @@ test('T13: --state 指向损坏的 processed.json → WARN 到 stderr,去重状�
     r.cleanup();
   }
 });
+
+// ---- 方案 B(2026-07-28):归档目录作为去重的第二事实源。
+// 实证问题:7-28 归档目录里有 2 篇,processed.json 只记了 1 条 —— 归档成功与 state 写入
+// 不是原子的,漏记的那一篇次日会被重新选中、重跑整条流水线。归档目录里躺着的 HTML 是
+// 比 processed.json 更可靠的"这个视频已经出过"证据,扫它天然幂等。
+
+function writeArchive(root, relPath, videoId) {
+  const p = path.join(root, relPath);
+  fs.mkdirSync(path.dirname(p), { recursive: true });
+  fs.writeFileSync(p, `<!doctype html><html><body>
+<a href="https://www.youtube.com/watch?v=${videoId}&t=356s">[5:56]</a>
+<iframe src="https://www.youtube.com/embed/${videoId}"></iframe>
+</body></html>`);
+  return p;
+}
+
+test('T14: 归档 HTML 里的 video_id 被淘汰,原因 archived(与 processed 区分开)', () => {
+  const out = freshTmp();
+  const archive = freshTmp();
+  writeArchive(archive, '2026/2026-07-28-some-talk.html', 'aaaaaaaaaaa');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--archive', archive],
+  });
+  try {
+    assert.equal(r.code, 0, `expected 0, got ${r.code}: ${r.stderr}`);
+    const c = JSON.parse(fs.readFileSync(path.join(out, 'candidates.json'), 'utf-8'));
+    assert.equal(c.rejected['aaaaaaaaaaa'], 'archived', '归档里的视频应被淘汰且原因可区分');
+    assert.ok(!c.candidates.some((x) => x.id === 'aaaaaaaaaaa'), '归档过的视频不该再进候选');
+    assert.ok(c.candidates.some((x) => x.id === 'bbbbbbbbbbb'), '未归档的视频应保留');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.rmSync(archive, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T15: --archive 目录不存在 → 静默跳过,不 WARN 不中止(首次运行的正常形态)', () => {
+  const out = freshTmp();
+  const missing = path.join(freshTmp(), 'never-created');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--archive', missing],
+  });
+  try {
+    assert.equal(r.code, 0, `expected 0, got ${r.code}: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /WARN/, '归档目录尚不存在是首次运行的正常状态,不该报警');
+    const c = JSON.parse(fs.readFileSync(path.join(out, 'candidates.json'), 'utf-8'));
+    assert.ok(c.candidates.length >= 2);
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T16: processed.json 与归档取并集,两个来源各自的淘汰原因都正确', () => {
+  const out = freshTmp();
+  const archive = freshTmp();
+  const state = path.join(out, 'processed.json');
+  fs.writeFileSync(state, JSON.stringify({ processed: ['bbbbbbbbbbb'] }));
+  writeArchive(archive, '2026/x.html', 'aaaaaaaaaaa');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--state', state, '--archive', archive],
+  });
+  try {
+    // fixture 第三条是 shorts,本就被淘汰 → 两来源各吃掉一条后无候选,exit 4 是正确结果。
+    // 本例要验的是"并集生效且两种来源可区分",不是候选数量(T14 已覆盖未归档的保留)。
+    assert.equal(r.code, 4, `expected 4, got ${r.code}: ${r.stderr}`);
+    const c = JSON.parse(fs.readFileSync(path.join(out, 'candidates.json'), 'utf-8'));
+    assert.equal(c.rejected['aaaaaaaaaaa'], 'archived');
+    assert.equal(c.rejected['bbbbbbbbbbb'], 'processed');
+    assert.equal(c.candidates.length, 0);
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.rmSync(archive, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T17: 归档目录里的非 HTML 文件与无视频链接的 HTML 被忽略,不误伤候选', () => {
+  const out = freshTmp();
+  const archive = freshTmp();
+  fs.writeFileSync(path.join(archive, 'index.html'), '<a href="2026/foo.html">foo</a>');
+  fs.writeFileSync(path.join(archive, 'notes.md'), 'https://www.youtube.com/embed/aaaaaaaaaaa');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--archive', archive],
+  });
+  try {
+    assert.equal(r.code, 0, `expected 0, got ${r.code}: ${r.stderr}`);
+    const c = JSON.parse(fs.readFileSync(path.join(out, 'candidates.json'), 'utf-8'));
+    assert.ok(c.candidates.some((x) => x.id === 'aaaaaaaaaaa'),
+      '.md 里的链接不算归档凭据(归档产物是 HTML),index.html 无视频链接也不该匹配');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.rmSync(archive, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T18: --archive 指向普通文件 → WARN 点明归档去重失效,但不中止流程', () => {
+  const out = freshTmp();
+  const notDir = path.join(freshTmp(), 'a-file.html');
+  fs.writeFileSync(notDir, 'x');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--archive', notDir],
+  });
+  try {
+    assert.equal(r.code, 0, `expected 0(归档扫描失败不应中止今天的发现), got ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /WARN/);
+    assert.match(r.stderr, /归档去重本次失效/, 'WARN 文案应明确点出归档去重失效,而不是静默无信号');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T19: 归档扫描深入年份子目录,且 stderr 报出扫描到的条数(运维可见)', () => {
+  const out = freshTmp();
+  const archive = freshTmp();
+  writeArchive(archive, '2025/old.html', 'aaaaaaaaaaa');
+  writeArchive(archive, '2026/new.html', 'bbbbbbbbbbb');
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--archive', archive],
+  });
+  try {
+    assert.equal(r.code, 4, `两条合格视频都在归档里 → 无候选, got ${r.code}: ${r.stderr}`);
+    const c = JSON.parse(fs.readFileSync(path.join(out, 'candidates.json'), 'utf-8'));
+    assert.equal(c.rejected['aaaaaaaaaaa'], 'archived', '2025/ 子目录未被扫到');
+    assert.equal(c.rejected['bbbbbbbbbbb'], 'archived', '2026/ 子目录未被扫到');
+    assert.match(r.stderr, /archived=2/, 'stderr 应报出归档扫描到的 id 条数');
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    fs.rmSync(archive, { recursive: true, force: true });
+    r.cleanup();
+  }
+});

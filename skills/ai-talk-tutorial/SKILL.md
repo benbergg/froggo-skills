@@ -58,12 +58,22 @@ DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 mkdir -p "$WORK"
 
+ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/workspace/Knowledge-Library/08-Research/AI-Talks}"
+
 node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/discover.js" \
   --out "$WORK" --today "$DATE" \
-  --state "$HOME/.cache/ai-talk-tutorial/state/processed.json"
+  --state "$HOME/.cache/ai-talk-tutorial/state/processed.json" \
+  --archive "$ARCHIVE"
 ```
 
 `--state` 显式传(默认值恰好等于 `<out>/../state/processed.json` = 同一路径,显式传是为了不让这条依赖藏在两个脚本的默认值巧合里 —— 改了 `$WORK` 定义就会静默失去去重能力)。
+
+`--archive` 是**去重的第二事实源**:扫归档目录里的 HTML 反查已经出过的 video_id。
+`processed.json` 由 Step 5 末尾写入、归档由它前一步写入,中间任何一步崩掉都会留下
+"归档里躺着成品、state 里没记录"的状态(2026-07-28 实证:归档 2 篇、state 只有 1 条),
+次日会重新选中同一个视频白跑一整条流水线。两个来源取并集,淘汰原因分别记为
+`processed` / `archived`,stderr 的 `archived=N` 报出本次扫到的条数。
+归档目录不存在(首次运行)静默跳过;传成普通文件或读不动会 WARN 但不中止。
 
 - exit 0 → 继续 Step 2
 - exit 1(缺 `YOUTUBE_API_KEY` 或参数错)→ 中止,提示补齐 env 后重跑
