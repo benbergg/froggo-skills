@@ -148,6 +148,59 @@ test('刷新后 token 文件为空时不得把空 token 写进 STATE', async () 
   assert.equal(STATE.token, 'old-token', 'STATE.token 不能被 null 覆盖');
 });
 
+// ---- 401 必须可见 -------------------------------------------------------
+//
+// 禅道对失效 token 明确回 401 + {"error":"Unauthorized"} —— 信息一直都在,
+// 是 ztFetch 从不往外说。2026-07-28 之前 401 全程零痕迹:stdout 没有、
+// trace 没有、exit code 正常、api_calls 只是多了 6(那数字本来就天天浮动)。
+// token 风暴因此躲过了好几轮排查。「能自愈」不等于「没成本」。
+
+test('401 必须打到 stderr,不能静默自愈', async () => {
+  TOKEN.refresh = () => {};
+  TOKEN.read = () => 'fresh-token';
+  globalThis.fetch = async (url, opts) =>
+    (opts.headers.Token === 'old-token'
+      ? { status: 401, ok: false, text: async () => '{"error":"Unauthorized"}' }
+      : { status: 200, ok: true, text: async () => '{}' });
+
+  const lines = [];
+  const realErr = console.error;
+  console.error = (m) => lines.push(String(m));
+  try {
+    await ztFetch('/products/95/bugs?status=all&order=closedDate_desc');
+  } finally {
+    console.error = realErr;
+  }
+
+  assert.equal(lines.length, 1, '401 必须恰好产生一行提示');
+  assert.match(lines[0], /401/, '提示必须点明是 401');
+  assert.match(lines[0], /\/products\/95\/bugs/, '提示必须带上是哪个请求撞的');
+  assert.ok(!lines[0].includes('status=all'), 'query string 不入日志,避免泄漏参数');
+});
+
+test('复用他人刷新结果的那些 401 也要各自可见(否则单飞回归时看不出次数变化)', async () => {
+  TOKEN.refresh = () => {};
+  TOKEN.read = () => 'fresh-token';
+  globalThis.fetch = async (url, opts) =>
+    (opts.headers.Token === 'old-token'
+      ? { status: 401, ok: false, text: async () => '' }
+      : { status: 200, ok: true, text: async () => '{}' });
+
+  const lines = [];
+  const realErr = console.error;
+  console.error = (m) => lines.push(String(m));
+  try {
+    await Promise.all(['/a', '/b', '/c'].map((p) => ztFetch(p)));
+  } finally {
+    console.error = realErr;
+  }
+
+  assert.equal(lines.length, 3, '3 条 401 应各打一行');
+  assert.equal(lines.filter((l) => l.includes('本条负责重新登录')).length, 1,
+    '只有 1 条承担真实登录 —— 这行数字就是单飞是否还活着的直接读数');
+  assert.equal(lines.filter((l) => l.includes('复用本批已刷新的 token')).length, 2);
+});
+
 // ---- 前置刷新 -----------------------------------------------------------
 
 const NOW = Date.parse('2026-07-28T12:00:00Z');

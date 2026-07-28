@@ -259,8 +259,17 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
 
       if (res.status === 401 && allowRefresh) {
         obs.requestEnd(tk, { path: pathAndQuery, source, phase, ctx, attempt: attempt + 1, ok: false, status: 401 });
+        // 禅道对失效 token 明确回 401 + {"error":"Unauthorized"},信息一直都在,
+        // 是这里从不往外说 —— 2026-07-28 之前 401 全程零痕迹(stdout 没有、
+        // trace 没有、exit code 正常),token 风暴因此藏了很多轮排查。
+        // 「能自愈」不等于「没成本」:那轮自愈的代价是 phase1 多花 24s。
+        const willRefresh = TOKEN.gen === genAtRequest;
+        console.error(
+          `WARN: 401 Unauthorized on ${pathAndQuery.split('?')[0]} — token 失效,` +
+          (willRefresh ? '本条负责重新登录' : '复用本批已刷新的 token 直接重试')
+        );
         try {
-          if (TOKEN.gen === genAtRequest) {
+          if (willRefresh) {
             // 本批里第一个发现 token 失效的,由它承担这次 spawnSync 登录。
             TOKEN.refresh();
             const fresh = TOKEN.read();

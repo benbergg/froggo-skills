@@ -381,6 +381,11 @@ function healthLine(record, history) {
     const [src, agg] = slowest;
     const retries = entries.reduce((n, [, s]) => n + (s.retries || 0), 0);
     const timeouts = entries.reduce((n, [, s]) => n + ((s.failures || {}).timeout || 0), 0);
+    // 401 会被自动刷新救回来,所以从不表现为失败 —— 正因如此更要报出来:
+    // 它的代价是转移的(spawnSync 冻结事件循环,慢的账记在别的端点头上),
+    // 只看端点耗时永远追不到它。正常应为 0(前置刷新已把 token 提前换掉),
+    // 一旦冒出数字就说明前置刷新阈值失准或 token 在跑的中途失效了。
+    const auths = entries.reduce((n, [, s]) => n + ((s.failures || {}).auth || 0), 0);
     const cmp = compareToBaseline(record, history, { source: src, metric: 'ms_p95' });
     const parts = [
       `${Math.round(record.duration_ms / 1000)}s`,
@@ -388,6 +393,7 @@ function healthLine(record, history) {
     ];
     if (retries) parts.push(`重试 ${retries}`);
     if (timeouts) parts.push(`超时 ${timeouts}`);
+    if (auths) parts.push(`401 ${auths} ⚠️`);
     parts.push(`${src} P95 ${(agg.ms_p95 / 1000).toFixed(1)}s`);
     if (cmp) parts.push(`较基线 ${cmp.deltaPct >= 0 ? '+' : ''}${cmp.deltaPct}%${cmp.deltaPct > 80 ? ' ⚠️' : ''}`);
     return parts.join(' | ');
