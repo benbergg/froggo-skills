@@ -302,23 +302,37 @@ git add "$REL/$YEAR/$DATE-$SLUG.html" "$REL/$YEAR/$DATE-$SLUG.md" "$REL/index.ht
 # 一旦文件损坏就会在这里抛异常,而这个 heredoc 排在 git push 成功之后,会把"git 已经
 # 提交成功"的 Step 5 报成失败(容错策略与 discover.js 不一致)。改成损坏时 WARN 并以
 # 空数组重建,不让它在 push 成功之后把整步炸掉。
-WORK="$WORK" node - <<'JS'
+WORK="$WORK" DATE="$DATE" node - <<'JS'
 const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
-const work = process.env.WORK;
+const work = process.env.WORK, date = process.env.DATE;
 const state = path.join(os.homedir(), '.cache', 'ai-talk-tutorial', 'state', 'processed.json');
 fs.mkdirSync(path.dirname(state), { recursive: true });
-let seen = [];
+
+let seen = [], history = [];
 if (fs.existsSync(state)) {
   try {
-    seen = JSON.parse(fs.readFileSync(state, 'utf-8')).processed || [];
+    const o = JSON.parse(fs.readFileSync(state, 'utf-8'));
+    seen = o.processed || [];
+    history = o.history || [];
   } catch (e) {
     process.stderr.write('WARN: ' + state + ' 损坏(' + e.message + '),去重状态以空数组重建\n');
-    seen = [];
+    seen = []; history = [];
   }
 }
-const vid = JSON.parse(fs.readFileSync(path.join(work, 'selected.json'), 'utf-8')).id;
-if (!seen.includes(vid)) seen.push(vid);
-fs.writeFileSync(state, JSON.stringify({ processed: seen.slice(-500) }, null, 2) + '\n');
+
+const sel = JSON.parse(fs.readFileSync(path.join(work, 'selected.json'), 'utf-8'));
+if (!seen.includes(sel.id)) seen.push(sel.id);
+
+// history 是 discover.js 频道多样性降权的唯一数据源 —— 缺了它 diversityFactor
+// 永远读到空数组,降权形同虚设,2026-07-28"两篇都来自 AI Engineer"会原样复发。
+if (!history.some((h) => h && h.id === sel.id)) {
+  history.push({ id: sel.id, channel: sel.channelHandle || '', date: date });
+}
+
+fs.writeFileSync(state, JSON.stringify({
+  processed: seen.slice(-500),
+  history: history.slice(-200),
+}, null, 2) + '\n');
 JS
 ```
 

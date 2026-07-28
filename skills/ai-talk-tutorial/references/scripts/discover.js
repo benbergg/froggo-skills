@@ -45,10 +45,26 @@ function durationFactor(sec, cfg) {
   return 1.0;
 }
 
-function scoreVideo(video, channel, cfg, today) {
+// 频道多样性衰减:近 diversityDays 天内该频道每出过一次,分数乘一次 diversityPenalty。
+//
+// 2026-07-28 实证:当天产出的两篇都来自 AI Engineer,打分公式里没有任何一项在管
+// "最近是不是老出同一家"。做成**降权**而不是排除 —— 某天确实只有那个频道有好内容时
+// 仍然该选它,只是要先被别的频道公平比一比。窗口是滑动的,不是永久黑名单。
+function diversityFactor(channel, cfg, today, history) {
+  if (!channel || !channel.handle || !Array.isArray(history) || history.length === 0) return 1;
+  const days = cfg.scoring.diversityDays ?? 7;
+  const penalty = cfg.scoring.diversityPenalty ?? 0.55;
+  const n = history.filter(
+    (h) => h && h.channel === channel.handle && h.date && daysBetween(h.date, today) < days
+  ).length;
+  return Math.pow(penalty, n);
+}
+
+function scoreVideo(video, channel, cfg, today, history = []) {
   const sec = parseDurationToSeconds(video.duration);
   const recency = Math.pow(cfg.scoring.recencyDecay, daysBetween(video.publishedAt, today));
-  return channel.weight * keywordFactor(video, cfg) * durationFactor(sec, cfg) * recency;
+  return channel.weight * keywordFactor(video, cfg) * durationFactor(sec, cfg) * recency
+    * diversityFactor(channel, cfg, today, history);
 }
 
 // 返回淘汰原因;通过则 null
@@ -139,6 +155,18 @@ function parseArgs(argv) {
   return out;
 }
 
+// 出片历史(频道多样性用)。旧格式 state 没有 history 字段 —— 返回空数组即可,
+// 不 WARN:去重是主线功能,不能被多样性这个次要特性拖出噪音。
+function loadHistory(statePath) {
+  if (!statePath || !fs.existsSync(statePath)) return [];
+  try {
+    const o = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
+    return Array.isArray(o.history) ? o.history : [];
+  } catch {
+    return []; // 损坏已由 loadProcessed 报过 WARN,这里不重复刷屏
+  }
+}
+
 function loadProcessed(statePath) {
   if (!statePath || !fs.existsSync(statePath)) return new Set();
   try {
@@ -222,6 +250,7 @@ async function main() {
   );
   const statePath = args.state || path.join(args.out, '..', 'state', 'processed.json');
   const processed = loadProcessed(statePath);
+  const history = loadHistory(statePath);
   const archived = scanArchive(args.archive || process.env.AI_TALK_ARCHIVE_DIR || null);
   const byId = new Map(cfg.channels.map((c) => [c.channelId, c]));
 
@@ -264,7 +293,7 @@ async function main() {
       channelHandle: ch.handle,
       publishedAt: v.publishedAt,
       durationSec: parseDurationToSeconds(v.duration),
-      score: Number(scoreVideo(v, ch, cfg, today).toFixed(4)),
+      score: Number(scoreVideo(v, ch, cfg, today, history).toFixed(4)),
       url: `https://www.youtube.com/watch?v=${v.id}`,
     });
   }
@@ -290,7 +319,7 @@ async function main() {
 
 module.exports = {
   parseDurationToSeconds, keywordFactor, durationFactor, scoreVideo,
-  rejectReason, uploadsPlaylistId, scanArchive,
+  rejectReason, uploadsPlaylistId, scanArchive, diversityFactor,
 };
 
 if (require.main === module) {

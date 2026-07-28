@@ -269,3 +269,87 @@ test('T19: 归档扫描深入年份子目录,且 stderr 报出扫描到的条数
     r.cleanup();
   }
 });
+
+// ---- 方案 E(2026-07-28):频道多样性。
+// 实证问题:7-28 产出的两篇都来自 AI Engineer 频道,打分公式里没有任何一项在管
+// "最近是不是老出同一家"。做成**降权**而不是排除 —— 某天确实只有那个频道有好内容时,
+// 仍然该选它,只是要先被别的频道公平地比一比。
+// 历史来自 processed.json 的 history 字段(Step 5 写入);旧格式没有这个字段,
+// 必须照常工作 —— 去重是主线功能,不能被多样性这个次要特性拖挂。
+
+function histState(dir, entries) {
+  const p = path.join(dir, 'processed.json');
+  fs.writeFileSync(p, JSON.stringify({ processed: [], history: entries }));
+  return p;
+}
+
+test('T20: 近 7 天出过的频道被降权,但仍是正分(降权不是排除)', () => {
+  const ch = CFG.channels[0];
+  const base = D.scoreVideo(vid(), ch, CFG, TODAY, []);
+  const penal = D.scoreVideo(vid(), ch, CFG, TODAY,
+    [{ id: 'x', channel: ch.handle, date: '2026-07-26' }]);
+  assert.ok(penal < base, `出过的频道应降权: ${penal} 应 < ${base}`);
+  assert.ok(penal > 0, '降权不该把分数打到 0 —— 那等于排除');
+});
+
+test('T21: 近期出现次数越多,降权越狠', () => {
+  const ch = CFG.channels[0];
+  const once = D.scoreVideo(vid(), ch, CFG, TODAY, [{ id: 'a', channel: ch.handle, date: '2026-07-26' }]);
+  const twice = D.scoreVideo(vid(), ch, CFG, TODAY, [
+    { id: 'a', channel: ch.handle, date: '2026-07-26' },
+    { id: 'b', channel: ch.handle, date: '2026-07-25' },
+  ]);
+  assert.ok(twice < once, `两次应比一次降得更狠: ${twice} 应 < ${once}`);
+});
+
+test('T22: 超出窗口的历史不再降权(窗口是滑动的,不是永久黑名单)', () => {
+  const ch = CFG.channels[0];
+  const base = D.scoreVideo(vid(), ch, CFG, TODAY, []);
+  const old = D.scoreVideo(vid(), ch, CFG, TODAY,
+    [{ id: 'x', channel: ch.handle, date: '2026-06-01' }]);
+  assert.equal(old, base, '两个月前出过的频道不该还在被压');
+});
+
+test('T23: 别的频道出过不影响本频道(降权按频道计,不是全局)', () => {
+  const a = CFG.channels[0];
+  const b = CFG.channels[1];
+  const base = D.scoreVideo(vid(), a, CFG, TODAY, []);
+  const other = D.scoreVideo(vid(), a, CFG, TODAY, [{ id: 'x', channel: b.handle, date: '2026-07-26' }]);
+  assert.equal(other, base);
+});
+
+test('T24: 旧格式 state(无 history 字段)照常工作,不降权也不报错(向后兼容)', () => {
+  const out = freshTmp();
+  const state = path.join(out, 'processed.json');
+  fs.writeFileSync(state, JSON.stringify({ processed: ['zzzzzzzzzzz'] }));
+  const r = runCli({
+    script: 'discover.js',
+    args: ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--state', state, '--today', TODAY],
+  });
+  try {
+    assert.equal(r.code, 0, `旧格式 state 不该让流程挂掉: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /WARN/);
+  } finally {
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+  }
+});
+
+test('T25: CLI 端到端 — history 里有该频道时,候选分数低于无 history 时', () => {
+  const run = (entries) => {
+    const out = freshTmp();
+    const args = ['--out', out, '--from-file', FIXTURE('videos-api-ok.json'), '--today', TODAY];
+    if (entries) args.push('--state', histState(out, entries));
+    const r = runCli({ script: 'discover.js', args });
+    const c = JSON.parse(fs.readFileSync(path.join(out, 'candidates.json'), 'utf-8'));
+    fs.rmSync(out, { recursive: true, force: true });
+    r.cleanup();
+    return { code: r.code, top: c.candidates[0] };
+  };
+  const plain = run(null);
+  const penalized = run([{ id: 'zzz', channel: '@aiDotEngineer', date: '2026-07-26' }]);
+  assert.equal(plain.code, 0);
+  assert.equal(penalized.code, 0);
+  assert.ok(penalized.top.score < plain.top.score,
+    `降权应体现在 candidates.json 的 score 上: ${penalized.top.score} 应 < ${plain.top.score}`);
+});
