@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 'use strict';
-// tutorial.md → C1-C8 自检 → 自包含 tutorial.html。
+// tutorial.md → C1-C9 自检 → 自包含 tutorial.html。
 //
 // 物理断路:任一自检不过则 exit 5 且不写 HTML,下游 git/推送步骤自然无文件可用。
 // 注入逻辑逐单元构建(禁全局跨块正则),沿用 V1 youtube-tutorial-maker/scripts/integrate.py 的教训。
@@ -596,7 +596,7 @@ function main() {
   );
   fs.mkdirSync(path.dirname(args.out), { recursive: true });
   fs.writeFileSync(args.out, renderHtml(doc, selected, tpl));
-  process.stderr.write(`自检 C1-C8 全通过 → ${args.out}\n`);
+  process.stderr.write(`自检 C1-C9 全通过 → ${args.out}\n`);
   process.exit(0);
 }
 
