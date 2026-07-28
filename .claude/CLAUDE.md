@@ -104,7 +104,7 @@ ai-talk-tutorial(AI 演讲教程日报)
 ├── 强依赖 openclaw CLI(message send --channel feishu 推送,无 dingtalk-log 依赖)
 ├── 强依赖 YOUTUBE_API_KEY(Data API v3 发现层)
 ├── 强依赖 Node.js 18+(原生 fetch)
-├── 软依赖 yt-dlp ≥2026.06(三级降级兜底)
+├── 软依赖 yt-dlp ≥2026.06(三级降级兜底;7-28 实测 tier2 web+cookies 可用)
 └── 字幕层移植自 VM llm-video-log/subtitle.ts,两处需同步维护
 ```
 
@@ -145,6 +145,40 @@ ai-talk-tutorial(AI 演讲教程日报)
 - **collect.js 新派生**:story.is_active/stale_days/last_activity_date/is_today_tested、task.overdue_days、bug.resolved_age_days/display_title/display_reporter、summary.story.{active,stale}
 - build-draft.js:概览第 2 列允许非纯数字、表格外说明行(脚注)转换后保留
 - 测试:`tests/run-derive-v4-tests.js`(34 项)+ build-draft V4 3 项
+
+### ai-talk-tutorial v2.1 (2026-07-28)
+
+基于 7-28 首两篇真实产出的评估重构,五项按 B→C→D→A→E 顺序落地:
+
+- **归档目录作为去重第二事实源**:`discover.js --archive` 扫归档 HTML 反查 video_id,与
+  `processed.json` 取并集,淘汰原因分记 `processed` / `archived`。实证根因:归档由 Step 5
+  前一步写、state 由末尾写,中间崩掉就留下"归档有成品、state 无记录"(当天归档 2 篇 state 1 条),
+  次日重跑白烧一条流水线。归档 HTML 是最硬的已出过证据,扫它幂等。
+- **正文 callout 疏堵结合**:支持 `[!tip]` / `[!warning]` / `[!note]` **封闭三种**,
+  其余任何裸 `>` 由 C6 拦下 exit 5(金句段豁免)。实证:AI 自发写 `> [!tip]`,
+  渲染成 `<p>&gt; [!tip] &gt; …</p>`,标记字面泄漏 + 样式全丢,而当时既无约束禁止也无自检能发现。
+  渲染与自检共用 `parseCallout()`,避免"渲染认、自检不认"的错配。
+- **金句有界清洗**:C3/C4 匹配前对金句与转录**两边**同做 `normalizeQuote`(去 um/uh/er/ah/mm
+  等无实词歧义填充音 + 折叠连续重复词)。实证根因是约束打架:C4 精确子串 + "不得润色"叠加,
+  必然产出 `Um and the way we we look at things ... is uh we don't trust anything.`。
+  两边同归一化 → 子串关系不变,删实词/改词序/编造依然 exit 5。
+  `like` / `actually` / `you know` / `basically` 是实词,明确排除在填充音集合外。
+- **C9 专有名词溯源 + 可选第六段「术语对照」**:正文里**含大写字母**的英文词若在
+  `full_text` 与 `selected.title` 中都查不到,必须在对照表声明,且声明的"转录原文"
+  必须在 transcript 里真实存在。表渲染进 HTML 折叠区供人工复核。
+  实证:同一篇里 `Deep Chem`→`DeepChem`(ASR 误听原样传播)、`we turn 360`→`Qwen3-360`
+  (猜出不存在的型号)、`sweep bench agent less`→`swe-bench agentless`(纠对了)——
+  三种命运说明完全没有机制在管,而错的 kernel 名进了「可落地 checklist」。
+  **判别口径由真实产物校准**:该篇 145 个英文 token,转录+标题查不到 13 个,
+  加"含大写字母"后剩 8 个、误报 0(滤掉的 orchestrated / ad-hoc / cross-rank 全是小写普通词)。
+  C9 不保证纠对,保证的是每次改写显式声明且指向转录里真实存在的说法。
+- **频道多样性降权**:近 7 天该频道每出过一次分数乘 0.55,历史存 `processed.json.history`
+  (Step 5 写入,旧格式无该字段照常工作)。实证:当天两篇都来自 AI Engineer。
+  做成降权而非排除,窗口滑动不是永久黑名单。
+
+测试 101 项(100 pass / 1 skip),每项新增检查均经 revert-and-rerun 验证判别力。
+`transcript-glossary.json` / `tutorial-glossary-{declared,undeclared}.md` 三个夹具
+直接取自 7-28 真实产物 —— C9 的 0 误报断言只有贴生产形态的夹具才立得住。
 
 ## 版本管理
 
