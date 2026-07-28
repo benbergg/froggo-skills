@@ -22,6 +22,8 @@
 const fs = require('fs');
 const path = require('path');
 const { spawnSync } = require('child_process');
+// 采集可观测性。所有入口自带 try/catch,日志故障不会影响采集(见 lib/obs.js)。
+const obs = require('./lib/obs.js');
 
 // ---- constants ----------------------------------------------------------
 
@@ -167,9 +169,11 @@ function sleep(ms) {
 const REQ_TIMEOUT_MS = parseInt(process.env.EXP_COMPASS_REQ_TIMEOUT_MS || '60000', 10);
 const SLOW_REQ_TIMEOUT_MS = parseInt(process.env.EXP_COMPASS_SLOW_REQ_TIMEOUT_MS || '90000', 10);
 
-async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIMEOUT_MS } = {}) {
+async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIMEOUT_MS, source = null, phase = null, ctx = null } = {}) {
   if (STATE.apiCalls >= STATE.budget) {
     STATE.budgetExceeded = true;
+    const tk = obs.requestStart();
+    obs.requestEnd(tk, { path: pathAndQuery, source, phase, ctx, ok: false, reason: 'budget' });
     return { ok: false, status: 0, body: null, reason: 'budget' };
   }
   STATE.apiCalls++;
@@ -190,6 +194,16 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
   for (let attempt = 0; attempt <= backoff.length; attempt++) {
     const ctrl = new AbortController();
     const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    // 每次 attempt 都是一次真实 HTTP 请求,各记一条 —— 重试放大正是要观测的
+    // 对象(2026-07-27:一次慢响应被拆成 3×15s 的空转)。
+    const tk = obs.requestStart();
+    const fin = (result, extra = {}) => {
+      obs.requestEnd(tk, {
+        path: pathAndQuery, source, phase, ctx, attempt: attempt + 1,
+        ok: result.ok, status: result.status, reason: result.reason, body: result.body, ...extra,
+      });
+      return result;
+    };
     try {
       const res = await fetch(url, {
         method: 'GET',
@@ -199,6 +213,7 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
       clearTimeout(timer);
 
       if (res.status === 401 && allowRefresh) {
+        obs.requestEnd(tk, { path: pathAndQuery, source, phase, ctx, attempt: attempt + 1, ok: false, status: 401 });
         try {
           refreshTokenViaBash();
           const fresh = readTokenFile();
@@ -206,7 +221,7 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
           STATE.token = fresh;
           // 保持 timeoutMs:慢端点 401 重取后若退回默认 25s,会把常态 59s 的
           // 响应误判成故障。
-          return ztFetch(pathAndQuery, { allowRefresh: false, timeoutMs });
+          return ztFetch(pathAndQuery, { allowRefresh: false, timeoutMs, source, phase, ctx });
         } catch (e) {
           throw new Error(`401 refresh failed: ${sanitizeMessage(e.message)}`);
         }
@@ -214,22 +229,23 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
 
       if (res.status === 429 || res.status === 503 || (res.status >= 500 && res.status < 600)) {
         if (attempt < backoff.length) {
+          obs.requestEnd(tk, { path: pathAndQuery, source, phase, ctx, attempt: attempt + 1, ok: false, status: res.status, reason: 'rate-limit' });
           await sleep(backoff[attempt]);
           continue;
         }
-        return { ok: false, status: res.status, body: null, reason: 'rate-limit' };
+        return fin({ ok: false, status: res.status, body: null, reason: 'rate-limit' });
       }
 
       if (!res.ok) {
-        return { ok: false, status: res.status, body: await res.text(), reason: 'http' };
+        return fin({ ok: false, status: res.status, body: await res.text(), reason: 'http' });
       }
 
       // sanitize control chars (zt-functions.sh tr -d '\000-\037' equivalent)
       const text = (await res.text()).replace(/[\x00-\x1F]/g, (c) => (c === '\n' || c === '\t' ? c : ''));
       try {
-        return { ok: true, status: 200, body: JSON.parse(text) };
+        return fin({ ok: true, status: 200, body: JSON.parse(text) });
       } catch (e) {
-        return { ok: false, status: 200, body: text.slice(0, 200), reason: 'json-parse' };
+        return fin({ ok: false, status: 200, body: text.slice(0, 200), reason: 'json-parse' });
       }
     } catch (e) {
       clearTimeout(timer);
@@ -251,14 +267,18 @@ async function ztFetch(pathAndQuery, { allowRefresh = true, timeoutMs = REQ_TIME
         retryableCodes.includes(causeCode) ||
         (typeof causeCode === 'string' && causeCode.startsWith('UND_ERR')) ||
         e.message === 'fetch failed');
-      if (isNetwork && attempt < backoff.length) {
-        await sleep(backoff[attempt]);
-        continue;
-      }
       // 保留 e.cause 的真实原因,避免日志里只剩无信息量的 "fetch failed"。
       const detail = causeCode || (e.cause && e.cause.message) || e.code;
       const reason = detail ? e.message + ' (' + detail + ')' : e.message;
-      return { ok: false, status: 0, body: null, reason: sanitizeMessage(reason) };
+      if (isNetwork && attempt < backoff.length) {
+        obs.requestEnd(tk, {
+          path: pathAndQuery, source, phase, ctx, attempt: attempt + 1,
+          ok: false, reason: sanitizeMessage(reason), timedOut: isAbort,
+        });
+        await sleep(backoff[attempt]);
+        continue;
+      }
+      return fin({ ok: false, status: 0, body: null, reason: sanitizeMessage(reason) }, { timedOut: isAbort });
     }
   }
   return { ok: false, status: 0, body: null, reason: lastErr ? sanitizeMessage(lastErr.message) : 'unknown' };
@@ -485,7 +505,9 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
     // 独立的长超时,否则默认 25s 会把常态响应误判成故障。
     reqTimeoutMs = SLOW_REQ_TIMEOUT_MS,
   } = opts;
-  const fetchSlow = (url) => fetchFn(url, { timeoutMs: reqTimeoutMs });
+  const fetchSlow = (url, extra = {}) => fetchFn(url, {
+    timeoutMs: reqTimeoutMs, phase: 'phase2', ctx: { exec: Number(execId) }, ...extra,
+  });
 
   const lookback = new Date(`${date}T00:00:00Z`);
   lookback.setUTCDate(lookback.getUTCDate() - lookbackDays);
@@ -529,6 +551,10 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
       }
       if (rows.length < 100) break;
     }
+    // 贡献度按**过滤后采纳的 id** 记账。三条腿返回的是同一批任务(只是排序
+    // 不同),按原始返回算每条腿的独有贡献恒为 0,会得出"三腿全可砍"这个
+    // 致命错误结论;真正的差异只在这一步过滤之后才显现。
+    obs.adopt(`/executions/*/tasks|${queryParam}`, items.map((t) => Number(t.id)));
     return { ok: true, items };
   };
 
@@ -540,7 +566,9 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
   // 既有 3 腿路径,探针结果复用为 lastEditedDate 腿 page1,零额外开销。
   // 注意:不允许按 execution.status/end 上游过滤——exec 2028 实测
   // status=doing、end=2024-08-31,两个字段都会误杀核心班牛 sprint。
-  const probe = await fetchSlow(`${base}?order=lastEditedDate_desc&limit=100&page=1`);
+  // 探针单独打 source:它命中时整个 exec 一次调用就完事,命中率是评估
+  // "自适应探针"这项优化是否还值得保留的直接依据。
+  const probe = await fetchSlow(`${base}?order=lastEditedDate_desc&limit=100&page=1`, { source: 'exec-tasks:probe' });
   let probeRows = null;
   let probeFailedResult = null;
   if (!probe.ok) {
@@ -557,8 +585,15 @@ async function fetchExecutionTasksScoped(execId, date, opts = {}) {
           if (!v || String(v).startsWith('0000-')) return false;
           return String(v).slice(0, 10) >= threshold;
         }));
+      // 探针命中:这个 exec 整轮只花了 1 次调用。采纳的 id 记在探针名下,
+      // 命中率与省下的调用数由此可算。
+      obs.adopt('exec-tasks:probe', items.map((t) => Number(t.id)));
       return { ok: true, items };
     }
+    // 探针未命中:它的 page1 会被复用为 lastEditedDate 腿。显式声明"本次采纳
+    // 0 条",把贡献全部归给那条腿;否则探针会按原始返回(整页 100 条)记账,
+    // 吃掉 lastEditedDate 腿的独有贡献,分析表上三腿会集体显示"独有 0"。
+    obs.adopt('exec-tasks:probe', []);
   }
 
   const results = await Promise.all([
@@ -794,7 +829,9 @@ async function fetchStoryExecutionIds(storyIds, opts = {}) {
   let anyFailed = false;
   for (let i = 0; i < storyIds.length; i += step) {
     const batch = storyIds.slice(i, i + step);
-    const results = await Promise.all(batch.map((sid) => fetchFn(`/stories/${sid}`)));
+    const results = await Promise.all(batch.map((sid) => fetchFn(`/stories/${sid}`, {
+      phase: 'story-reverse', ctx: { storyId: Number(sid) },
+    })));
     for (let j = 0; j < results.length; j++) {
       const r = results[j];
       if (!r.ok) {
@@ -1233,6 +1270,14 @@ async function main() {
   TRACE_T0 = Date.now();
   trace('main start');
   const args = parseArgs(process.argv);
+  obs.startRun({ date: args.date, product: Number(args.product) });
+  // lookup 类调用:返回的实体本就不进 payload(建 account→realname 映射、
+  // 判定 loose task 的 execution 归属、取产品名、反查 story 关联的 exec)。
+  // 不标记的话贡献度分析会把它们判成"返回的数据一条都没进报告"的浪费,
+  // 诱导人去砍掉必需的查表 —— 指标误导比没有指标更危险。
+  for (const s of ['/users', '/products/*', '/projects/*/executions', '/stories/*']) {
+    obs.markRole(s, 'lookup');
+  }
   STATE.baseUrl = requireEnv('ZENTAO_BASE_URL');
   requireEnv('ZENTAO_ACCOUNT');
   requireEnv('ZENTAO_PASSWORD');
@@ -1481,6 +1526,27 @@ async function main() {
     skippedCount: criticalSkipped.length,
   });
 
+  // 观测收尾。payloadIds 是贡献度分析的"真值集合"——每个 source 返回的 id
+  // 与它求交,才知道哪次调用真正为报告贡献了数据、哪些是白跑的。
+  const payloadIds = [
+    ...stories.map((s) => Number(s.id)),
+    ...allTasksForSummary.map((t) => Number(t.id)),
+    ...bugs.map((b) => Number(b.id)),
+  ];
+  const runRecord = obs.finishRun({
+    exitCode: criticalSkipped.length > 0 ? 2 : 0,
+    apiCalls: STATE.apiCalls,
+    timings: { phase1_ms: tPhase1Ms, phase2_ms: tPhase2Ms, total_ms: Date.now() - t0 },
+    counts: { stories: stories.length, tasks: allTasksForSummary.length, bugs: bugs.length },
+    skipped: criticalSkipped,
+    degraded: degradedSkipped,
+    payloadIds,
+  });
+  if (runRecord) {
+    const line = obs.healthLine(runRecord, obs.readRuns({ limit: 30 }).slice(0, -1));
+    if (line) process.stdout.write(`HEALTH ${line}\n`);
+  }
+
   if (criticalSkipped.length > 0) {
     console.error(`FATAL: ${criticalSkipped.length} critical source(s) skipped — JSON incomplete (kept at ${outTarget} for diagnosis only), aborting to prevent silent data loss:`);
     for (const s of criticalSkipped) console.error(`  - ${s.path} page=${s.page} reason=${s.reason}`);
@@ -1497,6 +1563,13 @@ async function main() {
 }
 
 if (require.main === module) {
+  // 兜底:任何退出路径都要留下 run 记录。exit 1(env/token)、exit 4(hard
+  // timeout,在 setTimeout 里直接退出)、exit 5(phase1 止损)此前什么都不留,
+  // 2026-07-27 排查 exit 5 那次只能靠 stdout 反推。finishRun 幂等,正常路径
+  // 已带完整数据调用过一次,这里不会重复写。
+  process.on('exit', (code) => {
+    obs.finishRun({ exitCode: code, apiCalls: STATE.apiCalls, skipped: STATE.skipped });
+  });
   main()
     .then(() => {
       clearTimeout(_hardKill);

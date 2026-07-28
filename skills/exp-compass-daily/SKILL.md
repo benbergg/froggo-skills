@@ -43,6 +43,10 @@ description: "体验罗盘-每日研发进度播报。从禅道采集单产品(�
 | `EXP_COMPASS_REQ_TIMEOUT_MS` | ☐ | 单请求超时,默认 `60000`。慢窗下 `/products/*/stories?status=closedstory` 实测撞 25s |
 | `EXP_COMPASS_SLOW_REQ_TIMEOUT_MS` | ☐ | 慢端点(`/executions/*/tasks`)单请求超时,默认 `90000`。该端点实测 11.5-59.3s/次,与任务数无关 |
 | `EXP_COMPASS_EXEC_TIMEOUT_MS` | ☐ | 单 execution 墙钟上限(自适应超时的**上限**),默认 `240000` |
+| `EXP_COMPASS_OBS` | ☐ | 采集可观测性开关,默认开;设 `0` 关闭全部日志 |
+| `EXP_COMPASS_LOG_DIR` | ☐ | 日志目录,默认 `~/.cache/exp-compass-daily/logs/` |
+| `EXP_COMPASS_LOG_RETAIN_DAYS` | ☐ | 请求明细保留天数,默认 `14` |
+| `EXP_COMPASS_RUNS_RETAIN` | ☐ | run 摘要保留条数,默认 `200` |
 | `EXP_COMPASS_SEND_DINGTALK` | ☐ | **钉钉广播总开关**,默认 `0`=不真发(测试模式,Step 6 强制走 `--dry-run` 只 echo payload)。设 `1`/`true` 才真广播到钉钉群。**测试数据全部核对通过后再打开** |
 
 **注意**:不再设 `DINGTALK_EXP_COMPASS_TEMPLATE_ID` / `_TO_CHAT` / `_TO_USERIDS` / `_TO_CIDS`。template_id 在 Step 0 由 `resolve-template.js` 按模板名查询并缓存到 `~/.cache/exp-compass-daily/template.json`;广播范围一律走模板的 `default_received_convs`。
@@ -117,6 +121,35 @@ node $PLUGIN_ROOT/skills/exp-compass-daily/references/scripts/collect.js \
 ```
 
 失败 → 退出,提示用户检查禅道凭据。成功后输出文件路径。
+
+stdout 末尾还有一行 `HEALTH ...`(采集耗时/API 次数/重试/最慢端点 P95/较基线偏离),
+**原样抄进 Step 7 announce 的末尾**,格式:`🔍 采集健康度: <HEALTH 行内容>`。
+劣化在造成故障之前就能被看见,而不是等挂了才查。
+
+### 采集可观测性(自动,无需手动调用)
+
+collect.js 每次运行都会落两份日志到 `~/.cache/exp-compass-daily/logs/`:
+
+- `requests-{DATE}.jsonl` — 每次禅道请求一条:耗时、attempt、当时并发度、
+  返回行数、失败归因。**实时 append**,因为 exit 2/4/5 与 SIGKILL 都会让
+  缓冲区蒸发,而那些恰恰是最需要日志的场景。
+- `runs.jsonl` — 每次运行一条摘要,含各取数策略的 P50/P95、重试、
+  **独有贡献**(砍掉该策略会丢多少条最终数据)。所有退出路径都会写。
+
+排查与优化用 `analyze-runs.js`:
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
+[ -d "$PLUGIN_ROOT/skills/exp-compass-daily" ] || PLUGIN_ROOT="$HOME/.openclaw"
+node $PLUGIN_ROOT/skills/exp-compass-daily/references/scripts/analyze-runs.js --last 10
+```
+
+输出四段:端点稳定性(按 P95 排序,标注方差倍数)、查询浪费(独有贡献)、
+失败归因分类、时段相关性(验证"慢窗"假设)、以及最近一次 vs 历史基线的偏离。
+
+**读这张表前先读它自己打印的三条护栏**——独有贡献为 0 只是候选不是结论:
+采样时段会决定结论(中午跑时 `finishedDate` 腿天然贡献为 0),需连续多日为 0,
+且该列只评估"单独砍一条",多条一起砍必须实跑候选策略比对结果集。
 
 ### Step 2 AI 撰写
 
