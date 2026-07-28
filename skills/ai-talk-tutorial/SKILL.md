@@ -25,7 +25,7 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 | `AI_TALK_FEISHU_ACCOUNT` | ☐ | 飞书渠道账号,默认 `helios`。**open_id 按应用隔离**,换账号必须同时换 target |
 | `AI_TALK_COOKIES_PATH` | ☐ | YouTube cookie 文件,默认 `/home/ubuntu/.openclaw/workspace/astraeus/video素材/youtube-cookies.txt` |
 | `AI_TALK_DATE` | ☐ | 目标日期覆盖 `YYYY-MM-DD`,补跑历史日用 |
-| `AI_TALK_ARCHIVE_DIR` | ☐ | 归档根目录,默认 `$HOME/workspace/Knowledge-Library/08-Research/AI-Talks` |
+| `AI_TALK_ARCHIVE_DIR` | ☐ | 归档根目录,默认 `$HOME/Knowledge-Library/08-Research/AI-Talks`(**部署机的真实路径,不带 `workspace/` 一层**;开发机 vault 在 `~/workspace/Knowledge-Library/` 是另一回事,别照抄) |
 | `AI_TALK_THUMB_MAX_KB` | ☐ | 封面 base64 后的体积上限,默认 400(KB)。超限则降级到更低画质;三档都超限就不配封面 |
 | `SEND_NOTIFY` | ☐ | `1/true/yes/on` 才真发飞书;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
 | `YT_DLP_PATH` | ☐ | yt-dlp 二进制路径。未设时 `fetch-transcript.js` 依次探测 `/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/bin/yt-dlp`、`/usr/local/bin/yt-dlp`、`/opt/homebrew/bin/yt-dlp`,都不存在才回落到 PATH 里的 `yt-dlp` |
@@ -59,7 +59,7 @@ DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 mkdir -p "$WORK"
 
-ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/workspace/Knowledge-Library/08-Research/AI-Talks}"
+ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/Knowledge-Library/08-Research/AI-Talks}"
 
 node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/discover.js" \
   --out "$WORK" --today "$DATE" \
@@ -375,7 +375,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 
-ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/workspace/Knowledge-Library/08-Research/AI-Talks}"
+ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/Knowledge-Library/08-Research/AI-Talks}"
 YEAR="${DATE%%-*}"
 SLUG=$(node -e "
 const s = require('$WORK/selected.json');
@@ -467,7 +467,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT:-}"
 [ -d "$PLUGIN_ROOT/skills/ai-talk-tutorial" ] || PLUGIN_ROOT="$HOME/.openclaw"
 DATE="${AI_TALK_DATE:-$(date +%F)}"
 WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
-ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/workspace/Knowledge-Library/08-Research/AI-Talks}"
+ARCHIVE="${AI_TALK_ARCHIVE_DIR:-$HOME/Knowledge-Library/08-Research/AI-Talks}"
 YEAR="${DATE%%-*}"
 SLUG=$(node -e "
 const s = require('$WORK/selected.json');
