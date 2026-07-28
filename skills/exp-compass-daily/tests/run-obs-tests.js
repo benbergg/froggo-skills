@@ -294,7 +294,12 @@ test('healthLine 生成 announce 用的一行摘要', () => {
 // ---- 鲁棒性(监控不能成为故障源) ----------------------------------------
 
 test('SAFETY: 日志目录不可写时静默降级,不抛异常', () => {
-  process.env.EXP_COMPASS_LOG_DIR = '/proc/nonexistent-forbidden/logs';
+  // 用「已存在的普通文件」当目录 —— mkdirSync 必然 ENOTDIR/EEXIST,
+  // 且 Linux/macOS 行为一致。(早先用 /proc/... 会把 node v24 的测试
+  // 运行器挂住 60s,平台差异导致的假故障。)
+  const blocker = path.join(tmpDir, 'not-a-dir');
+  fs.writeFileSync(blocker, 'x');
+  process.env.EXP_COMPASS_LOG_DIR = path.join(blocker, 'logs');
   delete require.cache[require.resolve('../references/scripts/lib/obs.js')];
   const obs = require('../references/scripts/lib/obs.js');
   assert.doesNotThrow(() => {
