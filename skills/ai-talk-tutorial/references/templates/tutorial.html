@@ -9,6 +9,7 @@
   --bg:#EEF1F6; --ink:#14161F; --ink-soft:#5A6072;
   --brand:#5B44E4; --brand-soft:#ECE8FB; --brand-ink:#3B2AAE;
   --gold:#D9982B; --gold-soft:#F7EBD0;
+  --warn:#D2452C; --warn-soft:#FBE7E3;
   --line:#C9D0DE; --panel:#FFFFFF; --panel-2:#F6F8FC;
   --sans:system-ui,-apple-system,"SF Pro Display","PingFang SC","Microsoft YaHei",sans-serif;
   --mono:ui-monospace,"SF Mono",Menlo,"Cascadia Code",monospace;
@@ -19,6 +20,7 @@
     --bg:#111319; --ink:#ECEEF5; --ink-soft:#A2A9BC;
     --brand:#8F7CF5; --brand-soft:#241F45; --brand-ink:#C9BEFF;
     --gold:#E8B45C; --gold-soft:#3A2E17;
+    --warn:#F08A76; --warn-soft:#3B1E19;
     --line:#2C3140; --panel:#191C25; --panel-2:#151821;
   }
 }
@@ -37,6 +39,14 @@ ul,ol{padding-left:22px}
 li{margin:6px 0}
 .check li{list-style:none;position:relative;padding-left:26px}
 .check li::before{content:"☐";position:absolute;left:0;color:var(--brand)}
+/* 正文提示块:封闭三种类型,由 build-html.js 的 CALLOUT_TYPES 决定;
+   颜色走 CSS 变量,深浅色自动跟随上面的 :root / prefers-color-scheme 定义 */
+.callout{margin:16px 0;padding:14px 16px;border-radius:0 10px 10px 0;border-left:4px solid}
+.callout p{margin:0}
+.callout-t{font-weight:600;margin-bottom:6px}
+.callout-tip{border-color:var(--gold);background:var(--gold-soft)}
+.callout-warning{border-color:var(--warn);background:var(--warn-soft)}
+.callout-note{border-color:var(--brand);background:var(--brand-soft)}
 blockquote{margin:16px 0;padding:16px 18px;background:var(--gold-soft);
   border-left:4px solid var(--gold);border-radius:0 10px 10px 0}
 blockquote .en{font-family:var(--mono);font-size:14px;display:block;margin-bottom:8px}

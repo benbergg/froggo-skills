@@ -495,3 +495,81 @@ test('T31: 自检失败(exit 5)时删除已存在的旧 --out 文件,防止同�
     r.cleanup();
   }
 });
+
+// ---- 方案 C(2026-07-28):正文 callout 疏堵结合。
+// 实证问题:7-28 产出的教程里 AI 自发写了 `> [!tip]` 提示块,渲染结果是
+// `<p>&gt; [!tip] &gt; 关键工程法则:…</p>` —— `[!tip]` 字面泄漏、`>` 转义成 &gt;、
+// 样式全丢。根因是正文渲染只认段落和列表,`>` 一律走 esc();而撰写约束里没有
+// 任何一条禁止这么写。AI 有表达需求,堵不如疏:支持封闭的三种 callout,
+// 其余任何以 `>` 开头的正文行由 C6 拦下 exit 5(金句段豁免 —— 那里 `>` 是格式本身)。
+
+const CALLOUT_MD = load('tutorial-good.md').replace(
+  '### 2. 建立可重放的评估集',
+  `> [!tip]
+> 关键工程法则:**任务过难模型就会崩**,所以要持续拆解到模型跑得动为止。
+
+### 2. 建立可重放的评估集`
+);
+
+test('T33: 合法 callout 渲染成样式块,不泄漏 [!tip] 字面量、不出现 &gt;(生产实证形态)', () => {
+  const doc = B.parseTutorialMd(CALLOUT_MD);
+  const v = B.runChecks(doc, TRANSCRIPT, SELECTED);
+  assert.deepEqual(v.filter((x) => x.code === 'C6'), [], `合法 callout 不该触发 C6: ${JSON.stringify(v)}`);
+  const html = B.renderHtml(doc, SELECTED, fs.readFileSync(
+    path.join(__dirname, '..', 'references', 'templates', 'tutorial.html'), 'utf-8'));
+  const method = html.slice(html.indexOf('id="method"'), html.indexOf('id="checklist"'));
+  assert.doesNotMatch(method, /\[!tip\]/, 'callout 标记不该以字面量出现在正文里');
+  assert.doesNotMatch(method, /&gt;\s*关键工程法则/, '`>` 不该被当普通文本转义成 &gt;');
+  assert.match(method, /class="callout callout-tip"/, '应渲染为 callout 样式块');
+  assert.match(method, /关键工程法则/, 'callout 正文必须保留');
+  assert.match(method, /<strong>任务过难模型就会崩<\/strong>/, 'callout 内的行内粗体应继续生效');
+});
+
+test('T34: 未支持的 callout 类型(如 [!abstract])被 C6 拦 —— 封闭集合,不是任意 Obsidian 语法', () => {
+  const md = CALLOUT_MD.replace('[!tip]', '[!abstract]');
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C6'), `期望 C6 拦住未支持的 callout 类型,实际: ${JSON.stringify(v)}`);
+  assert.match(v.find((x) => x.code === 'C6').message, /tip|warning|note/,
+    'C6 文案必须列出允许的类型,否则 AI 的修复循环只能瞎猜');
+});
+
+test('T35: 正文里的裸 `>` 引用行被 C6 拦(渲染层不支持,写了就是破版)', () => {
+  const md = load('tutorial-good.md').replace(
+    '### 2. 建立可重放的评估集',
+    `> 这是一句被当成引用写的普通话,渲染层并不支持。
+
+### 2. 建立可重放的评估集`
+  );
+  const v = B.runChecks(B.parseTutorialMd(md), TRANSCRIPT, SELECTED);
+  assert.ok(v.some((x) => x.code === 'C6'), `期望 C6 拦住裸 > 引用,实际: ${JSON.stringify(v)}`);
+});
+
+test('T36: 金句段的 `>` 不被 C6 误伤(那里 `>` 是金句格式本身)', () => {
+  const doc = B.parseTutorialMd(load('tutorial-good.md'));
+  const v = B.runChecks(doc, TRANSCRIPT, SELECTED);
+  assert.deepEqual(v, [], `合格文档(金句段满是 >)必须零违规: ${JSON.stringify(v)}`);
+});
+
+test('T37: 背景段的 callout 同样生效(不只 method 段)', () => {
+  const md = load('tutorial-good.md').replace(
+    '## 三、核心方法论',
+    `> [!warning]
+> 这里有一个容易踩的坑,先说清楚再往下看。
+
+## 三、核心方法论`
+  );
+  const doc = B.parseTutorialMd(md);
+  assert.deepEqual(B.runChecks(doc, TRANSCRIPT, SELECTED).filter((x) => x.code === 'C6'), []);
+  const html = B.renderHtml(doc, SELECTED, fs.readFileSync(
+    path.join(__dirname, '..', 'references', 'templates', 'tutorial.html'), 'utf-8'));
+  assert.match(html, /class="callout callout-warning"/);
+});
+
+test('T38: 模板提供 callout 样式,浅色与深色都有定义(渲染出 class 却没样式 = 白做)', () => {
+  const tpl = fs.readFileSync(
+    path.join(__dirname, '..', 'references', 'templates', 'tutorial.html'), 'utf-8');
+  assert.match(tpl, /\.callout\s*\{/, '模板缺少 .callout 基础样式');
+  for (const t of ['tip', 'warning', 'note']) {
+    assert.match(tpl, new RegExp(`\\.callout-${t}\\s*\\{`), `模板缺少 .callout-${t} 样式`);
+  }
+});

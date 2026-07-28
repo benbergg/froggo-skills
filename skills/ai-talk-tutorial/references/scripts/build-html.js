@@ -23,6 +23,29 @@ const SECTION_HEADS = {
 // 混进同一个 \b(...)\b 组会导致中文占位符永远匹配不到(fix round: 评审实测 test('待补充')===false)。
 const PLACEHOLDER_RE = /\b(?:TBD|TODO|FIXME|XXX)\b|待补充|占位|待填/i;
 
+// 正文允许的 callout —— 封闭集合,不是任意 Obsidian 语法。
+// 2026-07-28 实证:AI 自发写了 `> [!tip]`,渲染成 `<p>&gt; [!tip] &gt; …</p>` ——
+// 标记字面泄漏、`>` 转义、样式全丢。AI 有强调的表达需求,堵不如疏:支持这三种,
+// 其余任何以 `>` 开头的正文行由 C6 拦下(金句段豁免 —— 那里 `>` 是格式本身)。
+// 集合必须封闭:开放给任意类型,下次换成 [!abstract] 又是一次静默破版。
+const CALLOUT_TYPES = ['tip', 'warning', 'note'];
+const CALLOUT_HEAD_RE = /^>\s*\[!([a-zA-Z]+)\]\s*(.*)$/;
+
+// 合法 callout → { type, title, body };不是 → null。
+// 渲染与 C6 自检共用这一个判定,避免"渲染认它、自检不认"(或反过来)的错配。
+function parseCallout(block) {
+  const lines = String(block).split('\n').map((l) => l.trim()).filter(Boolean);
+  if (lines.length === 0) return null;
+  const m = lines[0].match(CALLOUT_HEAD_RE);
+  if (!m) return null;
+  const type = m[1].toLowerCase();
+  if (!CALLOUT_TYPES.includes(type)) return null;
+  const rest = lines.slice(1);
+  if (!rest.every((l) => l.startsWith('>'))) return null; // 块内混了非引用行
+  const body = rest.map((l) => l.replace(/^>\s?/, '')).join(' ').trim();
+  return { type, title: m[2].trim(), body };
+}
+
 // fix round(FR3):原实现不转义 ",但 esc() 被用在 HTML 属性上下文(title="..."/href="...")——
 // H1 或链接里出现 ASCII 直引号(SKILL.md:166 明确要求金句用 ASCII 直引号,容易带偏模型在
 // 全文含 H1 都用 "")会让属性值在第二个引号处提前闭合,后续 token 被解析成伪属性。
@@ -261,9 +284,32 @@ function runChecks(doc, transcript, selected) {
     }
   }
 
-  // C6 无占位符
+  // C6 无占位符 + 正文无非法 `>` 标记
   const ph = doc.raw.match(PLACEHOLDER_RE);
   if (ph) add('C6', `存在占位符: ${ph[0]}`);
+
+  const allowed = CALLOUT_TYPES.map((t) => `[!${t}]`).join(' / ');
+  for (const key of ['tldr', 'background', 'method', 'checklist']) {
+    for (const block of (doc.sections[key] || '').split(/\n{2,}/)) {
+      const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
+      if (!lines.some((l) => l.startsWith('>'))) continue;
+      if (parseCallout(block)) continue;
+
+      const headIdx = lines.findIndex((l) => CALLOUT_HEAD_RE.test(l));
+      if (headIdx > 0) {
+        add('C6', `${key} 段的 callout 没有独立成段:\`${lines[headIdx].slice(0, 40)}\` 前面必须空一行 `
+          + `(前后各留一个空行),否则会和上文并成一个普通段落。允许的类型: ${allowed}`);
+        continue;
+      }
+      const bad = lines[0].match(/^>\s*\[!([a-zA-Z]+)\]/);
+      if (bad) {
+        add('C6', `${key} 段使用了不支持的 callout 类型 [!${bad[1]}],正文只允许 ${allowed}`);
+      } else {
+        add('C6', `${key} 段出现裸 \`>\` 引用行(渲染层不支持,会显示成 &gt; 破版): `
+          + `"${lines[0].slice(0, 50)}";需要强调请改用 ${allowed},或直接写成普通段落`);
+      }
+    }
+  }
 
   // C7 与 selected.json 一致
   if (transcript.video_id !== selected.id) {
@@ -318,9 +364,18 @@ function renderList(body, { check = false } = {}) {
   return `<ul${check ? ' class="check"' : ''}>\n${items.join('\n')}\n</ul>`;
 }
 
+function renderCallout({ type, title, body }) {
+  const head = title ? `<div class="callout-t">${mdInlineToHtml(title)}</div>` : '';
+  return `<div class="callout callout-${type}">${head}<p>${mdInlineToHtml(body)}</p></div>`;
+}
+
 function renderParagraphs(body) {
   return body.split(/\n{2,}/).map((p) => p.trim()).filter(Boolean)
-    .map((p) => `<p>${mdInlineToHtml(p.replace(/\n/g, ' '))}</p>`).join('\n');
+    .map((p) => {
+      const callout = parseCallout(p);
+      if (callout) return renderCallout(callout);
+      return `<p>${mdInlineToHtml(p.replace(/\n/g, ' '))}</p>`;
+    }).join('\n');
 }
 
 function renderMethod(body) {
@@ -437,6 +492,8 @@ function main() {
   process.exit(0);
 }
 
-module.exports = { parseTutorialMd, runChecks, renderHtml, normalize, tsToSec };
+module.exports = {
+  parseTutorialMd, runChecks, renderHtml, normalize, tsToSec, parseCallout, CALLOUT_TYPES,
+};
 
 if (require.main === module) main();
