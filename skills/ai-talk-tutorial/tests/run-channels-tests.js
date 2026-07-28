@@ -48,3 +48,46 @@ test('T3: channelId 与 handle 真实对应(联网,默认 skip)',
     }
     assert.deepEqual(bad, [], `channelId 核验失败:\n${bad.join('\n')}`);
   });
+
+// ── 主题分组(2026-07-28):topics 与 channels[].topics 的一致性 ──────────
+// 这几条不是形式校验:topic id 写错一个字母,topicOf 会静默退回频道第一个主题,
+// 主题降权跟着算错,而 candidates.json 里看起来一切正常。
+
+test('T4: topics 结构完整,每组都有 label 与可用关键词', () => {
+  assert.ok(CFG.topics && typeof CFG.topics === 'object', '缺 topics');
+  const ids = Object.keys(CFG.topics);
+  assert.ok(ids.length >= 3, `主题数过少: ${ids.length}`);
+  for (const id of ids) {
+    const t = CFG.topics[id];
+    assert.equal(typeof t.label, 'string', `topics.${id}.label 缺失`);
+    assert.ok(Array.isArray(t.keywords) && t.keywords.length >= 5,
+      `topics.${id}.keywords 过少,该主题的视频将长期停在 keywordBase`);
+    for (const k of t.keywords) {
+      assert.equal(typeof k.pattern, 'string');
+      assert.ok(k.bonus > 0 && k.bonus < 1, `topics.${id} 的 bonus 越界: ${k.pattern}`);
+    }
+  }
+});
+
+test('T5: 每个频道都声明 topics,且引用的主题 id 都存在', () => {
+  const ids = new Set(Object.keys(CFG.topics));
+  const bad = [];
+  for (const c of CFG.channels) {
+    if (!Array.isArray(c.topics) || c.topics.length === 0) { bad.push(`${c.handle}: 未声明 topics`); continue; }
+    for (const t of c.topics) if (!ids.has(t)) bad.push(`${c.handle}: 引用了不存在的主题 "${t}"`);
+  }
+  assert.deepEqual(bad, [], bad.join('\n'));
+});
+
+test('T6: 每个主题至少有一个频道供给(否则该主题永远不会出片)', () => {
+  const covered = new Set(CFG.channels.flatMap((c) => c.topics || []));
+  const orphan = Object.keys(CFG.topics).filter((t) => !covered.has(t));
+  assert.deepEqual(orphan, [], `这些主题没有任何频道声明,配了也不会有内容: ${orphan.join(', ')}`);
+});
+
+test('T7: 主题降权参数齐备', () => {
+  for (const key of ['topicDays', 'topicPenalty', 'diversityDays', 'diversityPenalty']) {
+    assert.equal(typeof CFG.scoring[key], 'number', `scoring.${key} 缺失`);
+  }
+  assert.ok(CFG.scoring.topicPenalty > 0 && CFG.scoring.topicPenalty < 1);
+});

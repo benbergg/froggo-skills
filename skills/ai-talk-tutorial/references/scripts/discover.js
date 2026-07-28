@@ -28,12 +28,52 @@ function daysBetween(fromIso, toIso) {
   return Math.max(0, Math.floor((b - a) / 86400000));
 }
 
-// 关键词命中:基线 + 每个命中项 bonus,上限 keywordCap
-function keywordFactor(video, cfg) {
+// 判定视频主题。候选范围限于该频道声明的 topics(顺序即优先级),
+// 在其中取命中关键词最多的一组;都不中则取第一个作为兜底。
+//
+// 为什么由内容判而不是直接用频道主题:SaaStr 的 "From 0 to 20 Agents and Back Again"
+// 内容是 agentic 不是 saas,按频道一刀切会让主题统计失真,连带主题降权也算错。
+// 平局取靠前者(用 > 而非 >=)使结果稳定可测 —— 频道 topics 的书写顺序就是它的主业。
+// 只看标题,**不看 description** —— 2026-07-28 VM 实测:
+// "The Messy Reality of Scale: Synthetic Data and Pre-Training" 只按标题算是
+// ai-tech 2 : agentic 0,加上 description 后却被判成 agentic。原因是会议类频道
+// 给每条视频挂同一段宣传语,描述里永远塞满该频道主业的词 —— 描述这一票
+// 恒定投给频道的主题,"按内容判主题"就退化成了"按频道判主题"。
+// 标题是视频对自己的声明,描述是频道的模板文案,两者可信度不同。
+// (description 仍参与 keywordFactor:那里命中越多说明 how-to 信息越密,没有这个偏置问题。)
+function topicOf(video, channel, cfg) {
+  if (!cfg.topics) return null;
+  const hay = String(video.title || '').toLowerCase();
+  const allowed = (channel && Array.isArray(channel.topics) && channel.topics.length > 0)
+    ? channel.topics : Object.keys(cfg.topics);
+  let best = null;
+  let bestHits = 0;
+  for (const t of allowed) {
+    const grp = cfg.topics[t];
+    if (!grp || !Array.isArray(grp.keywords)) continue;
+    const hits = grp.keywords.filter((k) => hay.includes(k.pattern.toLowerCase())).length;
+    if (hits > bestHits) { bestHits = hits; best = t; }
+  }
+  return best || allowed[0] || null;
+}
+
+// 关键词命中:基线 + 通用词 bonus + 所属主题组的 bonus,上限 keywordCap。
+//
+// 分组的理由(2026-07-28 实测):原来只有一张全是 AI 词的表,拿五个频道的真实标题跑,
+// 全部落在 0.70-0.82 之间 —— keywordCap 1.6 从没被接近过,这张表实际上是失效的,
+// 排序完全由 channel.weight × recency 决定。分组后每个主题都有自己够得着的加分项,
+// 产品/SaaS 类视频不再因为"没提 agent"就永远停在基线。
+function keywordFactor(video, cfg, topic) {
   const hay = `${video.title} ${video.description || ''}`.toLowerCase();
   let f = cfg.scoring.keywordBase;
   for (const k of cfg.keywords) {
     if (hay.includes(k.pattern.toLowerCase())) f += k.bonus;
+  }
+  const grp = topic && cfg.topics ? cfg.topics[topic] : null;
+  if (grp && Array.isArray(grp.keywords)) {
+    for (const k of grp.keywords) {
+      if (hay.includes(k.pattern.toLowerCase())) f += k.bonus;
+    }
   }
   return Math.min(f, cfg.scoring.keywordCap);
 }
@@ -60,11 +100,31 @@ function diversityFactor(channel, cfg, today, history) {
   return Math.pow(penalty, n);
 }
 
+// 主题降权:近 topicDays 天内该主题每出过一次,分数乘一次 topicPenalty。
+//
+// 为什么光加频道不够(2026-07-28 实测):按 90 天内落在时长区间的产出算,
+// LatentSpace 约 6 天一篇、Lenny's 约 18 天一篇。recencyDecay=0.85 下
+// 6 天前剩 0.38、18 天前只剩 0.054 —— 产品/设计类天生扛着 7 倍衰减劣势,
+// 只把频道加进白名单,它们一天也选不上,主题扩展会停留在配置文件里。
+//
+// 与频道降权同构且相乘:同频道同主题连出两天会被压到 0.55×0.5=0.275,
+// 换个主题的频道则是 1.0,足以强制轮换。窗口滑动,不是永久黑名单。
+function topicFactor(topic, cfg, today, history) {
+  if (!topic || !Array.isArray(history) || history.length === 0) return 1;
+  const days = cfg.scoring.topicDays ?? 5;
+  const penalty = cfg.scoring.topicPenalty ?? 0.5;
+  const n = history.filter(
+    (h) => h && h.topic === topic && h.date && daysBetween(h.date, today) < days
+  ).length;
+  return Math.pow(penalty, n);
+}
+
 function scoreVideo(video, channel, cfg, today, history = []) {
   const sec = parseDurationToSeconds(video.duration);
+  const topic = topicOf(video, channel, cfg);
   const recency = Math.pow(cfg.scoring.recencyDecay, daysBetween(video.publishedAt, today));
-  return channel.weight * keywordFactor(video, cfg) * durationFactor(sec, cfg) * recency
-    * diversityFactor(channel, cfg, today, history);
+  return channel.weight * keywordFactor(video, cfg, topic) * durationFactor(sec, cfg) * recency
+    * diversityFactor(channel, cfg, today, history) * topicFactor(topic, cfg, today, history);
 }
 
 // 返回淘汰原因;通过则 null
@@ -291,6 +351,7 @@ async function main() {
       title: v.title,
       channelTitle: v.channelTitle,
       channelHandle: ch.handle,
+      topic: topicOf(v, ch, cfg),
       publishedAt: v.publishedAt,
       durationSec: parseDurationToSeconds(v.duration),
       score: Number(scoreVideo(v, ch, cfg, today, history).toFixed(4)),
@@ -306,8 +367,12 @@ async function main() {
   );
 
   const counts = Object.values(rejected).reduce((m, r) => (m[r] = (m[r] || 0) + 1, m), {});
+  // 主题分布报出来:主题扩展有没有真的生效,看这一行就知道 —— 长期只有一个 topic
+  // 说明降权参数或频道 topics 标错了,不该等到人翻归档才发现
+  const topics = candidates.reduce((m, c) => (m[c.topic || '?'] = (m[c.topic || '?'] || 0) + 1, m), {});
   process.stderr.write(
-    `candidates=${candidates.length} archived=${archived.size} rejected=${JSON.stringify(counts)}\n`
+    `candidates=${candidates.length} archived=${archived.size}`
+    + ` topics=${JSON.stringify(topics)} rejected=${JSON.stringify(counts)}\n`
   );
 
   if (candidates.length === 0) {
@@ -319,7 +384,7 @@ async function main() {
 
 module.exports = {
   parseDurationToSeconds, keywordFactor, durationFactor, scoreVideo,
-  rejectReason, uploadsPlaylistId, scanArchive, diversityFactor,
+  rejectReason, uploadsPlaylistId, scanArchive, diversityFactor, topicOf, topicFactor,
 };
 
 if (require.main === module) {

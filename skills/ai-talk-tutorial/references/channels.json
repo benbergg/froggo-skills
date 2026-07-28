@@ -1,95 +1,187 @@
 {
+  "_note": "topics.<id>.keywords 只在视频被判为该主题时参与加权;顶层 keywords 是跨主题通用的 how-to 密度词。视频的主题由标题/描述命中哪一组词最多决定,候选范围限于该频道 channels[].topics(顺序即优先级,平局取靠前者)。",
+  "topics": {
+    "ai-tech": {
+      "label": "AI 技术",
+      "keywords": [
+        { "pattern": "pre-training", "bonus": 0.18 },
+        { "pattern": "post-training", "bonus": 0.18 },
+        { "pattern": "fine-tun", "bonus": 0.15 },
+        { "pattern": "inference", "bonus": 0.15 },
+        { "pattern": "benchmark", "bonus": 0.15 },
+        { "pattern": "paper", "bonus": 0.15 },
+        { "pattern": "reasoning", "bonus": 0.14 },
+        { "pattern": "reinforcement learning", "bonus": 0.15 },
+        { "pattern": "synthetic data", "bonus": 0.15 },
+        { "pattern": "scaling", "bonus": 0.12 },
+        { "pattern": "kernel", "bonus": 0.12 },
+        { "pattern": "quantiz", "bonus": 0.12 }
+      ]
+    },
+    "agentic": {
+      "label": "Agentic",
+      "keywords": [
+        { "pattern": "agentic", "bonus": 0.2 },
+        { "pattern": "agent", "bonus": 0.12 },
+        { "pattern": "multi-agent", "bonus": 0.16 },
+        { "pattern": "tool use", "bonus": 0.15 },
+        { "pattern": "mcp", "bonus": 0.15 },
+        { "pattern": "context engineering", "bonus": 0.18 },
+        { "pattern": "harness", "bonus": 0.15 },
+        { "pattern": "orchestrat", "bonus": 0.14 },
+        { "pattern": "loop engineering", "bonus": 0.16 },
+        { "pattern": "memory system", "bonus": 0.15 },
+        { "pattern": "eval", "bonus": 0.15 },
+        { "pattern": "rag", "bonus": 0.12 }
+      ]
+    },
+    "saas": {
+      "label": "SaaS",
+      "keywords": [
+        { "pattern": "go-to-market", "bonus": 0.18 },
+        { "pattern": "gtm", "bonus": 0.16 },
+        { "pattern": "pricing", "bonus": 0.18 },
+        { "pattern": "churn", "bonus": 0.16 },
+        { "pattern": "retention", "bonus": 0.15 },
+        { "pattern": "arr", "bonus": 0.14 },
+        { "pattern": "sales", "bonus": 0.14 },
+        { "pattern": "revenue", "bonus": 0.14 },
+        { "pattern": "onboarding", "bonus": 0.14 },
+        { "pattern": "customer", "bonus": 0.12 },
+        { "pattern": "b2b", "bonus": 0.14 },
+        { "pattern": "growth", "bonus": 0.12 }
+      ]
+    },
+    "product": {
+      "label": "产品",
+      "keywords": [
+        { "pattern": "product leader", "bonus": 0.18 },
+        { "pattern": "product management", "bonus": 0.18 },
+        { "pattern": "product market fit", "bonus": 0.2 },
+        { "pattern": "pmf", "bonus": 0.16 },
+        { "pattern": "roadmap", "bonus": 0.16 },
+        { "pattern": "prioriti", "bonus": 0.15 },
+        { "pattern": "discovery", "bonus": 0.14 },
+        { "pattern": "user research", "bonus": 0.16 },
+        { "pattern": "strategy", "bonus": 0.12 },
+        { "pattern": "product team", "bonus": 0.14 },
+        { "pattern": "0 to 1", "bonus": 0.15 },
+        { "pattern": "metrics", "bonus": 0.12 }
+      ]
+    },
+    "design": {
+      "label": "产品设计",
+      "keywords": [
+        { "pattern": "design system", "bonus": 0.2 },
+        { "pattern": "ux", "bonus": 0.16 },
+        { "pattern": "usability", "bonus": 0.18 },
+        { "pattern": "interaction design", "bonus": 0.18 },
+        { "pattern": "prototyp", "bonus": 0.15 },
+        { "pattern": "user interface", "bonus": 0.15 },
+        { "pattern": "design process", "bonus": 0.16 },
+        { "pattern": "design critique", "bonus": 0.16 },
+        { "pattern": "typography", "bonus": 0.12 },
+        { "pattern": "accessibility", "bonus": 0.14 }
+      ]
+    }
+  },
   "channels": [
     {
       "handle": "@aiDotEngineer",
       "channelId": "UCLKPca3kwwd-B59HNr-_lvA",
       "weight": 1.0,
+      "topics": ["agentic", "ai-tech"],
       "note": "AI Engineer World's Fair/Summit，agentic 实操密度最高"
+    },
+    {
+      "handle": "@LatentSpaceTV",
+      "channelId": "UCvi5jNRoRVm436TVAXet1kQ",
+      "weight": 0.95,
+      "topics": ["ai-tech", "agentic"],
+      "note": "Paper Club 论文精读 + AI 工程，2026-07 实测近 90 天 15 篇达时长线，密度最高"
+    },
+    {
+      "handle": "@LennysPodcast",
+      "channelId": "UC6t1O76G0jYXOAoYCm153dA",
+      "weight": 0.95,
+      "topics": ["product", "saas", "design"],
+      "note": "产品领导力深访。更新慢(90 天 5 篇)但单篇质量最高，用高 weight 抵消 recency 劣势"
     },
     {
       "handle": "@ycombinator",
       "channelId": "UCcefcZRL2oaA_uBNeo5UOWg",
       "weight": 1.0,
+      "topics": ["product", "saas", "agentic"],
       "note": "AI Startup School、Lightcone"
+    },
+    {
+      "handle": "@LangChain",
+      "channelId": "UCC-lyoTfSrcJzA1ab3APAgw",
+      "weight": 0.9,
+      "topics": ["agentic"],
+      "note": "agent 循环工程与企业落地案例，近 90 天 12 篇达时长线"
     },
     {
       "handle": "@anthropic-ai",
       "channelId": "UCrDwWp7EBBv4NwvScIpBDOA",
       "weight": 0.9,
+      "topics": ["agentic", "ai-tech"],
       "note": "一手高管发言，混 product launch"
     },
     {
       "handle": "@OpenAI",
       "channelId": "UCXZCJLdBC09xxGZ6gcdrc6A",
       "weight": 0.9,
+      "topics": ["ai-tech", "agentic"],
       "note": "同上"
     },
     {
       "handle": "@GoogleDeepMind",
       "channelId": "UCP7jMXSY2xbc3KCAE0MHQ-A",
       "weight": 0.9,
+      "topics": ["ai-tech"],
       "note": "同上"
+    },
+    {
+      "handle": "@SaaStr",
+      "channelId": "UCwOILzAcxK5CM2M7oRBuWSg",
+      "weight": 0.85,
+      "topics": ["saas", "agentic"],
+      "note": "SaaStr AI Day，agent 商业化与销售落地，近 90 天 12 篇达时长线"
     },
     {
       "handle": "@SequoiaCapital",
       "channelId": "UCWrF0oN6unbXrWsTN7RctTw",
       "weight": 0.8,
+      "topics": ["product", "ai-tech"],
       "note": "Training Data 深访"
     },
     {
       "handle": "@a16z",
       "channelId": "UC9cn0TuPq4dnbTY-CBsm8XA",
       "weight": 0.8,
+      "topics": ["product", "saas"],
       "note": "高管深访"
     },
     {
       "handle": "@lexfridman",
       "channelId": "UCSHZKyawb77ixDdsGog4iWA",
       "weight": 0.6,
+      "topics": ["ai-tech"],
       "note": "长访谈，How-to 密度低"
     }
   ],
   "keywords": [
-    {
-      "pattern": "agentic",
-      "bonus": 0.2
-    },
-    {
-      "pattern": "agent",
-      "bonus": 0.12
-    },
-    {
-      "pattern": "how we built",
-      "bonus": 0.2
-    },
-    {
-      "pattern": "context engineering",
-      "bonus": 0.18
-    },
-    {
-      "pattern": "eval",
-      "bonus": 0.15
-    },
-    {
-      "pattern": "mcp",
-      "bonus": 0.15
-    },
-    {
-      "pattern": "rag",
-      "bonus": 0.12
-    },
-    {
-      "pattern": "in production",
-      "bonus": 0.15
-    },
-    {
-      "pattern": "lessons",
-      "bonus": 0.12
-    },
-    {
-      "pattern": "playbook",
-      "bonus": 0.15
-    }
+    { "pattern": "how we built", "bonus": 0.2 },
+    { "pattern": "how to", "bonus": 0.14 },
+    { "pattern": "lessons", "bonus": 0.12 },
+    { "pattern": "playbook", "bonus": 0.15 },
+    { "pattern": "in production", "bonus": 0.15 },
+    { "pattern": "case study", "bonus": 0.15 },
+    { "pattern": "what we learned", "bonus": 0.15 },
+    { "pattern": "deep dive", "bonus": 0.12 },
+    { "pattern": "framework", "bonus": 0.12 },
+    { "pattern": "behind the scenes", "bonus": 0.12 }
   ],
   "scoring": {
     "keywordBase": 0.7,
@@ -103,6 +195,8 @@
     "recencyDecay": 0.85,
     "maxDurationSec": 6000,
     "diversityDays": 7,
-    "diversityPenalty": 0.55
+    "diversityPenalty": 0.55,
+    "topicDays": 5,
+    "topicPenalty": 0.5
   }
 }

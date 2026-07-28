@@ -33,11 +33,14 @@ test('T2: 关键词命中提高分数', () => {
 });
 
 test('T3: 频道权重线性影响分数', () => {
-  const high = CFG.channels.find((c) => c.weight === 1.0);
-  const low = CFG.channels.find((c) => c.weight === 0.6);
-  const a = D.scoreVideo(vid({ channelId: high.channelId }), high, CFG, TODAY);
-  const b = D.scoreVideo(vid({ channelId: low.channelId }), low, CFG, TODAY);
-  assert.ok(Math.abs(a / b - high.weight / low.weight) < 0.001);
+  // 两个频道必须声明相同 topics —— 主题分组关键词落地后,不同 topic 的频道
+  // keywordFactor 也不同,拿真实频道对比测的就不再是"权重线性"这一件事了。
+  const high = { handle: '@high', channelId: CFG.channels[0].channelId, weight: 1.0, topics: ['agentic'] };
+  const low = { ...high, handle: '@low', weight: 0.6 };
+  const a = D.scoreVideo(vid(), high, CFG, TODAY);
+  const b = D.scoreVideo(vid(), low, CFG, TODAY);
+  assert.ok(Math.abs(a / b - high.weight / low.weight) < 0.001,
+    `权重比 ${high.weight / low.weight} 应等于分数比 ${a / b}`);
 });
 
 test('T4: 时长过短降权', () => {
@@ -352,4 +355,116 @@ test('T25: CLI 端到端 — history 里有该频道时,候选分数低于无 hi
   assert.equal(penalized.code, 0);
   assert.ok(penalized.top.score < plain.top.score,
     `降权应体现在 candidates.json 的 score 上: ${penalized.top.score} 应 < ${plain.top.score}`);
+});
+
+// ── 主题扩展(2026-07-28):主题判定 + 主题降权 ────────────────────────────
+// 标题全部取自 2026-07-28 对各频道的实测抓取,不是构造的 —— 主题判定这种
+// "看起来显然对"的逻辑,只有拿真实标题跑才知道分组词有没有真的覆盖到。
+
+const CH = (h) => CFG.channels.find((c) => c.handle === h);
+
+test('T26: 主题由内容判定,不是照搬频道标签', () => {
+  const saastr = CH('@SaaStr'); // topics: ["saas", "agentic"]
+  const agentish = D.topicOf({ title: 'The Agents #011 - From 0 to 20 Agents and Back Again', description: '' }, saastr, CFG);
+  assert.equal(agentish, 'agentic', 'SaaStr 讲 agent 的那期内容是 agentic,不该记成 saas');
+  const saasish = D.topicOf({ title: 'How to Close Deals and Collect Cash Faster with pricing changes', description: '' }, saastr, CFG);
+  assert.equal(saasish, 'saas');
+});
+
+test('T27: 主题候选被频道 topics 限死,不会跑出声明范围', () => {
+  const lc = CH('@LangChain'); // topics: ["agentic"] 单主题
+  const t = D.topicOf({ title: 'Pricing and churn for our B2B revenue team', description: '' }, lc, CFG);
+  assert.equal(t, 'agentic', 'LangChain 只声明了 agentic,再像 SaaS 的标题也不能判成 saas');
+});
+
+test('T28: 一个关键词都不中时退回频道第一个主题,不返回 null', () => {
+  const lenny = CH('@LennysPodcast'); // topics: ["product", "saas", "design"]
+  assert.equal(D.topicOf({ title: 'A conversation about nothing in particular', description: '' }, lenny, CFG), 'product');
+});
+
+test('T29: 主题分组关键词真的把非 AI 主题拉出了基线', () => {
+  const base = CFG.scoring.keywordBase;
+  const saasTitle = { title: 'Pricing, churn and retention for B2B revenue growth', description: '' };
+  assert.ok(D.keywordFactor(saasTitle, CFG, 'saas') > base + 0.4,
+    `SaaS 词应显著加分,实际 ${D.keywordFactor(saasTitle, CFG, 'saas')}`);
+  // 同一标题按 agentic 组算就只剩基线 —— 证明分组是真的在分,不是把所有词并成一张表
+  assert.equal(D.keywordFactor(saasTitle, CFG, 'agentic'), base);
+});
+
+test('T30: 主题降权按窗口内出现次数指数衰减', () => {
+  const hist = [
+    { id: 'a', channel: '@x', topic: 'ai-tech', date: '2026-07-26' },
+    { id: 'b', channel: '@y', topic: 'ai-tech', date: '2026-07-25' },
+    { id: 'c', channel: '@z', topic: 'ai-tech', date: '2026-07-01' }, // 窗口外
+  ];
+  const p = CFG.scoring.topicPenalty;
+  assert.ok(Math.abs(D.topicFactor('ai-tech', CFG, TODAY, hist) - p * p) < 1e-9,
+    '窗口外那条不该计入');
+  assert.equal(D.topicFactor('product', CFG, TODAY, hist), 1, '别的主题不受影响');
+  assert.equal(D.topicFactor('ai-tech', CFG, TODAY, []), 1, '无历史时不降权');
+});
+
+test('T31: 连续出 AI 后,更旧的产品类视频反超(主题扩展是否真的生效)', () => {
+  // 两条都是实测真实标题与时长
+  const aiVideo = {
+    id: 'ai000000001', title: 'The messy reality of scale synthetic data and pre-training',
+    channelId: CH('@LatentSpaceTV').channelId, publishedAt: '2026-07-27T02:00:00Z',
+    duration: 'PT53M', description: '', liveBroadcastContent: 'none',
+  };
+  const productVideo = {
+    id: 'pd000000001', title: 'Why Netflix is betting on systems thinkers—not specialists—in the AI era',
+    channelId: CH('@LennysPodcast').channelId, publishedAt: '2026-07-19T02:00:00Z',
+    duration: 'PT72M', description: '', liveBroadcastContent: 'none',
+  };
+
+  // 无历史:更新更勤的 AI 类凭 recency 领先 —— 这是改造前的常态
+  const a0 = D.scoreVideo(aiVideo, CH('@LatentSpaceTV'), CFG, TODAY, []);
+  const p0 = D.scoreVideo(productVideo, CH('@LennysPodcast'), CFG, TODAY, []);
+  assert.ok(a0 > p0, `无历史时 AI 类本就该领先(a=${a0} p=${p0}),否则这条测试证明不了降权的作用`);
+
+  // 连续三天 ai-tech,但**分别来自三个不同频道** —— 这样频道降权对本次候选恒为 1,
+  // 排序若翻转就只可能是主题降权造成的。
+  // (初版这三条都写成 @LatentSpaceTV,结果拿掉 topicFactor 测试照样绿:
+  //  翻转其实是频道降权干的,这条测试当时证明不了任何关于主题的事。)
+  const hist = [
+    { id: 'x1', channel: '@OpenAI', topic: 'ai-tech', date: '2026-07-26' },
+    { id: 'x2', channel: '@GoogleDeepMind', topic: 'ai-tech', date: '2026-07-25' },
+    { id: 'x3', channel: '@anthropic-ai', topic: 'ai-tech', date: '2026-07-24' },
+  ];
+  assert.equal(D.diversityFactor(CH('@LatentSpaceTV'), CFG, TODAY, hist), 1,
+    '前提校验:本条历史不得触发频道降权,否则测的就不是主题降权');
+  const a1 = D.scoreVideo(aiVideo, CH('@LatentSpaceTV'), CFG, TODAY, hist);
+  const p1 = D.scoreVideo(productVideo, CH('@LennysPodcast'), CFG, TODAY, hist);
+  assert.ok(p1 > a1, `连出三天 AI 后产品类应反超,实际 ai=${a1} product=${p1}`);
+});
+
+test('T32: candidates.json 每条都带 topic 字段(下游 Step 3 分模板靠它)', () => {
+  const tmp = freshTmp();
+  const r = runCli({ script: 'discover.js', args: [
+    '--out', tmp, '--from-file', FIXTURE('videos-api-ok.json'), '--today', TODAY] });
+  assert.equal(r.code, 0, r.stderr);
+  const out = JSON.parse(fs.readFileSync(path.join(tmp, 'candidates.json'), 'utf-8'));
+  assert.ok(out.candidates.length > 0);
+  for (const c of out.candidates) {
+    assert.ok(c.topic && CFG.topics[c.topic], `候选 ${c.id} 的 topic 非法: ${c.topic}`);
+  }
+  assert.match(r.stderr, /topics=\{/, 'stderr 应报出主题分布,便于运维发现主题失衡');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  r.cleanup();
+});
+
+test('T33: 主题判定只看标题,不被频道模板描述带偏(2026-07-28 VM 实测缺陷)', () => {
+  // 真实案例:这条标题只按标题算是 ai-tech 2:0,但 AI Engineer 给每条视频挂的
+  // 同一段宣传语里满是 agent 字样,一旦把 description 计入就会被判成 agentic ——
+  // "按内容判主题"退化成"按频道判主题",主题降权跟着全错。
+  const ch = CH('@aiDotEngineer'); // topics: ["agentic", "ai-tech"],agentic 在前
+  const video = {
+    title: 'The Messy Reality of Scale: Synthetic Data and Pre-Training — Marah Abdin, poolside',
+    description: "AI Engineer World's Fair. agentic agent agents mcp eval harness orchestration "
+      + 'multi-agent tool use context engineering memory system',
+  };
+  assert.equal(D.topicOf(video, ch, CFG), 'ai-tech',
+    '描述里的频道模板文案不该压过标题里的主题信号');
+  // 标题本身没有主题信号时,才允许退回频道第一个主题
+  assert.equal(D.topicOf({ title: 'Opening remarks', description: video.description }, ch, CFG), 'agentic');
 });
