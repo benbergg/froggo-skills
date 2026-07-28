@@ -1,6 +1,6 @@
 ---
 name: ai-talk-tutorial
-description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engineer/YC/Anthropic/OpenAI/DeepMind/Sequoia/a16z 等)发现 AI/Agentic/模型公司高管演讲,打分选出当日 Top 1,AI 按五段模板提炼为可操作中文 How-to 教程,跑 C1-C9 自检(含时间戳、金句真实性与专有名词溯源校验),渲染自包含 HTML 归档知识库并推送飞书摘要。触发词:AI 演讲教程、youtube 教程、演讲教程、talk tutorial、ai talk、今日演讲、大佬演讲、高管演讲、AI 日课。"
+description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engineer/YC/Anthropic/OpenAI/DeepMind/Sequoia/a16z 等)发现 AI/Agentic/模型公司高管演讲,打分选出当日 Top 1,AI 按五段模板提炼为可操作中文 How-to 教程,跑 C1-C10 自检(含时间戳、金句真实性与专有名词溯源校验),渲染自包含 HTML 归档知识库并推送飞书摘要。触发词:AI 演讲教程、youtube 教程、演讲教程、talk tutorial、ai talk、今日演讲、大佬演讲、高管演讲、AI 日课。"
 ---
 
 # AI 演讲教程日报
@@ -26,6 +26,7 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 | `AI_TALK_COOKIES_PATH` | ☐ | YouTube cookie 文件,默认 `/home/ubuntu/.openclaw/workspace/astraeus/video素材/youtube-cookies.txt` |
 | `AI_TALK_DATE` | ☐ | 目标日期覆盖 `YYYY-MM-DD`,补跑历史日用 |
 | `AI_TALK_ARCHIVE_DIR` | ☐ | 归档根目录,默认 `$HOME/workspace/Knowledge-Library/08-Research/AI-Talks` |
+| `AI_TALK_THUMB_MAX_KB` | ☐ | 封面 base64 后的体积上限,默认 400(KB)。超限则降级到更低画质;三档都超限就不配封面 |
 | `SEND_NOTIFY` | ☐ | `1/true/yes/on` 才真发飞书;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
 | `YT_DLP_PATH` | ☐ | yt-dlp 二进制路径。未设时 `fetch-transcript.js` 依次探测 `/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/bin/yt-dlp`、`/usr/local/bin/yt-dlp`、`/opt/homebrew/bin/yt-dlp`,都不存在才回落到 PATH 里的 `yt-dlp` |
 
@@ -90,7 +91,20 @@ WORK="$HOME/.cache/ai-talk-tutorial/$DATE"
 
 node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.js" \
   --candidates "$WORK/candidates.json" --out "$WORK"
+
+# 封面大图。放在取字幕之后是因为它依赖 selected.json;失败只 WARN 不阻断,
+# 所以不需要判它的退出码 —— 它永远 exit 0(除非参数写错)。
+node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-thumbnail.js" \
+  --selected "$WORK/selected.json" --out "$WORK"
 ```
+
+`fetch-thumbnail.js` 从 `i.ytimg.com` 取官方封面并 base64 内嵌进 `thumbnail.json`,
+按 `maxresdefault → sddefault → hqdefault` 降级。**不走 yt-dlp** —— 2026-07-28 实测
+VM 上 yt-dlp 已因 cookie 轮换 + 缺 JS runtime 失效,而这几个缩略图端点免认证免 cookie,
+是整条链路里最不容易坏的一环,插图不该挂在最脆的依赖上。
+
+内嵌而非外链的理由:归档 HTML 要在知识库躺很多年,视频被删/转私有后外链封面会变成碎图标。
+页脚那个 `<iframe>` 原视频本来就依赖 YouTube 在线,坏了不影响读文章;封面是版面的一部分,坏了直接破版。
 
 - exit 0 → 继续 Step 3
 - **exit 6(全部候选取不到字幕)→ 中止,不产出半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:所有候选视频取字幕均失败(fetch-transcript.js exit 6),已中止,请人工核查候选与 cookie/yt-dlp 状态。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
@@ -112,6 +126,15 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
 
 <正文段落>
 
+:::stats
+13% | 团队内部日常使用该工具的比例
+6T | 预训练语料的 token 量
+:::
+
+| 对比维度 | 方案 A | 方案 B |
+|---|---|---|
+| 适用场景 | ... | ... |
+
 ## 三、核心方法论
 
 ### 1. <步骤名>
@@ -122,6 +145,12 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
 
 ### 3. <步骤名>
 <正文>
+
+:::flow
+1. <步骤名> | 一句话说明
+2. <步骤名> | 一句话说明
+3. <步骤名> | 一句话说明
+:::
 
 ## 四、可落地 checklist
 
@@ -143,7 +172,7 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
 **第六段是可选段** —— 正文里所有英文术语都能在 `transcript.json` 或视频标题里查到时,可以整段省略。
 一旦正文出现查不到出处的专有名词,C9 会点名要求补进这张表(见撰写约束第 8 条)。
 
-**撰写约束(违反必被 C1-C9 拦下)**:
+**撰写约束(违反必被 C1-C10 拦下)**:
 
 1. 数字、术语、人名一律来自 `transcript.json`,**不得**用模型自身知识补充。
 2. **金句允许有界清洗,但不得改写**。可以做的只有两件事:
@@ -214,12 +243,35 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
 
    C9 不保证你纠对(机器判不了),它保证的是**每一次改写都被显式声明、且指向转录里真实存在的说法**,
    人工复核才有抓手。对照表会渲染进 HTML 末尾的折叠区,读者可以就地查证。
-7. **金句的英文部分必须用 ASCII 直引号 `"..."`,不得用中文/弯引号 `“…”`**。`build-html.js` 的金句正则
+9. **金句的英文部分必须用 ASCII 直引号 `"..."`,不得用中文/弯引号 `“…”`**。`build-html.js` 的金句正则
    `/^>\s*\[...\]\s*"([^"]+)"\s*\n>\s*——\s*(.+)$/gm` 只认 ASCII `"`,用弯引号会导致该条金句从解析结果里
    彻底消失、不留痕迹。全部金句都坏掉时报 C4「未提供任何原声金句」;**只坏掉其中几条时也会被 C4 拦住**
    ——`build-html.js` 会比对「段落里看起来像金句的行数」与「实际解析出的条数」,数量不一致就报
    C4「原声金句部分丢失」,并在报错信息里点名最可能是弯引号导致(不会像 V1 那样只在全灭时才报错、
    部分丢失完全无感)。
+10. **结构化图示只有三种,且只能写在第二段与第三段**(C10)。三千字中文连排没有呼吸,
+    图示是解药,但语法必须封闭 —— 2026-07-28 那篇里 AI 自发写了一张 markdown 表格,
+    当时渲染层不支持,整张以裸文本 `| 编排方式 | 适用场景 | 本质 | |---|---|---|`
+    泄漏进正文,C1-C9 八项自检无一能发现。
+
+    | 形态 | 语法 | 用在哪 |
+    |---|---|---|
+    | 流程 | `:::flow` … `:::`,每行 `步骤名 \| 一句话说明` | 方法论的步骤序列 |
+    | 数字卡 | `:::stats` … `:::`,每行 `数值 \| 标签` | 值得被记住的关键数字 |
+    | 表格 | 标准 markdown 表格 | 多维度对比 |
+
+    - **位置**:只有「二、背景」和「三、核心方法论」两段会渲染它们。写进 TL;DR 或
+      checklist 会被当成裸文本吞掉 —— C10 直接报位置错误,不给你静默破版的机会。
+    - **闭合**:`:::` 块内部**不能有空行**,收尾必须是单独一行 `:::`。中间空一行会把块
+      按段落切开,收尾的 `:::` 变成孤立文本。
+    - **每项两段式**:`|` 左右都不能为空;至少 2 项(一项的图示没有信息量)。
+    - **溯源**:`:::flow` 的节点名必须与正文里的步骤名一致,`:::stats` 的数值必须在正文
+      出现过。**图是对正文的提炼,不是新的信息来源** —— 否则等于开了一个"在图里编造
+      正文没有的数字"的口子,而图恰恰是读者最容易当结论记住的部分。
+    - 表格每行列数必须与表头一致。
+
+    不引 mermaid:自包含归档要内联 ~1MB 的 mermaid.js,一年归档就是 300MB+,
+    为几张流程图不划算。这三种都是纯 CSS/HTML。
 
 ### Step 4 · 自检与渲染
 
@@ -233,12 +285,16 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/build-html.js" \
   --md "$WORK/tutorial.md" \
   --transcript "$WORK/transcript.json" \
   --selected "$WORK/selected.json" \
+  --thumbnail "$WORK/thumbnail.json" \
   --out "$WORK/tutorial.html"
 ```
 
+`--thumbnail` 指向 Step 2 产出的封面。文件不存在或 JSON 坏掉只 WARN、页头退回纯色底 ——
+不能因为封面挂了就丢掉一整篇已经通过全部自检的教程。
+
 - exit 0 → 继续 Step 5
 - **exit 5 → 读 stderr 的 `[Cx] 说明` 逐条修 `tutorial.md`,重跑本步。最多 3 轮**
-- **3 轮仍不过 → 中止,不推送半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:tutorial.md 自检 3 轮仍未通过 C1-C9(build-html.js exit 5),已中止,不推送半成品,请人工核查 $WORK/tutorial.md 与上一次 stderr 报错。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
+- **3 轮仍不过 → 中止,不推送半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:tutorial.md 自检 3 轮仍未通过 C1-C10(build-html.js exit 5),已中止,不推送半成品,请人工核查 $WORK/tutorial.md 与上一次 stderr 报错。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
 
 > C9 的修法和别的检查不同:它报的不是"写错了",而是"这个名字没有出处"。
 > 两条正确出路 —— 要么把它连同转录原文和依据补进「## 六、术语对照」,
@@ -422,8 +478,12 @@ RC=$?
 
 ## 诚实上限
 
-C1–C9 只能挡**结构性错误与引用真实性**。方法论提炼得准不准、有没有抓错重点属于模型发挥,**无法脚本化**。
+C1–C10 只能挡**结构性错误与引用真实性**。方法论提炼得准不准、有没有抓错重点属于模型发挥,**无法脚本化**。
 重要用途请人工过一遍正文。
+
+C10 的边界同理:它保证图示语法合法、位置正确、节点名与数值都能在正文里找到,
+**不保证图示提炼得对** —— flow 的三步可能漏掉了正文里更关键的第四步,stats 挑的两个数字
+可能不是最值得记住的两个。它挡的是"破版"和"图里凭空多出个数字",挡不了"选材平庸"。
 
 C9 尤其要看清它的边界:它保证"每个转录里查不到的专有名词都被显式声明、且声明指向转录里真实存在的说法",
 **不保证声明本身是对的**。`DeepChem` 这种 ASR 误听,C9 能逼 AI 写下"转录原文:Deep Chem",

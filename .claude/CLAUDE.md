@@ -180,6 +180,37 @@ ai-talk-tutorial(AI 演讲教程日报)
 `transcript-glossary.json` / `tutorial-glossary-{declared,undeclared}.md` 三个夹具
 直接取自 7-28 真实产物 —— C9 的 0 误报断言只有贴生产形态的夹具才立得住。
 
+### ai-talk-tutorial v2.2 视觉改版 (2026-07-28)
+
+7-28 真实产出的版面评估:全篇零图片,三千字中文段落在 940px 满宽下连排;
+而 AI 其实**已经在自发写表格**了 —— 「核心方法论」的一张 markdown 表格因渲染层不支持,
+整张以裸文本 `| 编排方式 | 适用场景 | 本质 | |---|---|---|` 泄漏进正文,C1-C9 八项无一能发现。
+
+- **杂志长读风重排**:暖纸底 `#F4F1EC` + 衬线中文标题 + 正文栏宽从 940px 收到
+  **720px**(超过 40 字/行时中文回扫会丢行,这是"没有呼吸"的主因)。章节序号用
+  `01`/`02` 而非「一」/「二」—— 后者在 13px 衬线下就是一到三根横线,实测截图里
+  与装饰线完全分不出。深色模式新增 `--on-accent`:深色下 accent 转浅橙,圆形序号
+  再压白字对比度不足。`build-index.js` 的归档索引页同步同一套 token,避免两页像两个网站。
+- **封面 hero**(`fetch-thumbnail.js`):`i.ytimg.com` 三档降级
+  `maxresdefault → sddefault → hqdefault`,base64 内嵌。**不走 yt-dlp** —— 7-28 实测
+  VM 上 yt-dlp 已因 cookie 轮换 + 缺 JS runtime 失效,而这几个端点免认证免 cookie。
+  内嵌而非外链是因为归档要躺很多年,视频转私有后外链会变碎图标。
+  三处判别来自真实行为:YouTube 对缺失画质返回 **200 + 1KB 灰色占位图**(不是 404,
+  只看 `res.ok` 会把灰图当封面);JPEG magic 校验挡网关错误页;体积上限按
+  **base64 编码后**算(才是 HTML 实际增量)。整步失败只 WARN + exit 0,页头退回纯色底。
+- **结构化图示 + 表格渲染**(C10):封闭三种 —— `:::flow` / `:::stats` / 标准 markdown 表格,
+  纯 CSS/HTML,**不引 mermaid**(内联 ~1MB,一年归档 300MB+)。C10 管四件事:语法闭合
+  (块内不能有空行)、位置(只有二、三段走 `renderParagraphs`,写进 TL;DR/checklist 会被
+  `renderList` 吞掉)、两段式完整性、**溯源**(flow 节点名须在方法论正文出现、stats 数值须在
+  正文出现)。溯源这条与 C9 同源:图是对正文的提炼,不是新信息来源 —— 否则等于开了个
+  "在图里编造正文没有的数字"的口子,而图恰恰是读者最容易当结论记住的部分。
+- 本机 `node fetch` 打 i.ytimg.com 会 10s connect timeout 而 curl 正常:DNS 返回了不可达的
+  AAAA(Teredo 前缀 `2001::1`),Node 认死 IPv6。`main()` 里开 `setDefaultAutoSelectFamily(true)`。
+
+测试 126 项(125 pass / 1 skip),新增 fetch-thumbnail 11 项 + build-html 14 项。
+10 组 revert-and-rerun 逐条验判别力,每组只打掉预期的那几项:去掉表格分支→只死 T54,
+去掉 C10 整块→只死 T56-T63,只去掉溯源两行→只死 T60/T61,去掉占位图体积下界→只死 TT3。
+
 ## 版本管理
 
 版本号在 `.claude-plugin/plugin.json` 的 `version` 字段中维护。
