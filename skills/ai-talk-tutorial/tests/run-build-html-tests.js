@@ -647,3 +647,96 @@ test('T44: 填充音集合只收无实词歧义的音,like / actually / you know
   assert.ok(v.some((x) => x.code === 'C4'),
     `actually/like/you know/basically 是实词,删掉必须被拦: ${JSON.stringify(v)}`);
 });
+
+// ---- 方案 A(2026-07-28):C9 术语对照表。
+// 实证问题:C1-C8 只校验金句子串与时间戳,正文事实性完全无约束。7-28 产出的教程里,
+// 转录的 "Deep Chem FP8 kernels" 被原样写成 DeepChem(实为 ASR 误听),
+// 转录的 "we turn 360" 被猜成不存在的型号 Qwen3-360,而同一篇里
+// "sweep bench agent less multilingual" 又被正确纠成 swe-bench agentless ——
+// 同一份稿子三种命运,说明没有任何机制在管这件事。
+//
+// C9 不保证 AI 纠对,它保证的是:正文里每个转录查不到的专有名词都必须显式声明,
+// 且声明的"转录原文"必须在 transcript 里真实存在 —— 把"随机纠正"变成
+// "显式声明 + 机器可验证",人工复核也才有抓手。
+//
+// 判别口径由真实产物校准:正文英文 token 145 个,其中转录+标题查不到的 13 个,
+// 只取"含大写字母"这一条判别特征后剩 8 个,误报 0 —— 被滤掉的
+// orchestrated / ad-hoc / cross-rank 全是小写普通词。
+
+const G_TRANSCRIPT = JSON.parse(load('transcript-glossary.json'));
+const G_SELECTED = JSON.parse(load('selected-glossary.json'));
+const G_TERMS = ['DeepChem', 'M.2', 'DDP', 'MultiPL-E', 'BigCodeBench',
+  'Qwen3-360', 'DeepSeek', 'EvalPlus'];
+
+test('T45: C9 — 真实产物未声明术语时,恰好报出那 8 个词,一个不多一个不少(0 误报判别)', () => {
+  const v = B.runChecks(B.parseTutorialMd(load('tutorial-glossary-undeclared.md')),
+    G_TRANSCRIPT, G_SELECTED);
+  const c9 = v.filter((x) => x.code === 'C9');
+  const flagged = G_TERMS.filter((t) => c9.some((x) => x.message.includes(t)));
+  assert.deepEqual(flagged, G_TERMS, `应报出全部 8 个未声明术语,实际报: ${JSON.stringify(c9.map((x) => x.message))}`);
+  assert.equal(c9.length, G_TERMS.length,
+    `不应有额外误报(orchestrated / ad-hoc / cross-rank 这类小写普通词必须被滤掉),实际: ${JSON.stringify(c9.map((x) => x.message))}`);
+  // 两个真错必须在其中 —— 这是 C9 存在的理由
+  assert.ok(c9.some((x) => x.message.includes('DeepChem')), 'ASR 误听未被抓到');
+  assert.ok(c9.some((x) => x.message.includes('Qwen3-360')), '编造的型号未被抓到');
+});
+
+test('T46: C9 — 同一篇补上术语对照表后零违规(其余 C1-C8 也不被新段落带偏)', () => {
+  const v = B.runChecks(B.parseTutorialMd(load('tutorial-glossary-declared.md')),
+    G_TRANSCRIPT, G_SELECTED);
+  assert.deepEqual(v, [], `声明齐全后应零违规,实际: ${JSON.stringify(v)}`);
+});
+
+test('T47: C9 判别 — 对照表声称的"转录原文"在 transcript 里查不到 → 报违规(防编造搪塞)', () => {
+  const md = load('tutorial-glossary-declared.md')
+    .replace('| DeepChem | Deep Chem |', '| DeepChem | DeepChem |');
+  const v = B.runChecks(B.parseTutorialMd(md), G_TRANSCRIPT, G_SELECTED);
+  assert.ok(v.some((x) => x.code === 'C9' && /转录原文/.test(x.message)),
+    `填一个同样查不到的词搪塞必须被拦,否则对照表就是走过场: ${JSON.stringify(v.filter((x) => x.code === 'C9'))}`);
+});
+
+test('T48: C9 判别 — 对照表缺"依据"列内容 → 报违规', () => {
+  const md = load('tutorial-glossary-declared.md')
+    .replace('| DeepChem | Deep Chem | 转录为 ASR 分词写法;指开源 FP8 GEMM kernel 库 |',
+      '| DeepChem | Deep Chem |  |');
+  const v = B.runChecks(B.parseTutorialMd(md), G_TRANSCRIPT, G_SELECTED);
+  assert.ok(v.some((x) => x.code === 'C9' && /依据/.test(x.message)),
+    `依据为空必须被拦: ${JSON.stringify(v.filter((x) => x.code === 'C9'))}`);
+});
+
+test('T49: C9 — 术语对照段为可选:正文术语全部可溯源时,缺这一段不报违规', () => {
+  const v = B.runChecks(B.parseTutorialMd(load('tutorial-good.md')), TRANSCRIPT, SELECTED);
+  assert.deepEqual(v, [], `全中文正文无需对照表,不该因缺第六段报错: ${JSON.stringify(v)}`);
+});
+
+test('T50: C9 — 视频标题里的专有名词算合法出处(标题是可信元数据,不必进对照表)', () => {
+  // poolside / Marah Abdin / Robert McHardy 只出现在 selected.title,转录里一次都没有
+  const declared = B.parseTutorialMd(load('tutorial-glossary-declared.md'));
+  const v = B.runChecks(declared, G_TRANSCRIPT, G_SELECTED);
+  assert.equal(v.filter((x) => x.code === 'C9').length, 0);
+  // 抽掉标题这个出处后,它们就该被报出来 —— 证明上面那条不是"根本没在查"
+  const v2 = B.runChecks(declared, G_TRANSCRIPT, { ...G_SELECTED, title: '' });
+  assert.ok(v2.some((x) => x.code === 'C9' && /poolside|Marah|McHardy/i.test(x.message)),
+    `标题作为出处必须是真的在起作用: ${JSON.stringify(v2.filter((x) => x.code === 'C9'))}`);
+});
+
+test('T51: 术语对照表渲染进 HTML 的折叠区,不干扰正文阅读', () => {
+  const doc = B.parseTutorialMd(load('tutorial-glossary-declared.md'));
+  const html = B.renderHtml(doc, G_SELECTED, fs.readFileSync(
+    path.join(__dirname, '..', 'references', 'templates', 'tutorial.html'), 'utf-8'));
+  assert.match(html, /<details/, '对照表应渲染成可折叠区');
+  assert.match(html, /Deep Chem/, '对照表内容应保留在 HTML 里,供人工复核');
+  assert.doesNotMatch(html, /<!--GLOSSARY-->/, '占位符必须被替换掉');
+  // 无对照表时占位符同样要被清掉,不能留在页面上
+  const html2 = B.renderHtml(B.parseTutorialMd(load('tutorial-good.md')), SELECTED,
+    fs.readFileSync(path.join(__dirname, '..', 'references', 'templates', 'tutorial.html'), 'utf-8'));
+  assert.doesNotMatch(html2, /<!--GLOSSARY-->/, '缺对照表时占位符也必须清掉');
+});
+
+test('T52: 第六段不被第五段吞掉(金句解析不受新段落影响)', () => {
+  const doc = B.parseTutorialMd(load('tutorial-glossary-declared.md'));
+  assert.equal(doc.quotes.length, 4, '金句数量不应因新增第六段而变化');
+  assert.doesNotMatch(doc.sections.quotes, /术语对照|教程写法/,
+    '第五段不该把第六段的内容吞进去');
+  assert.ok(doc.glossary.length === 8, `对照表应解析出 8 行,实际 ${doc.glossary.length}`);
+});

@@ -47,6 +47,12 @@ li{margin:6px 0}
 .callout-tip{border-color:var(--gold);background:var(--gold-soft)}
 .callout-warning{border-color:var(--warn);background:var(--warn-soft)}
 .callout-note{border-color:var(--brand);background:var(--brand-soft)}
+/* 术语对照:默认折叠,给人工复核用,不干扰正文阅读 */
+details.glossary{margin:24px 0 8px;border:1px solid var(--line);border-radius:10px;background:var(--panel)}
+details.glossary summary{cursor:pointer;padding:12px 16px;font-size:14px;color:var(--ink-soft)}
+details.glossary table{width:100%;border-collapse:collapse;font-size:13px}
+details.glossary th,details.glossary td{border-top:1px solid var(--line);padding:8px 16px;text-align:left;vertical-align:top}
+details.glossary th{color:var(--ink-soft);font-weight:600}
 blockquote{margin:16px 0;padding:16px 18px;background:var(--gold-soft);
   border-left:4px solid var(--gold);border-radius:0 10px 10px 0}
 blockquote .en{font-family:var(--mono);font-size:14px;display:block;margin-bottom:8px}
@@ -70,6 +76,7 @@ footer{padding:28px 0 48px;color:var(--ink-soft);font-size:13px}
 <section id="checklist"><div class="wrap"><h2>四、可落地 checklist</h2><div class="panel check"><!--CHECKLIST--></div></div></section>
 <section id="quotes"><div class="wrap"><h2>五、原声金句</h2><!--QUOTES--><div class="embed"><!--EMBED--></div></div></section>
 
+<!--GLOSSARY-->
 <footer><div class="wrap"><!--FOOTER--></div></footer>
 </body>
 </html>

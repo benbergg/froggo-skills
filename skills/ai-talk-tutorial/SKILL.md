@@ -1,6 +1,6 @@
 ---
 name: ai-talk-tutorial
-description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engineer/YC/Anthropic/OpenAI/DeepMind/Sequoia/a16z 等)发现 AI/Agentic/模型公司高管演讲,打分选出当日 Top 1,AI 按五段模板提炼为可操作中文 How-to 教程,跑 C1-C8 自检(含时间戳与金句真实性校验),渲染自包含 HTML 归档知识库并推送飞书摘要。触发词:AI 演讲教程、youtube 教程、演讲教程、talk tutorial、ai talk、今日演讲、大佬演讲、高管演讲、AI 日课。"
+description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engineer/YC/Anthropic/OpenAI/DeepMind/Sequoia/a16z 等)发现 AI/Agentic/模型公司高管演讲,打分选出当日 Top 1,AI 按五段模板提炼为可操作中文 How-to 教程,跑 C1-C9 自检(含时间戳、金句真实性与专有名词溯源校验),渲染自包含 HTML 归档知识库并推送飞书摘要。触发词:AI 演讲教程、youtube 教程、演讲教程、talk tutorial、ai talk、今日演讲、大佬演讲、高管演讲、AI 日课。"
 ---
 
 # AI 演讲教程日报
@@ -132,9 +132,18 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
 
 > [12:34] "the exact english sentence from the transcript"
 > —— 中文译解
+
+## 六、术语对照
+
+| 教程写法 | 转录原文 | 依据 |
+|---|---|---|
+| DeepGEMM | Deep Chem | ASR 误听;DeepSeek 开源的 FP8 GEMM kernel |
 ````
 
-**撰写约束(违反必被 C1-C8 拦下)**:
+**第六段是可选段** —— 正文里所有英文术语都能在 `transcript.json` 或视频标题里查到时,可以整段省略。
+一旦正文出现查不到出处的专有名词,C9 会点名要求补进这张表(见撰写约束第 8 条)。
+
+**撰写约束(违反必被 C1-C9 拦下)**:
 
 1. 数字、术语、人名一律来自 `transcript.json`,**不得**用模型自身知识补充。
 2. **金句允许有界清洗,但不得改写**。可以做的只有两件事:
@@ -184,6 +193,27 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/fetch-transcript.j
    以上三条违反都由 C6 拦下 exit 5。这条约束是 2026-07-28 实证补的:当时 AI 自发写了
    `> [!tip]`,产出的 HTML 是 `<p>&gt; [!tip] &gt; 关键工程法则:…</p>` —— 标记字面泄漏、
    `>` 转义、样式全丢,而当时没有任何一条约束禁止这么写,自检也没有任何一项能发现。
+8. **专有名词必须可溯源,否则进术语对照表**(C9)。正文里**含大写字母**的英文词,
+   若在 `transcript.json` 的 `full_text` 和 `selected.json` 的 `title` 里都查不到,
+   必须在「## 六、术语对照」表里声明,三列缺一不可:
+
+   | 列 | 要求 |
+   |---|---|
+   | 教程写法 | 正文里实际用的写法 |
+   | 转录原文 | **必须是 transcript 里真实出现的文字**,ASR 拼错了也照填 —— C9 会去查,填个同样查不到的词会被拦 |
+   | 依据 | 为什么这么改写(ASR 误听 / 转录用全称正文用缩写 / 依上下文推断……),不能为空 |
+
+   **追溯不到就别用**:改回转录里的原说法,不要凭模型知识补写一个"看起来对"的名字。
+
+   这条 2026-07-28 实证补的,当时同一篇稿子里同一类问题出现了三种命运:
+   转录的 `Deep Chem FP8 kernels` 被原样写成 `DeepChem`(实为 ASR 误听);
+   转录的 `we turn 360` 被猜成**不存在的型号** `Qwen3-360`;
+   而 `sweep bench agent less multilingual` 又被正确纠成 `swe-bench agentless`。
+   三种结果说明这件事完全没有机制在管 —— 一个错的 kernel 名字进了「可落地 checklist」,
+   读者照着搜什么都搜不到,这份产物的核心卖点就没了。
+
+   C9 不保证你纠对(机器判不了),它保证的是**每一次改写都被显式声明、且指向转录里真实存在的说法**,
+   人工复核才有抓手。对照表会渲染进 HTML 末尾的折叠区,读者可以就地查证。
 7. **金句的英文部分必须用 ASCII 直引号 `"..."`,不得用中文/弯引号 `“…”`**。`build-html.js` 的金句正则
    `/^>\s*\[...\]\s*"([^"]+)"\s*\n>\s*——\s*(.+)$/gm` 只认 ASCII `"`,用弯引号会导致该条金句从解析结果里
    彻底消失、不留痕迹。全部金句都坏掉时报 C4「未提供任何原声金句」;**只坏掉其中几条时也会被 C4 拦住**
@@ -208,7 +238,11 @@ node "$PLUGIN_ROOT/skills/ai-talk-tutorial/references/scripts/build-html.js" \
 
 - exit 0 → 继续 Step 5
 - **exit 5 → 读 stderr 的 `[Cx] 说明` 逐条修 `tutorial.md`,重跑本步。最多 3 轮**
-- **3 轮仍不过 → 中止,不推送半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:tutorial.md 自检 3 轮仍未通过 C1-C8(build-html.js exit 5),已中止,不推送半成品,请人工核查 $WORK/tutorial.md 与上一次 stderr 报错。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
+- **3 轮仍不过 → 中止,不推送半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:tutorial.md 自检 3 轮仍未通过 C1-C9(build-html.js exit 5),已中止,不推送半成品,请人工核查 $WORK/tutorial.md 与上一次 stderr 报错。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
+
+> C9 的修法和别的检查不同:它报的不是"写错了",而是"这个名字没有出处"。
+> 两条正确出路 —— 要么把它连同转录原文和依据补进「## 六、术语对照」,
+> 要么改回转录里的原说法。**不要**为了过检去编一个转录原文,C9 会回查。
 
 ### Step 5 · 归档知识库
 
@@ -374,8 +408,14 @@ RC=$?
 
 ## 诚实上限
 
-C1–C8 只能挡**结构性错误与引用真实性**。方法论提炼得准不准、有没有抓错重点属于模型发挥,**无法脚本化**。
+C1–C9 只能挡**结构性错误与引用真实性**。方法论提炼得准不准、有没有抓错重点属于模型发挥,**无法脚本化**。
 重要用途请人工过一遍正文。
+
+C9 尤其要看清它的边界:它保证"每个转录里查不到的专有名词都被显式声明、且声明指向转录里真实存在的说法",
+**不保证声明本身是对的**。`DeepChem` 这种 ASR 误听,C9 能逼 AI 写下"转录原文:Deep Chem",
+但判不了正确拼法其实是 `DeepGEMM` —— 那需要外部知识。它的作用是把这类词从正文里挑出来摆到台面上,
+让 HTML 末尾折叠区的那张表成为人工复核的入口。另外判别口径只认**含大写字母**的词
+(真实产物校准:这样误报为 0),纯小写的专有名词漏放。
 
 C7 只校验 `transcript.video_id` 与 `selected.id` 是否一致(防止拿错视频的字幕拼错视频的教程),**不做标题一致性校验** ——
 `tutorial.md` 的 H1 与 `selected.json.title`(YouTube 原标题)本来就该不同(H1 是 AI 提炼的中文标题,不是原标题的翻译或摘录),

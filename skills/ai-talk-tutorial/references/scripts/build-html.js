@@ -11,13 +11,21 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const SECTION_KEYS = ['tldr', 'background', 'method', 'checklist', 'quotes'];
+// 术语对照是可选段:正文所有英文术语都能在转录里查到时不必写。
+// 不进 SECTION_KEYS —— 那是 C1 的"必须齐全"清单;但必须参与切段,
+// 否则 `## 六、` 会被第五段整个吞进去,连带毁掉金句解析和 C4。
+const OPTIONAL_SECTION_KEYS = ['glossary'];
+const ALL_SECTION_KEYS = [...SECTION_KEYS, ...OPTIONAL_SECTION_KEYS];
 const SECTION_HEADS = {
   tldr: /^##\s*一、\s*TL;DR/m,
   background: /^##\s*二、/m,
   method: /^##\s*三、/m,
   checklist: /^##\s*四、/m,
   quotes: /^##\s*五、/m,
+  glossary: /^##\s*六、/m,
 };
+// 正文段(参与 C6 / C8 / C9 的内容检查);金句段与术语对照段各有专门规则,不在其中
+const BODY_SECTION_KEYS = ['tldr', 'background', 'method', 'checklist'];
 // 英文项用 \b 词边界(避免误伤如 "TODOLIST" 这类复合词);
 // 中文项不能用 \b —— 无 u 标志时 \b 定义在 ASCII [A-Za-z0-9_] 上,CJK 字符两侧根本不存在词边界,
 // 混进同一个 \b(...)\b 组会导致中文占位符永远匹配不到(fix round: 评审实测 test('待补充')===false)。
@@ -133,7 +141,7 @@ function parseTutorialMd(md) {
   // 按二级标题切段:逐段定位,不做跨块全局正则
   const sections = {};
   const positions = [];
-  for (const k of SECTION_KEYS) {
+  for (const k of ALL_SECTION_KEYS) {
     const m = md.match(SECTION_HEADS[k]);
     positions.push({ key: k, idx: m ? m.index : -1 });
   }
@@ -144,7 +152,7 @@ function parseTutorialMd(md) {
     const body = md.slice(start, end).replace(/^##[^\n]*\n/, '').trim();
     sections[present[i].key] = body;
   }
-  for (const k of SECTION_KEYS) if (!(k in sections)) sections[k] = '';
+  for (const k of ALL_SECTION_KEYS) if (!(k in sections)) sections[k] = '';
 
   // 金句:> [mm:ss] "english"  \n > —— 中文
   const quotes = [];
@@ -173,7 +181,23 @@ function parseTutorialMd(md) {
     });
   }
 
-  return { title, sections, quotes, steps, raw: md };
+  return { title, sections, quotes, steps, glossary: parseGlossary(sections.glossary), raw: md };
+}
+
+// 解析术语对照表:| 教程写法 | 转录原文 | 依据 |
+// 跳过表头行与 |---|---| 分隔行;少于 3 列的行忽略(写坏的行由 C9 通过"术语未声明"报出来)
+function parseGlossary(section) {
+  const rows = [];
+  for (const line of String(section || '').split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('|')) continue;
+    const cells = t.split('|').slice(1, -1).map((c) => c.trim());
+    if (cells.length < 3) continue;
+    if (cells.every((c) => /^:?-+:?$/.test(c))) continue;
+    if (cells[0] === '教程写法') continue;
+    rows.push({ term: cells[0], source: cells[1], basis: cells.slice(2).join(' ').trim() });
+  }
+  return rows;
 }
 
 // 数列表项条数(只计数不渲染)。除 `-`/`*` 外也认编号列表 `1.` / `1、`——SKILL.md 的撰写
@@ -192,6 +216,15 @@ function countListItems(body) {
 //   - TL;DR/checklist 均实测 3 条 → 阈值 2(留 1 条余量,拦住骨架文档的 1 条)
 //   - 背景段实测 54 字符 → BACKGROUND_MIN_CHARS=30(评审建议的 60 反而会误杀这份合格夹具,未采纳)
 //   - H1 实测 20 字符 → H1_MIN_CHARS=6(采纳评审建议,骨架文档标题"AI 教程"5 字符,刚好落在阈值下)
+// C9 专有名词判别口径 —— 由 2026-07-28 真实产物校准,不是拍脑袋的正则:
+// 那篇正文含 145 个英文 token,转录+标题里查不到的有 13 个,其中
+// orchestrated / ad-hoc / cross-rank 是普通英文词(误报),其余 10 个都该声明。
+// 加上"必须含大写字母"这一条判别特征后剩 8 个,误报 0 —— 三个误报全是纯小写。
+// 代价是漏掉纯小写的专有名词(如 swe-bench),但那类恰好是 AI 纠对的情形,
+// 漏放无害;而误报会让流水线天天 exit 5,必须压到 0。
+const PROPER_NOUN_RE = /[A-Za-z][A-Za-z0-9]*(?:[-.][A-Za-z0-9]+)*/g;
+const PROPER_NOUN_MIN_LEN = 2;
+
 const STEP_BODY_MIN_CHARS = 15;
 const TLDR_MIN_BULLETS = 2;
 const CHECKLIST_MIN_ITEMS = 2;
@@ -312,7 +345,7 @@ function runChecks(doc, transcript, selected) {
   if (ph) add('C6', `存在占位符: ${ph[0]}`);
 
   const allowed = CALLOUT_TYPES.map((t) => `[!${t}]`).join(' / ');
-  for (const key of ['tldr', 'background', 'method', 'checklist']) {
+  for (const key of BODY_SECTION_KEYS) {
     for (const block of (doc.sections[key] || '').split(/\n{2,}/)) {
       const lines = block.split('\n').map((l) => l.trim()).filter(Boolean);
       if (!lines.some((l) => l.startsWith('>'))) continue;
@@ -334,6 +367,44 @@ function runChecks(doc, transcript, selected) {
     }
   }
 
+  // C9 正文专有名词必须可溯源,或在术语对照表里显式声明
+  //
+  // 为什么需要(方案 A,2026-07-28 实证):C1-C8 只管金句子串与时间戳,正文事实性无人看管。
+  // 那天的产出里,转录的 "Deep Chem FP8 kernels" 原样写成了 DeepChem(实为 ASR 误听),
+  // 转录的 "we turn 360" 被猜成不存在的型号 Qwen3-360,而同一篇里
+  // "sweep bench agent less multilingual" 又被正确纠成 swe-bench agentless ——
+  // 同一份稿子三种命运,说明这件事完全没有机制在管。
+  //
+  // C9 不保证 AI 纠对(那超出机器判定能力),它保证的是:凡是转录里查不到的专有名词,
+  // 都必须显式声明,且声明的"转录原文"必须在 transcript 里真实存在。
+  // 于是"随机纠正"变成"显式声明 + 机器可验证",人工复核也有了抓手。
+  const evidence = `${transcript.full_text || ''} ${selected.title || ''}`.toLowerCase();
+  const declared = new Set(doc.glossary.map((r) => r.term.toLowerCase()).filter(Boolean));
+
+  for (const row of doc.glossary) {
+    if (!row.term) { add('C9', '术语对照表存在「教程写法」为空的行'); continue; }
+    if (!row.source || !evidence.includes(row.source.toLowerCase())) {
+      add('C9', `术语对照表里「${row.term}」声称的转录原文「${row.source || '(空)'}」在 transcript 与视频标题中都查不到 ——`
+        + '对照表的作用是让纠正可被验证,不能填一个同样查不到的写法搪塞;'
+        + '请填 transcript 里实际出现的那段文字(ASR 的错误拼写也照填)');
+    }
+    if (!row.basis) add('C9', `术语对照表里「${row.term}」缺依据说明(第三列不能为空)`);
+  }
+
+  const flagged = new Set();
+  for (const key of BODY_SECTION_KEYS) {
+    for (const tok of (doc.sections[key] || '').match(PROPER_NOUN_RE) || []) {
+      if (tok.length < PROPER_NOUN_MIN_LEN) continue;
+      if (!/[A-Z]/.test(tok)) continue; // 纯小写的普通英文词不算专有名词(见 PROPER_NOUN_RE 注释)
+      const lower = tok.toLowerCase();
+      if (flagged.has(lower) || evidence.includes(lower) || declared.has(lower)) continue;
+      flagged.add(lower);
+      add('C9', `正文里的「${tok}」在 transcript 与视频标题中都找不到出处。`
+        + '若它是 ASR 误听后的纠正、或转录用全称而正文用缩写,请在「## 六、术语对照」表里声明'
+        + '(三列:教程写法 | 转录原文 | 依据);若无法追溯,改用转录里的原说法,不要凭模型知识补写');
+    }
+  }
+
   // C7 与 selected.json 一致
   if (transcript.video_id !== selected.id) {
     add('C7', `transcript.video_id(${transcript.video_id}) 与 selected.id(${selected.id}) 不一致`);
@@ -347,7 +418,7 @@ function runChecks(doc, transcript, selected) {
   // "整行纯英文、但拆成的每句都 <40 字符"这种输入被放行(旧的行级判定本能拦住)。
   // 改为先做行级判定(整行 ≥40 字符且纯 ASCII 无中文即报),行级不中时再退到句级判定
   // (句级专门负责"中英文同行"场景) —— 两级取并集,不是互斥。
-  const bodyKeys = ['tldr', 'background', 'method', 'checklist'];
+  const bodyKeys = BODY_SECTION_KEYS;
   const isUntranslatedAscii = (s) => s.length >= 40 && !/[一-鿿]/.test(s)
     && /^[A-Za-z0-9\s,.'"()\-:;/&%$#@!?]+$/.test(s);
   for (const k of bodyKeys) {
@@ -414,6 +485,19 @@ function renderMethod(body) {
   return out.join('\n');
 }
 
+// 术语对照渲染成折叠区:读者一般不需要,但需要复核"这个名字是哪来的"时能就地查到 ——
+// 只做机器自检、不呈现给人,等于让 AI 为一个没人看的产物负责,很快就会敷衍。
+function renderGlossary(rows) {
+  if (!rows || rows.length === 0) return '';
+  const body = rows.map((r) => `<tr><td><code>${esc(r.term)}</code></td>`
+    + `<td>${esc(r.source)}</td><td>${mdInlineToHtml(r.basis)}</td></tr>`).join('\n');
+  return ['<section><div class="wrap"><details class="glossary">',
+    `<summary>术语对照(${rows.length} 条) · 教程写法与字幕原文的差异及依据</summary>`,
+    '<table><thead><tr><th>教程写法</th><th>转录原文</th><th>依据</th></tr></thead>',
+    `<tbody>\n${body}\n</tbody></table>`,
+    '</details></div></section>'].join('\n');
+}
+
 function renderQuotes(quotes, videoId) {
   return quotes.map((q) => {
     const link = `https://www.youtube.com/watch?v=${videoId}&t=${q.sec}s`;
@@ -443,6 +527,7 @@ function renderHtml(doc, selected, template) {
     '<!--METHOD-->': renderMethod(doc.sections.method),
     '<!--CHECKLIST-->': renderList(doc.sections.checklist, { check: true }),
     '<!--QUOTES-->': renderQuotes(doc.quotes, vid),
+    '<!--GLOSSARY-->': renderGlossary(doc.glossary),
     '<!--EMBED-->': `<iframe src="https://www.youtube.com/embed/${esc(vid)}" `
       + `title="${esc(doc.title)}" allowfullscreen loading="lazy"></iframe>`,
     '<!--FOOTER-->': `由 ai-talk-tutorial 自动生成 · 内容提炼自 ${esc(selected.channelTitle)} 的公开演讲`,
