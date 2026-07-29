@@ -4,10 +4,14 @@ const { atomicWriteJSON } = require('./lib/atomic-write');
 const { dieboldMariano, fitLogistic, predictLogistic, assertAllFinite } = require('./lib/stats');
 const { p0N, sigmaDaily, readFeature, cotPctile, MODEL_FEATURES, N_BY_HORIZON } = require('./baseline');
 
-// 指真正进入评估的样本数,非日历天数。烧机是 WARMUP + MIN_TRAIN 两段叠加:
-// 第 n 期可评估区间为 [WARMUP+MIN_TRAIN+n, spine-1-n],即 spine-(550+2n) 条。
-// 故 long(n=20)要凑够 1200 条需约 1790 个交易日 ≈ 7.2 年回填;7.0 年只剩 1170,
-// 会卡在 samples 这一条上。回填窗口不足时 acceptance 会给出 samples_short_by。
+// 指真正进入评估的样本数,非日历天数。卡住样本量的不是 LBMA spine —— 它是全量历史
+// (lbma-gold-pm 不按 since 过滤),WARMUP 由它白白吃掉、不占预算。真正的预算是
+// **三特征同时可用的那段窗口**,由 backfill 的 --since 决定(COT 按日历年整年取,
+// FRED 按 realtime_start=since)。该窗口内还要先耗掉两段烧机:
+//   COT 分位需 20 期周频 ≈ 95 个交易日,再叠 MIN_TRAIN 条训练样本。
+// 故第 n 期可评估条数 = 覆盖窗口 - 95 - MIN_TRAIN - 2n,long(n=20)要凑够 1200 条
+// 需约 1585 个交易日 ≈ 6.3 年覆盖(实测 6.0 年只剩 1115)。因 COT 按整年取,
+// --since 建议留到 --until 前 7 个完整日历年。不足时 acceptance 会给出 samples_short_by。
 const MIN_SAMPLES = 1200;
 const WARMUP = 300;           // p0N 需 250+n 根,sigmaDaily 需 20 根
 const MIN_TRAIN = 250;        // logistic 拟合样本下限,约每参数 62 条
