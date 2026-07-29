@@ -145,3 +145,23 @@ test('T13: 预测硬依赖缺失时 exit 3 且不留产物', () => {
   r.cleanup();
   fs.rmSync(fixtureDir, { recursive: true, force: true });
 });
+
+test('T14: LBMA fixture 数据格式错误时输出诊断日志', () => {
+  const fixtureDir = freshTmp();
+  // lbma.raw.json 写成有效 JSON 但不是数组(数字),迫使 parseLbma for 循环抛异常
+  fs.writeFileSync(path.join(fixtureDir, 'lbma.raw.json'), '123');
+  fs.copyFileSync(FIXTURE('fred-DFII10.raw.json'), path.join(fixtureDir, 'fred-DFII10.raw.json'));
+  fs.copyFileSync(FIXTURE('eastmoney-kline.raw.json'), path.join(fixtureDir, 'eastmoney-UDI.raw.json'));
+  fs.copyFileSync(FIXTURE('cftc-deafut.raw.txt'), path.join(fixtureDir, 'cftc-current.raw.txt'));
+  const r = runCli({
+    script: 'collect-facts.js',
+    args: ['--out', 'out/facts.json', '--history', 'hist', '--today', '2026-07-29', '--fixture-dir', fixtureDir],
+  });
+  // 进程应该完成并产出 facts.json(硬依赖满足,LBMA 是 soft)
+  assert.equal(r.code, 0, `exit code should be 0; stderr: ${r.stderr}`);
+  assert.ok(fs.existsSync(path.join(r.tmp, 'out', 'facts.json')), 'facts.json 应该被创建');
+  // stderr 应包含 LBMA 诊断及其原因
+  assert.ok(r.stderr.includes('LBMA 采集失败'), `stderr 应包含 LBMA 失败消息; actual: ${r.stderr}`);
+  r.cleanup();
+  fs.rmSync(fixtureDir, { recursive: true, force: true });
+});

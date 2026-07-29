@@ -131,10 +131,12 @@ async function loadLbma({ fixtureDir }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, 'lbma.raw.json');
     if (!raw) return { records: [], status: 'missing' };
-    const records = parseLbma(raw);
-    return { records, status: records.length ? 'ok' : 'missing' };
+    try {
+      const records = parseLbma(raw);
+      return { records, status: records.length ? 'ok' : 'missing' };
+    } catch (e) { console.error(`LBMA 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchLbma({}); } catch { return { records: [], status: 'missing' }; }
+  try { return await fetchLbma({}); } catch (e) { console.error(`LBMA 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
 async function loadFred({ fixtureDir, id, today, apiKey }) {
@@ -142,22 +144,26 @@ async function loadFred({ fixtureDir, id, today, apiKey }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, `fred-${id}.raw.json`);
     if (!raw) return { records: [], status: 'missing' };
-    const records = parseObservations(raw, series, { availableAt: today });
-    return { records, status: records.length ? 'ok' : 'missing' };
+    try {
+      const records = parseObservations(raw, series, { availableAt: today });
+      return { records, status: records.length ? 'ok' : 'missing' };
+    } catch (e) { console.error(`FRED ${id} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
   try { return await fetchFred({ mode: 'default', until: today }, { seriesId: id, series, apiKey }); }
-  catch { return { records: [], status: 'missing' }; }
+  catch (e) { console.error(`FRED ${id} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
 async function loadEastmoney({ fixtureDir, key, secid, suffix, today }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, `eastmoney-${suffix}.raw.json`);
     if (!raw) return { records: [], status: 'missing' };
-    const records = parseKline(raw, key);
-    return { records, status: records.length ? 'ok' : 'missing' };
+    try {
+      const records = parseKline(raw, key);
+      return { records, status: records.length ? 'ok' : 'missing' };
+    } catch (e) { console.error(`东财 ${suffix} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
   try { return await fetchEastmoney({ mode: 'incremental', until: today }, { secid, series: key }); }
-  catch { return { records: [], status: 'missing' }; }
+  catch (e) { console.error(`东财 ${suffix} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
 async function loadCftcCurrent({ fixtureDir }) {
@@ -168,28 +174,33 @@ async function loadCftcCurrent({ fixtureDir }) {
       const r = parseCot(text);
       const avail = cotAvailableDate(r.observed_date);
       return { records: [{ series: 'cftc_gold', observed_date: r.observed_date, available_date: avail, vintage: avail, value: r }], status: 'ok' };
-    } catch { return { records: [], status: 'missing' }; }
+    } catch (e) { console.error(`CFTC 当期解析失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchCftcCurrent({}, {}); } catch { return { records: [], status: 'missing' }; }
+  try { return await fetchCftcCurrent({}, {}); } catch (e) { console.error(`CFTC 当期采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
 async function loadCalendar({ fixtureDir, releaseIds, today, apiKey }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, 'fred-releases.json');
     if (!raw) return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' };
-    return { records: raw, status: 'ok' };
+    try {
+      // fred-releases.json 直接是结构化数据,不需要额外解析
+      return { records: raw, status: 'ok' };
+    } catch (e) { console.error(`FRED 发布日历采集失败: ${e.message}`); return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' }; }
   }
   try { return await fetchReleases({ until: today }, { releaseIds, apiKey }); }
-  catch { return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' }; }
+  catch (e) { console.error(`FRED 发布日历采集失败: ${e.message}`); return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' }; }
 }
 
 async function loadNews({ fixtureDir }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, 'news.json');
     if (!raw) return { records: [], status: 'missing' };
-    return { records: normalizeNews(raw), status: 'ok' };
+    try {
+      return { records: normalizeNews(raw), status: 'ok' };
+    } catch (e) { console.error(`新闻采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchNews({}); } catch { return { records: [], status: 'missing' }; }
+  try { return await fetchNews({}); } catch (e) { console.error(`新闻采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
 // 持仓分位只从 history/ 累积算,不足时一次性拉 zip 回补(设计 5.7.3)。
@@ -200,7 +211,7 @@ async function computeCftcSpecPctile({ store, fixtureDir, currentRecord, today }
     const since = `${Number(today.slice(0, 4)) - CFTC_HISTORY_YEARS}-01-01`;
     const cacheDir = path.join(store.root, '.cftc-year-cache');
     try { backfill = (await fetchCftcHistory({ since, until: today }, { cacheDir })).records; }
-    catch { backfill = []; }
+    catch (e) { console.error(`CFTC 历史回补失败: ${e.message}`); backfill = []; }
   }
   const merged = mergeRecords(mergeRecords(existing, backfill), currentRecord ? [currentRecord] : []);
   const netSpecSeries = merged.map((r) => r.value && r.value.net_spec).filter((v) => typeof v === 'number');
