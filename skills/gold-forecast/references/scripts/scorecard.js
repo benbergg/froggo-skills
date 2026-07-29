@@ -4,8 +4,11 @@ const { atomicWriteJSON } = require('./lib/atomic-write');
 
 const MIN_SAMPLE = 20;
 const HORIZONS = ['short', 'medium', 'long'];
+const C9_WINDOW = 20;
+const C9_RATE_THRESHOLD = 0.6;
 
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+const confidenceOf = (probUp) => Math.max(probUp, 1 - probUp);
 
 function settledOf(db, key) {
   return db.predictions
@@ -15,7 +18,8 @@ function settledOf(db, key) {
 }
 
 function confidenceBucket(probUp) {
-  const conf = Math.max(probUp, 1 - probUp);
+  const conf = confidenceOf(probUp);
+  // 65% 用严格 >、55% 用 >=,和分箱下界对齐,避免边界值同时落入两档
   if (conf > 0.65) return 'gt65';
   if (conf >= 0.55) return '55to65';
   return 'lt55';
@@ -52,9 +56,9 @@ function horizonStats(rows) {
   const buckets = [];
   for (let lo = 0.5; lo < 1.0; lo += 0.05) {
     const hi = lo + 0.05;
-    const sub = rows.filter((r) => { const p = Math.max(r.h.final.prob_up, 1 - r.h.final.prob_up); return p >= lo && p < hi; });
+    const sub = rows.filter((r) => { const p = confidenceOf(r.h.final.prob_up); return p >= lo && p < hi; });
     if (sub.length) buckets.push({ range: [Number(lo.toFixed(2)), Number(hi.toFixed(2))],
-      claimed: mean(sub.map((r) => Math.max(r.h.final.prob_up, 1 - r.h.final.prob_up))),
+      claimed: mean(sub.map((r) => confidenceOf(r.h.final.prob_up))),
       actual: sub.filter((r) => r.h.score.dir_correct).length / sub.length, n: sub.length });
   }
 
@@ -88,22 +92,46 @@ function lessonStats(db, lessons) {
   return out;
 }
 
+// C9(AI 自检)触发率过高说明模型可能根本没在用基线,这是唯一直接监控 AI 层失效的触发器。
+function c9Trigger(db) {
+  const recent = db.predictions.slice(-C9_WINDOW);
+  if (recent.length < C9_WINDOW) return null;
+  const flagged = recent.filter((p) => p.c9_triggered === true);
+  const rate = flagged.length / recent.length;
+  if (rate <= C9_RATE_THRESHOLD) return null;
+  // 偏离基线用 short 周期的 prob_up 差值衡量;缺快照则退而取最近触发的 3 期
+  const hasSnapshot = (p) => p.horizons && p.horizons.short && p.horizons.short.final && p.horizons.short.baseline;
+  const ids = recent.every(hasSnapshot)
+    ? [...recent].sort((a, b) => {
+        const da = Math.abs(a.horizons.short.final.prob_up - a.horizons.short.baseline.prob_up);
+        const dbv = Math.abs(b.horizons.short.final.prob_up - b.horizons.short.baseline.prob_up);
+        return dbv - da;
+      }).slice(0, 3).map((p) => p.id)
+    : flagged.slice(-3).map((p) => p.id);
+  return { kind: 'c9_high_rate', rate, ids };
+}
+
 function triggers(db, byHorizon, lessonsStat) {
   const t = [];
-  const rows = settledOf(db, 'short');
-  const tail = rows.slice(-3);
-  if (tail.length === 3 && tail.every((r) => r.h.score.brier > r.h.score.baseline_brier)) {
-    t.push({ kind: 'final_worse_than_baseline', ids: tail.map((r) => r.p.id) });
-  }
-  const c = byHorizon.short.by_confidence;
-  if (c && c.gt65 && c.lt55 && c.gt65.n > 0 && c.lt55.n > 0 && c.gt65.dir_rate < c.lt55.dir_rate) {
-    t.push({ kind: 'confidence_inversion', gt65: c.gt65.dir_rate, lt55: c.lt55.dir_rate });
+  for (const key of HORIZONS) {
+    const stat = byHorizon[key];
+    if (stat.insufficient_sample) continue; // 样本不足的周期跳过判定,避免误触发
+    const tail = settledOf(db, key).slice(-3);
+    if (tail.length === 3 && tail.every((r) => r.h.score.brier > r.h.score.baseline_brier)) {
+      t.push({ kind: 'final_worse_than_baseline', horizon: key, ids: tail.map((r) => r.p.id) });
+    }
+    const c = stat.by_confidence;
+    if (c && c.gt65 && c.lt55 && c.gt65.n > 0 && c.lt55.n > 0 && c.gt65.dir_rate < c.lt55.dir_rate) {
+      t.push({ kind: 'confidence_inversion', horizon: key, gt65: c.gt65.dir_rate, lt55: c.lt55.dir_rate });
+    }
   }
   for (const [id, s] of Object.entries(lessonsStat)) {
     if (s.status === 'active' && s.trials >= 5 && s.hits === 0) {
       t.push({ kind: 'lesson_ineffective', lesson_id: id, trials: s.trials });
     }
   }
+  const c9 = c9Trigger(db);
+  if (c9) t.push(c9);
   return t;
 }
 

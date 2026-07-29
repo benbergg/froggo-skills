@@ -3,29 +3,32 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { buildScorecard } = require('../references/scripts/scorecard');
 
-// 造 n 条已结算的 short 记录,dirOk 控制方向对错
-function mkDb(n, { dirOk = () => true, degradedIdx = [], probUp = 0.58, tags = [] } = {}) {
+// 造 n 条已结算记录,dirOk 控制方向对错;horizon 决定哪个周期结算(默认 short,向后兼容)
+function mkDb(n, { dirOk = () => true, degradedIdx = [], probUp = 0.58, tags = [], horizon = 'short' } = {}) {
   const predictions = [];
+  const sessionsOf = { short: 1, medium: 5, long: 20 };
   for (let i = 0; i < n; i++) {
+    const horizons = {
+      short: { n_sessions: 1, settled: false },
+      medium: { n_sessions: 5, settled: false },
+      long: { n_sessions: 20, settled: false },
+    };
+    horizons[horizon] = {
+      n_sessions: sessionsOf[horizon], settled: true, settled_kind: 'exact', actual: 4010,
+      final: { prob_up: probUp, low: 3950, high: 4050 },
+      baseline: { prob_up: 0.53, low: 3940, high: 4060 },
+      score: {
+        dir_correct: dirOk(i), brier: dirOk(i) ? 0.1764 : 0.3364,
+        in_range: true, winkler: 100,
+        baseline_brier: 0.2209, baseline_winkler: 120,
+        baseline_dir_correct: true, naive_brier: 0.2256,
+      },
+    };
     predictions.push({
       id: `2026-01-${String(i + 1).padStart(2, '0')}`,
       base_price: 4000, degraded: degradedIdx.includes(i),
       model_id: 'minimax/MiniMax-M3', context_tags: tags,
-      horizons: {
-        short: {
-          n_sessions: 1, settled: true, settled_kind: 'exact', actual: 4010,
-          final: { prob_up: probUp, low: 3950, high: 4050 },
-          baseline: { prob_up: 0.53, low: 3940, high: 4060 },
-          score: {
-            dir_correct: dirOk(i), brier: dirOk(i) ? 0.1764 : 0.3364,
-            in_range: true, winkler: 100,
-            baseline_brier: 0.2209, baseline_winkler: 120,
-            baseline_dir_correct: true, naive_brier: 0.2256,
-          },
-        },
-        medium: { n_sessions: 5, settled: false },
-        long: { n_sessions: 20, settled: false },
-      },
+      horizons,
     });
   }
   return { schema_version: 2, predictions, skipped_dates: [] };
@@ -90,6 +93,7 @@ test('T7: 触发器 —— final 连续 3 期劣于 baseline', () => {
   const t = sc.review_triggers.find((x) => x.kind === 'final_worse_than_baseline');
   assert.ok(t, '应触发定向复核');
   assert.equal(t.ids.length, 3);
+  assert.equal(t.horizon, 'short', 'trigger 需标明触发周期');
 });
 
 test('T8: 触发器 —— 高置信档胜率低于低置信档', () => {
@@ -97,7 +101,9 @@ test('T8: 触发器 —— 高置信档胜率低于低置信档', () => {
   db.predictions.slice(0, 20).forEach((p) => { p.horizons.short.final.prob_up = 0.7; p.horizons.short.score.dir_correct = false; });
   db.predictions.slice(20).forEach((p) => { p.horizons.short.final.prob_up = 0.52; p.horizons.short.score.dir_correct = true; });
   const sc = buildScorecard(db, {});
-  assert.ok(sc.review_triggers.some((x) => x.kind === 'confidence_inversion'));
+  const t = sc.review_triggers.find((x) => x.kind === 'confidence_inversion');
+  assert.ok(t);
+  assert.equal(t.horizon, 'short', 'trigger 需标明触发周期');
 });
 
 test('T9: 系统健康时不产生任何触发器', () => {
@@ -153,4 +159,29 @@ test('T15: 按 model_id 分组', () => {
   const sc = buildScorecard(db, {});
   assert.ok(sc.by_model['minimax/MiniMax-M3']);
   assert.ok(sc.by_model['other/model']);
+});
+
+// —— 设计 §5.4.1 触发器表四条:前两条不应写死在 short,三周期同速累积样本 ——
+
+test('T16: 触发器扩展到三周期 —— long 周期连续 3 期劣于 baseline', () => {
+  const db = mkDb(25, { horizon: 'long' });
+  db.predictions.slice(-3).forEach((p) => { p.horizons.long.score.brier = 0.9; });
+  const sc = buildScorecard(db, {});
+  const t = sc.review_triggers.find((x) => x.kind === 'final_worse_than_baseline' && x.horizon === 'long');
+  assert.ok(t, '应对 long 周期独立触发定向复核');
+  assert.equal(t.ids.length, 3);
+});
+
+test('T17: 触发器 —— C9 触发率超阈值', () => {
+  const db = mkDb(20);
+  db.predictions.forEach((p, i) => { p.c9_triggered = i < 14; }); // 14/20 = 70%
+  const sc = buildScorecard(db, {});
+  const t = sc.review_triggers.find((x) => x.kind === 'c9_high_rate');
+  assert.ok(t, '70% > 60% 阈值应触发');
+  assert.equal(t.ids.length, 3);
+
+  const db2 = mkDb(20);
+  db2.predictions.forEach((p, i) => { p.c9_triggered = i < 10; }); // 10/20 = 50%
+  const sc2 = buildScorecard(db2, {});
+  assert.ok(!sc2.review_triggers.some((x) => x.kind === 'c9_high_rate'), '50% 不应触发');
 });
