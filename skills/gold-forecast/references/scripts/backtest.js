@@ -25,7 +25,7 @@ const lagFor = (key) => N_BY_HORIZON[key];
 // O(天数×行数) 降成一次全量读 + 增量插入 —— 为性能重新引入前视才是这里真正的风险。
 class VisibilityCursor {
   constructor(store, series) {
-    const rows = store.read(series);
+    const rows = store.readAll(series);
     for (const r of rows) {
       if (typeof r.available_date !== 'string') {
         throw new Error(`${series} 存在缺 available_date 的记录,无法判定可见性: ${JSON.stringify(r)}`);

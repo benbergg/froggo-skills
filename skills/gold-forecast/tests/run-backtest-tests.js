@@ -191,7 +191,7 @@ test('T12: 窗口中间插入迟发修订,不得改变任何一天的损失', ()
     const to = dates[dates.length - 1];
     if (withRevision) {
       // 改窗口前 1/3 的一天,available_date 压到窗口末端 —— 任何预测日都不该看到它
-      const rows = store.read('lbma_pm_usd');
+      const rows = store.readAll('lbma_pm_usd');
       const victim = rows[150];
       store.upsert('lbma_pm_usd', [{ observed_date: victim.observed_date, available_date: to,
         vintage: 'late-revision', value: Number((victim.value * 1.5).toFixed(2)) }]);
