@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { DISCLAIMER_TEXT } = require('./lib/disclaimer');
 
 const MAX_BYTES = 100 * 1024;
 const BEGIN = 'BEGIN_UNTRUSTED';
@@ -121,8 +122,6 @@ JSON 块字段:
 - 正文不得残留占位符(如 TODO、待补充、XXX),不得让 markdown 标记字面量泄漏
   (如未闭合的代码围栏 \`\`\`),不得使用裸 \`>\` 引用块
 - 第七段须原样复制以下免责声明全文,不得改写、增删、意译:
-  「本报告为个人研究与决策辅助工具,不构成投资建议。预测基于历史统计模型与公开
-  数据生成,存在不确定性,过往表现不代表未来结果。报告不提供仓位、杠杆、买卖点位
-  或止损价等具体操作建议,请结合自身风险承受能力独立决策。据此操作,风险自负。」`;
+  「${DISCLAIMER_TEXT}」`;
 
 module.exports = { sanitizeNews, selectLessons, buildPrompt, MAX_BYTES };

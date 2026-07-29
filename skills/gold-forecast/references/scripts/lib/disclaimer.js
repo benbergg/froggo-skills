@@ -1,0 +1,17 @@
+'use strict';
+// 免责声明全文与必要短语的唯一来源,build-prompt.js 与 validate.js 均从此引入,
+// 避免两处各自维护导致文本漂移。逐行 + 拼接构造,不用多行模板字面量,
+// 防止换行/缩进意外嵌入子串中间,破坏 checkC12 的必要短语匹配。
+
+const DISCLAIMER_TEXT = '本报告为个人研究与决策辅助工具，不构成投资建议。'
+  + '预测基于历史统计模型与公开数据生成，存在不确定性，过往表现不代表未来结果。'
+  + '报告不提供仓位、杠杆、买卖点位或止损价等具体操作建议，请结合自身风险承受能力独立决策。'
+  + '据此操作，风险自负。';
+
+const DISCLAIMER_REQUIRED_PHRASES = [
+  '不构成投资建议',
+  '不提供仓位、杠杆、买卖点位或止损价',
+  '风险自负',
+];
+
+module.exports = { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES };

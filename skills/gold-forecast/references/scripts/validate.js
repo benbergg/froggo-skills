@@ -4,6 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { parseForecast } = require('./forecast-parser');
+const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES } = require('./lib/disclaimer');
 
 const HORIZONS = ['short', 'medium', 'long'];
 const SECTIONS = ['一', '二', '三', '四', '五', '六', '七'];
@@ -16,17 +17,7 @@ const C4_TOL_REL = 0.005;
 const OZ_TO_GRAM = 31.1035;
 const COUNTERPARTY_GROUPS = ['commercial', 'noncommercial', 'nonreportable'];
 const LESSON_METRICS = ['range', 'brier', 'dir'];
-// 与 build-prompt.js 的 CONTRACT 免责声明全文同源,改一处需同步改另一处
-// (两文件间无代码级引用,靠此注释与文本对照人工核对一致性)。
-const DISCLAIMER_TEXT = '本报告为个人研究与决策辅助工具，不构成投资建议。预测基于历史统计模型与公开'
-  + '数据生成，存在不确定性，过往表现不代表未来结果。报告不提供仓位、杠杆、买卖点位'
-  + '或止损价等具体操作建议，请结合自身风险承受能力独立决策。据此操作，风险自负。';
-// 逐字节相等会因一个空格/全角标点差异烧掉一整天的三轮修复,改为核对关键短语。
-const C12_REQUIRED_PHRASES = ['不构成投资建议', '不提供仓位、杠杆、买卖点位或止损价', '风险自负'];
 const C12_FORBIDDEN_WORDS = ['仓位', '杠杆', '止损', '买卖点位'];
-// 免责声明本身须以否定语气提及这些词(“不提供仓位…”),故按句子级否定豁免,
-// 只拦模型在免责声明之外真正给出仓位/止损等具体操作建议的情形。
-const C12_NEGATION_WORDS = ['不', '无', '未', '禁止'];
 const C5_NEGATION_WORDS = ['无', '缺失', '暂无', '未获取', '不足', '缺少', '缺'];
 const C7_INDICATORS = ['胜率', 'Brier', 'Winkler'];
 const PLACEHOLDER_TOKENS = ['TODO', 'TBD', 'FIXME', '占位', '待补充', 'XXX', 'N/A', '{{', '}}'];
@@ -390,7 +381,7 @@ function checkC11(doc) {
   return out;
 }
 
-// ---- C12: 免责声明存在且未被改写(查必要短语,非逐字节相等;见 DISCLAIMER_TEXT 常量注释) ----
+// ---- C12: 免责声明存在且未被改写(查必要短语,非逐字节相等;DISCLAIMER_TEXT 见 lib/disclaimer) ----
 function checkC12(doc) {
   const out = [];
   const text = doc.sections['七'] || '';
@@ -398,17 +389,19 @@ function checkC12(doc) {
     out.push(findingOf('C12', '第七段', '第七段须存在并含固定免责声明', '缺失'));
     return out;
   }
-  for (const phrase of C12_REQUIRED_PHRASES) {
+  for (const phrase of DISCLAIMER_REQUIRED_PHRASES) {
     if (!text.includes(phrase)) {
       out.push(findingOf('C12', '第七段', `免责声明须含必要语句「${phrase}」,不得改写/删减`, text.slice(0, 80)));
     }
   }
-  for (const sent of splitSentences(text)) {
-    const negated = C12_NEGATION_WORDS.some((n) => sent.includes(n));
-    if (negated) continue;
-    for (const w of C12_FORBIDDEN_WORDS) {
-      if (sent.includes(w)) out.push(findingOf('C12', `「${sent.trim()}」`, `第七段不得给出具体「${w}」操作建议`, w));
-    }
+  // 挖空必要短语再扫禁用词,不做否定豁免——否则会被「不排除…止损位…」绕过
+  let scanText = text;
+  for (const phrase of DISCLAIMER_REQUIRED_PHRASES) scanText = scanText.split(phrase).join('');
+  for (const w of C12_FORBIDDEN_WORDS) {
+    const idx = scanText.indexOf(w);
+    if (idx === -1) continue;
+    const snippet = scanText.slice(Math.max(0, idx - 15), idx + w.length + 15);
+    out.push(findingOf('C12', `第七段:「...${snippet}...」`, `不得出现具体「${w}」操作建议`, w));
   }
   return out;
 }

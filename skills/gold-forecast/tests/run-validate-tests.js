@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const { FIXTURE } = require('./helpers');
 const { parseForecast } = require('../references/scripts/forecast-parser');
 const { validate } = require('../references/scripts/validate');
+const { buildPrompt } = require('../references/scripts/build-prompt');
 
 const SCHEMA = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'references', 'schemas', 'facts.schema.json'), 'utf-8'));
 const md = (n) => fs.readFileSync(FIXTURE(n), 'utf-8');
@@ -199,4 +200,26 @@ test('T29: C12 第七段出现非否定语境的止损字样被拦', () => {
   const doc = parseForecast(md('forecast-good.md'));
   doc.sections['七'] += '\n建议设置止损位在3900美元。';
   assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C12'));
+});
+
+test('T30: 从 CONTRACT 实际文本(非手打)提取的免责声明片段应零 C12 finding', () => {
+  const r = buildPrompt({ facts: {}, baseline: { horizons: {} }, scorecard: { by_horizon: {} }, lessons: [], contextTags: [] });
+  const contractText = r.blocks.find((b) => b.name === 'contract').text;
+  const m = contractText.match(/原样复制以下免责声明全文[^「]*「([\s\S]*?)」/);
+  assert.ok(m, 'CONTRACT 中应能定位到免责声明片段,定位不到说明提示词结构已变');
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['七'] = m[1];
+  const c12 = validate(doc, CTX()).findings.filter((f) => f.check === 'C12');
+  assert.deepEqual(c12, [], `CONTRACT 里的免责声明片段自身不应触发 C12: ${JSON.stringify(c12)}`);
+});
+
+test('T31: C12 挖空必要短语后扫描,「不排除…止损位…」类绕过仍被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['七'] += '\n不排除跌破3900，止损位设在此。';
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C12'));
+});
+
+test('T32: C12 挖空必要短语后扫描,合法完整免责声明不误拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  assert.equal(validate(doc, CTX()).findings.some((f) => f.check === 'C12'), false);
 });
