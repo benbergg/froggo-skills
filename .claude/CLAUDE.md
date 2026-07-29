@@ -317,12 +317,31 @@ swap 已用 323M),常驻 Node 进程 24 小时只为每天用几次不划算;scr
 - `discover.js` 的最低时长仍只有 60 秒硬门槛(`<8min` 只 ×0.3 降权),1-2 分钟的
   产品发布片照样进候选池(当天 87 个候选里 36 个短于 8 分钟)。A4 只能挡它进 Step 3,
   挡不住它占据排名。
-- InnerTube 两级(android / web+cookies)仍恒 `LOGIN_REQUIRED`:当前 cookie 由
-  Cookie Editor 导出,只含非 HttpOnly 字段(`SID`/`SAPISID`/`APISID`/`__Secure-*APISID`),
-  缺 `HSID`/`SSID`/`__Secure-1PSID`/`__Secure-3PSID` 等 **HttpOnly** 那批 ——
-  分界线与 HttpOnly 完全吻合,说明导出走的是 `document.cookie` 而非扩展 API。
-  补齐需用 `yt-dlp --cookies-from-browser chrome` 或 Get cookies.txt LOCALLY。
-  整条链路目前只靠 yt-dlp 一级,是单点。
+**InnerTube 两级默认停用(同日,补完整 cookie 后的结论)**。先用
+`yt-dlp --cookies-from-browser chrome` 补齐了 HttpOnly 那批字段
+(Cookie Editor 只导出非 HttpOnly 的,分界线与 HttpOnly 完全吻合,
+说明它走的是 `document.cookie` 而非扩展 API),12 个登录态字段全齐后:
+
+| 路径 | 结果 |
+|---|---|
+| 第 2 级 `tryWebWithCookies`,**完整** cookie | ❌ 仍 `LOGIN_REQUIRED` |
+| yt-dlp + 同一份 cookie + PO token + web client | ✅ 1449 cues |
+
+**cookie 完整性不是第 2 级失败的原因**,差异项是 PO token + visitorData 绑定 +
+当前 clientVersion —— 修它等于在 Node 里重写 yt-dlp 那部分并跟着 YouTube 改。
+第 1 级 `tryAndroid()` 压根不传 cookie,IDC IP 上必然失败,是死代码。
+且两级与 yt-dlp 共用同一份 cookie,**是假冗余** —— cookie 一失效三级同时挂。
+故 `DEFAULT_TIERS = ['yt-dlp']`,代码保留可用 `--tiers` 开回;未知 tier 名
+exit 1(静默 filter 掉会让每个候选零级可跑→直落 exit 6,把排查引向无关方向)。
+停用后端到端 10.15s → 8.70s,日志只剩一行 `✓ yt-dlp: N cues`。
+
+**cookie 导出的安全约束**:浏览器整份 cookie(实测 458 条)含淘宝/公司禅道
+`chandao.bytenew.com`/`work.bytenew.com`/Notion 等登录态,**必须只过滤出
+`.youtube.com` 与 `.google.com` 两域**(40 条)再传上云主机。
+
+测试 33 项,11 组 revert-and-rerun。**遗留的真实单点**:整条链路只剩 yt-dlp 一级,
+且它与已停用的两级共用同一份 cookie —— 提高存活率要靠告警(exit 7 已做)
+与 cookie 轮换流程,不是靠这两级。
 
 ## 版本管理
 

@@ -319,6 +319,22 @@ function cliWithFakeYtDlp({ candidates, plan, extraEnv = {} }) {
   return { ...r, dir, out, cleanupAll: () => { fs.rmSync(dir, { recursive: true, force: true }); r.cleanup(); } };
 }
 
+// 同上,但**不传** --tiers —— 专门用来验证默认值的行为
+function cliWithFakeYtDlpDefaultTiers({ candidates, plan }) {
+  const dir = freshTmp();
+  const candPath = path.join(dir, 'candidates.json');
+  fs.writeFileSync(candPath, JSON.stringify({ candidates }));
+  const cookiePath = path.join(dir, 'cookies.txt');
+  fs.writeFileSync(cookiePath, '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tv\n');
+  const out = path.join(dir, 'out');
+  const r = runCli({
+    script: 'fetch-transcript.js',
+    args: ['--candidates', candPath, '--out', out, '--cookies', cookiePath],
+    env: { YT_DLP_PATH: FAKE_YTDLP, FAKE_YTDLP_PLAN: JSON.stringify(plan) },
+  });
+  return { ...r, dir, out, cleanupAll: () => { fs.rmSync(dir, { recursive: true, force: true }); r.cleanup(); } };
+}
+
 const CAND = (id, durationSec, title) => ({
   id, title, channelTitle: 'Fake', channelHandle: '@fake', topic: 'agentic',
   publishedAt: '2026-07-29T00:00:00Z', durationSec, score: 1,
@@ -441,5 +457,54 @@ test('T30: tryYtDlp 把 provider 与 JS runtime 参数真的传给了 yt-dlp', (
     delete process.env.FAKE_YTDLP_ARGV_OUT;
     delete process.env.FAKE_YTDLP_JSON3;
     fs.rmSync(dir, { recursive: true, force: true });
+  }
+});
+
+// ---- InnerTube 两级默认停用(2026-07-29 结论) --------------------------
+//
+// 完整 cookie(12 个登录态字段全齐)下第 2 级**仍然** LOGIN_REQUIRED,
+// 而同一份 cookie 交给 yt-dlp + PO token + web client 就能拿到 1449 cues。
+// 差异项是 PO token + visitorData 绑定 + 当前 clientVersion —— 要让第 2 级通,
+// 等于在 Node 里把 yt-dlp 那部分重写一遍并跟着 YouTube 改。
+// 第 1 级更直接:tryAndroid() 压根不传 cookie,IDC IP 上必然失败。
+// 且两级与 yt-dlp 共用同一份 cookie,是假冗余 —— cookie 一失效三级同时挂。
+// 故默认停用:每天少发两次注定失败的请求(这台机器正被 bot 检测盯着),
+// 日志里也不再有两条恒常 LOGIN_REQUIRED 噪音盖住真问题。
+
+test('T31: 默认不再尝试 InnerTube 两级(少发注定失败的请求)', () => {
+  const r = cliWithFakeYtDlpDefaultTiers({
+    candidates: [CAND('aaaaaaaaaaa', 1800, '正常演讲')],
+    plan: { aaaaaaaaaaa: { mode: 'ok', cues: 120 } },
+  });
+  try {
+    assert.equal(r.code, 0, `期望 exit 0,实际 ${r.code}: ${r.stderr}`);
+    assert.doesNotMatch(r.stderr, /\bandroid\b/, '默认不得走 InnerTube android 级');
+    assert.doesNotMatch(r.stderr, /web\+cookies/, '默认不得走 InnerTube web+cookies 级');
+  } finally {
+    r.cleanupAll();
+  }
+});
+
+test('T32: 两级实现仍保留,可用 --tiers 开回(YouTube 政策松动时不用改代码)', () => {
+  assert.deepEqual(F.DEFAULT_TIERS, ['yt-dlp']);
+  assert.deepEqual(F.ALL_TIERS, ['android', 'web+cookies', 'yt-dlp']);
+});
+
+test('T33: --tiers 写错名字 → exit 1,不得静默跳过所有级再伪装成 exit 6', () => {
+  // 静默 filter 掉未知名字会让每个候选都"零级可跑"→ 直落 exit 6
+  //(文案是"所有候选取字幕均失败"),把排查引向 cookie/yt-dlp 这个完全无关的方向。
+  const dir = freshTmp();
+  const candPath = path.join(dir, 'candidates.json');
+  fs.writeFileSync(candPath, JSON.stringify({ candidates: [CAND('aaaaaaaaaaa', 1800, 'x')] }));
+  const r = runCli({
+    script: 'fetch-transcript.js',
+    args: ['--candidates', candPath, '--out', path.join(dir, 'out'), '--tiers', 'ytdlp'],
+  });
+  try {
+    assert.equal(r.code, 1, `期望 exit 1,实际 ${r.code}: ${r.stderr}`);
+    assert.match(r.stderr, /ytdlp/, '文案要点名写错的那个值');
+  } finally {
+    fs.rmSync(dir, { recursive: true, force: true });
+    r.cleanup();
   }
 });

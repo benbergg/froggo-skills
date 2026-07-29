@@ -6,7 +6,7 @@
 // ⚠️ 关键差异:原实现丢弃时间戳,本实现必须保留 —— 自检 C3 依赖它。
 //    YouTube 反爬策略变化时,两处都要改。
 //
-// 三级:
+// 三级(**默认只启用第 3 级**,见 DEFAULT_TIERS 处的实测结论;前两级用 --tiers 开回):
 //   1. InnerTube ANDROID client(无需 cookie)
 //   2. InnerTube WEB client + cookie + SAPISIDHASH 签名
 //   3. yt-dlp(必须带 --ignore-no-formats-error,2026-07-27 实测)
@@ -386,13 +386,22 @@ function usage() {
     '  --out <dir>          输出目录(必填)',
     '  --cookies <path>     cookie 文件(默认 env AI_TALK_COOKIES_PATH 或内置路径)',
     '  --max-try <n>        最多尝试前 n 个候选(默认 5)',
-    '  --tiers <a,b,c>      启用哪几级取字幕(默认 android,web+cookies,yt-dlp)',
+    '  --tiers <a,b,c>      启用哪几级取字幕(默认 yt-dlp;可选 android,web+cookies,yt-dlp)',
     '',
     'Exit: 0=成功 1=参数错 6=全部候选失败 7=环境故障(cookie/PO token/bot 检测)',
   ].join('\n');
 }
 
-const DEFAULT_TIERS = ['android', 'web+cookies', 'yt-dlp'];
+const ALL_TIERS = ['android', 'web+cookies', 'yt-dlp'];
+
+// InnerTube 两级默认停用(2026-07-29):完整 cookie(12 个登录态字段全齐)下
+// 第 2 级**仍然** LOGIN_REQUIRED,而同一份 cookie 交给 yt-dlp + PO token + web client
+// 就能拿到 1449 cues —— 差异项是 PO token + visitorData 绑定 + 当前 clientVersion,
+// 要让第 2 级通等于在 Node 里把 yt-dlp 那部分重写一遍并跟着 YouTube 改。
+// 第 1 级更直接:tryAndroid() 压根不传 cookie,IDC IP 上必然失败。
+// 且两级与 yt-dlp 共用同一份 cookie,是假冗余 —— cookie 一失效三级同时挂。
+// 代码保留,YouTube 政策松动或换到住宅 IP 时用 --tiers 开回即可。
+const DEFAULT_TIERS = ['yt-dlp'];
 
 async function main() {
   const argv = process.argv.slice(2);
@@ -403,7 +412,17 @@ async function main() {
       case '--out': args.out = argv[++i]; break;
       case '--cookies': args.cookies = argv[++i]; break;
       case '--max-try': args.maxTry = parseInt(argv[++i], 10); break;
-      case '--tiers': args.tiers = argv[++i].split(',').map((s) => s.trim()).filter(Boolean); break;
+      case '--tiers': {
+        args.tiers = argv[++i].split(',').map((s) => s.trim()).filter(Boolean);
+        // 静默丢掉写错的名字会让每个候选"零级可跑"→ 直落 exit 6("所有候选取字幕均失败"),
+        // 把排查引向 cookie/yt-dlp 这个完全无关的方向。写错就当场说清楚。
+        const bad = args.tiers.filter((t) => !ALL_TIERS.includes(t));
+        if (bad.length > 0) {
+          process.stderr.write(`未知的 --tiers 取值: ${bad.join(', ')};可选: ${ALL_TIERS.join(', ')}\n`);
+          process.exit(1);
+        }
+        break;
+      }
       case '-h': case '--help': process.stdout.write(usage() + '\n'); process.exit(0);
       default:
         process.stderr.write(`Unknown flag: ${argv[i]}\n${usage()}\n`);
@@ -504,6 +523,7 @@ module.exports = {
   parseTimedTextXml, mergeSegments, parseCookieString, formatTimestamp, decodeEntities,
   resolveYtDlpBin, tryWebWithCookies, tryYtDlp,
   classifyYtDlpFailure, isTranscriptSufficient, tailLines, resolveJsRuntimeArgs, resolvePotArgs,
+  DEFAULT_TIERS, ALL_TIERS,
 };
 
 if (require.main === module) {

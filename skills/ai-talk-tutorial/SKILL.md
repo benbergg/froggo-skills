@@ -135,9 +135,24 @@ VM 上 yt-dlp 已因 cookie 轮换 + 缺 JS runtime 失效,而这几个缩略图
 3. **转录体量下限**。`max(3000 字符, 时长分钟数 × 200 字符)`,不够就换下一个候选。
    挡两类东西:候选本身太短(2 分钟产品公告)、长视频只回来残片。
 
-`--tiers` 可指定启用哪几级(默认 `android,web+cookies,yt-dlp`)。
-当前 VM 的 cookie 缺 `__Secure-3PSID` 等字段,前两级恒 `LOGIN_REQUIRED`,
-需要省掉两次注定失败的请求时可传 `--tiers yt-dlp`。
+**InnerTube 两级默认停用**,`--tiers` 默认值就是 `yt-dlp`(写错名字直接 exit 1,
+不会静默跳过所有级再伪装成 exit 6)。2026-07-29 用**完整 cookie**(12 个登录态字段
+`SID`/`HSID`/`SSID`/`APISID`/`SAPISID`/`__Secure-1PSID`/`__Secure-3PSID`/… 全齐)实测:
+
+| 路径 | 结果 |
+|---|---|
+| 第 2 级 `tryWebWithCookies`,完整 cookie | ❌ 仍 `LOGIN_REQUIRED` |
+| yt-dlp + 同一份 cookie + PO token + web client | ✅ 1449 cues |
+
+差异项是 **PO token + visitorData 绑定 + 当前 clientVersion** —— 要让第 2 级通,
+等于在 Node 里把 yt-dlp 那部分重写一遍并跟着 YouTube 改。第 1 级更直接:
+`tryAndroid()` 压根不传 cookie,IDC IP 上必然失败。且两级与 yt-dlp **共用同一份 cookie**,
+是假冗余 —— cookie 一失效三级同时挂。停用后每天少发两次注定失败的请求
+(这台机器正被 bot 检测盯着),日志里也不再有两条恒常 `LOGIN_REQUIRED` 盖住真问题。
+代码保留,政策松动或换到住宅 IP 时 `--tiers android,web+cookies,yt-dlp` 开回即可。
+
+**cookie 导出要过滤域**:整份浏览器 cookie 含其他站点(淘宝/内网/Notion 等)的登录态,
+只能取 `.youtube.com` 与 `.google.com` 两个域再传上机器。
 
 **yt-dlp 需要 JS runtime**:2026.06+ 靠它解 n-challenge,缺了会报
 `n challenge solving failed` 并丢掉大量 format 与自动字幕轨。VM 上装在
