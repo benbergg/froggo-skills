@@ -464,13 +464,21 @@ test('T35: 损坏的 sent.json 不阻断真实推送,且退出码不与参数错
   fs.rmSync(home, { recursive: true, force: true });
 });
 
-test('T36: sent.json 用原子写,不留半截文件', () => {
+test('T36: sent.json 走原子写路径,不留临时文件也不堆版本副本', () => {
+  // 「崩在写入中途」的时间窗测不到,故这里锁的是「写入确实走 atomicWriteJSON」:
+  // 两次写不得长出 versions/(默认 keepVersions=30 会),写完不得留 .tmp.,
+  // 且目标文件只读时仍能更新 —— rename 只要目录可写,裸 writeFileSync 会 EACCES。
   const tmp = freshTmp();
   P.markSent(tmp, 'aaaa1111');
-  const raw = fs.readFileSync(path.join(tmp, 'sent.json'), 'utf-8');
-  assert.deepEqual(JSON.parse(raw).hashes, ['aaaa1111']);
+  P.markSent(tmp, 'bbbb2222');
+  assert.deepEqual(P.readSent(tmp), ['aaaa1111', 'bbbb2222']);
   assert.equal(fs.existsSync(path.join(tmp, 'versions')), false, '去重记录不需要版本副本');
   assert.equal(fs.readdirSync(tmp).filter((f) => f.includes('.tmp.')).length, 0, '临时文件须已 rename');
+
+  fs.chmodSync(path.join(tmp, 'sent.json'), 0o444);
+  P.markSent(tmp, 'cccc3333');
+  assert.ok(P.readSent(tmp).includes('cccc3333'), '原子写靠 rename 落地,不就地改写目标文件');
+  fs.chmodSync(path.join(tmp, 'sent.json'), 0o644);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
@@ -585,4 +593,18 @@ test('T47: 落库后改 record 不回头改到权威库', () => {
   record.horizons.short.n_sessions = 99;
   assert.equal(r.db.predictions[0].base_price, 4022.2);
   assert.equal(r.db.predictions[0].horizons.short.n_sessions, 1, '嵌套对象也不能共享引用');
+});
+
+test('T48: failure CLI 同天去重、跨天不去重', () => {
+  // 日期必须真正参与哈希:只在正文里出现、却被哈希前剔掉,「连挂三天」照样只发一条
+  const home = freshTmp();
+  const stub = seedPushInputs(home);
+  const env = { OPENCLAW_BIN: stub, GOLD_FEISHU_TARGET: 'ou_x', SEND_NOTIFY: '1' };
+  const args = (d) => ['--mode', 'failure', '--step', 'validate', '--code', '5', '--settled', '1', '--date', d];
+  assert.equal(runScript('push.js', args('2026-07-29'), { home, env }).code, 0);
+  assert.equal(runScript('push.js', args('2026-07-29'), { home, env }).code, 0);
+  assert.equal(callCount(home), 1, '同一天重跑不得重复告警');
+  assert.equal(runScript('push.js', args('2026-07-30'), { home, env }).code, 0);
+  assert.equal(callCount(home), 2, '换一天必须是新告警');
+  fs.rmSync(home, { recursive: true, force: true });
 });
