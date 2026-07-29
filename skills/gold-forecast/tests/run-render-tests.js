@@ -283,12 +283,13 @@ test('T23: 仅 medium/long 样本不足时,表格是唯一抑制点', () => {
 
 test('T24: 强调标记不注入 href', () => {
   const doc = DOC();
-  doc.sections['三'] += '\n\n参见 [示例 **要点**](https://example.com/d?q=1) 结束。';
+  // URL 里必须真带 ` 与 ** —— 不带的话「强调跑在链接之后」这个错法照样绿
+  doc.sections['三'] += '\n\n参见 [示例 **要点**](https://example.com/d?q=`y`&n=**z**) 结束。';
   const { html } = RENDER({ doc });
   const body = bodyOf(html);
-  assert.ok(body.includes('href="https://example.com/d?q=1"'),
+  assert.ok(body.includes('href="https://example.com/d?q=`y`&amp;n=**z**"'),
     `href 被污染: ${body.match(/href="[^"]*example[^"]*"/g)}`);
-  assert.equal(/href="[^"]*(?:<|&lt;)/.test(body), false, 'href 里出现标签 ⇒ 链接失效');
+  assert.equal(/href="[^"]*&lt;(?:code|strong)&gt;/.test(body), false, 'href 里出现标签 ⇒ 链接失效');
   assert.ok(body.includes('<strong>要点</strong>'), '链接文字里的强调仍要生效');
 });
 
