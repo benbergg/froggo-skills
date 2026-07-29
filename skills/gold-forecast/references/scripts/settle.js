@@ -88,7 +88,6 @@ function main() {
   if (sp.latest) priceByDate[sp.latest.date] = sp.latest.value;
 
   const { changed } = settleAll(db.predictions, {
-    calendar: sp.calendar_tail || [],
     priceByDate,
     today: args.today || sp.latest.date,
     naiveP: db.naive_p || null,

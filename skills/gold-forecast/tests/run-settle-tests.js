@@ -72,7 +72,7 @@ const PRICES = { '2026-07-29': 4048.6, '2026-07-30': 4010, '2026-08-04': 4100 };
 
 test('T9: 三个 horizon 各自独立结算,不同步', () => {
   const p = mk('2026-07-28', ['2026-07-29', '2026-08-04', '2026-09-01']);
-  const { predictions } = S.settleAll([p], { calendar: CAL, priceByDate: PRICES, today: '2026-08-04' });
+  const { predictions } = S.settleAll([p], { priceByDate: PRICES, today: '2026-08-04' });
   const h = predictions[0].horizons;
   assert.equal(h.short.settled, true, 'short 应已结算');
   assert.equal(h.medium.settled, true, 'medium 应已结算');
@@ -81,13 +81,13 @@ test('T9: 三个 horizon 各自独立结算,不同步', () => {
 
 test('T10: 记录不含记录级状态字段', () => {
   const p = mk('2026-07-28', ['2026-07-29', '2026-08-04', '2026-09-01']);
-  const { predictions } = S.settleAll([p], { calendar: CAL, priceByDate: PRICES, today: '2026-08-04' });
+  const { predictions } = S.settleAll([p], { priceByDate: PRICES, today: '2026-08-04' });
   assert.equal('status' in predictions[0], false, '记录级 status 会掩盖三期不同步');
 });
 
 test('T11: 按时结算标 exact', () => {
   const p = mk('2026-07-28', ['2026-07-29', '2026-08-04', '2026-09-01']);
-  const { predictions } = S.settleAll([p], { calendar: CAL, priceByDate: PRICES, today: '2026-07-29' });
+  const { predictions } = S.settleAll([p], { priceByDate: PRICES, today: '2026-07-29' });
   assert.equal(predictions[0].horizons.short.settled_kind, 'exact');
   assert.equal(predictions[0].horizons.short.actual, 4048.6);
 });
@@ -97,7 +97,7 @@ test('T12: 逾期但 30 天内有价,用其后首个定盘价结算并标 approx
   const p = mk('2026-07-28', ['2026-07-29', '2026-08-04', '2026-09-01']);
   p.horizons.short.target_date = '2026-07-28';       // 目标日无价
   const prices = { '2026-07-30': 4010 };
-  const { predictions } = S.settleAll([p], { calendar: CAL, priceByDate: prices, today: '2026-08-05' });
+  const { predictions } = S.settleAll([p], { priceByDate: prices, today: '2026-08-05' });
   assert.equal(predictions[0].horizons.short.settled, true, '逾期仍必须结算');
   assert.equal(predictions[0].horizons.short.settled_kind, 'approx');
   assert.equal(predictions[0].horizons.short.settled_date, '2026-07-30');
@@ -105,15 +105,15 @@ test('T12: 逾期但 30 天内有价,用其后首个定盘价结算并标 approx
 
 test('T13: 逾期超 30 天标 abandoned', () => {
   const p = mk('2026-07-28', ['2026-06-01', '2026-08-04', '2026-09-01']);
-  const { predictions } = S.settleAll([p], { calendar: CAL, priceByDate: {}, today: '2026-08-05' });
+  const { predictions } = S.settleAll([p], { priceByDate: {}, today: '2026-08-05' });
   assert.equal(predictions[0].horizons.short.status, 'abandoned');
   assert.equal(predictions[0].horizons.short.settled, false);
 });
 
 test('T14: 已结算的 horizon 不被重复改写(幂等)', () => {
   const p = mk('2026-07-28', ['2026-07-29', '2026-08-04', '2026-09-01']);
-  const a = S.settleAll([p], { calendar: CAL, priceByDate: PRICES, today: '2026-07-29' });
-  const b = S.settleAll(a.predictions, { calendar: CAL, priceByDate: { '2026-07-29': 9999 }, today: '2026-07-29' });
+  const a = S.settleAll([p], { priceByDate: PRICES, today: '2026-07-29' });
+  const b = S.settleAll(a.predictions, { priceByDate: { '2026-07-29': 9999 }, today: '2026-07-29' });
   assert.equal(b.predictions[0].horizons.short.actual, 4048.6, '终态不可被改写');
   assert.equal(b.changed, 0);
 });
@@ -121,7 +121,7 @@ test('T14: 已结算的 horizon 不被重复改写(幂等)', () => {
 test('T15: degraded 是正交标记,不进状态枚举', () => {
   const p = mk('2026-07-28', ['2026-07-29', '2026-08-04', '2026-09-01']);
   p.degraded = true;
-  const { predictions } = S.settleAll([p], { calendar: CAL, priceByDate: PRICES, today: '2026-07-29' });
+  const { predictions } = S.settleAll([p], { priceByDate: PRICES, today: '2026-07-29' });
   assert.equal(predictions[0].degraded, true, 'degraded 须原样保留在记录级');
   assert.equal(predictions[0].horizons.short.settled, true, '且不影响结算');
 });
