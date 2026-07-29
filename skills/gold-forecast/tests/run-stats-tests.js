@@ -86,3 +86,35 @@ test('T11: solve 对奇异矩阵抛错,不静默返回 0', () => {
   assert.throws(() => S.solve([[1, 2], [2, 4]], [3, 6]), /奇异/, '恰好奇异应抛错');
   assert.throws(() => S.solve([[1, 2], [2, 4]], [3, 7]), /奇异/, '不相容方程组也应抛错,而非返回看似合理的数');
 });
+
+test('T12: fitLogistic 轮数耗尽未收敛必须抛错,不返回半路的 beta', () => {
+  // 同一份线性可分数据:跑满收敛得 12.02,只给 3 轮得 2.909 ——
+  // 都是「一个正斜率」,静默返回时调用方分辨不出模型其实还没拟合完
+  const X = [[-2], [-1], [1], [2]];
+  const y = [0, 0, 1, 1];
+  assert.ok(S.fitLogistic(X, y)[1] > 10, '默认 50 轮足以收敛到 12 附近');
+  assert.throws(() => S.fitLogistic(X, y, { iters: 3 }), /未收敛/, '3 轮远未收敛,必须抛错');
+  const halfway = S.fitLogistic(X, y, { iters: 3, requireConvergence: false });
+  assert.ok(halfway[1] < 4, `未收敛时的 beta 确实明显偏小,实得 ${halfway[1]}`);
+});
+
+test('T13: fitLogistic 拒绝 NaN 与形状不合法的输入', () => {
+  assert.throws(() => S.fitLogistic([[1], [NaN]], [0, 1]), /非有限数/, 'NaN 特征会一路变成「没通过」而非报错');
+  assert.throws(() => S.fitLogistic([[1], [2]], [0, Infinity]), /非有限数/);
+  assert.throws(() => S.fitLogistic([[1], [2, 3]], [0, 1]), /维度不一致/);
+  assert.throws(() => S.fitLogistic([[1], [2]], [0]), /样本数不一致/);
+  assert.throws(() => S.fitLogistic([], []), /非空样本/);
+});
+
+test('T14: DM 拒绝长度不等与 NaN 的损失序列', () => {
+  assert.throws(() => S.dieboldMariano([1, 2, 3], [1, 2], { lag: 0 }), /长度不等/,
+    '长度不等时按各自长度取均值等于拿两个不同样本比大小');
+  assert.throws(() => S.dieboldMariano([1, NaN, 3], [1, 2, 3], { lag: 0 }), /非有限数/);
+});
+
+test('T15: NW 拒绝非法 lag 与空序列', () => {
+  assert.throws(() => S.neweyWestVar([1, 2, 3], -1), /非负整数/);
+  assert.throws(() => S.neweyWestVar([1, 2, 3], 1.5), /非负整数/);
+  assert.throws(() => S.neweyWestVar([], 0), /非空序列/);
+  assert.throws(() => S.neweyWestVar([1, NaN], 0), /非有限数/);
+});

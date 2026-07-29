@@ -155,3 +155,75 @@ test('T12: 空价格历史时大声失败,报错须带序列名与 asOf', () => 
   );
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('T13: 单条价格历史必须大声失败,不得输出零宽区间', () => {
+  // 1 条历史时 logReturns 为空,空 reduce 的初值 0 会把 NaN 吃掉、返回 0(不是 NaN),
+  // 于是后续所有判空全部失效,对外宣称「80% 把握价格恰为 3000.00」
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  store.upsert('lbma_pm_usd', [
+    { observed_date: '2026-01-05', available_date: '2026-01-05', vintage: 'v1', value: 3000 },
+  ]);
+  assert.throws(() => B.computeBaseline({ store, asOf: '2026-01-06', params: null }), /至少 3 个价格点/);
+  assert.throws(() => B.sigmaDaily([3000]), /至少 3 个价格点/);
+  assert.throws(() => B.sigmaDaily([3000, 3010]), /至少 3 个价格点/, '2 个点只有 1 个收益,样本标准差恒为 0');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T14: 价格连续无变化时区间会退化为零宽,须报错', () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const recs = [];
+  const d = new Date('2026-01-01T00:00:00Z');
+  for (let i = 0; i < 40; i++) {
+    d.setUTCDate(d.getUTCDate() + 1);
+    const iso = d.toISOString().slice(0, 10);
+    recs.push({ observed_date: iso, available_date: iso, vintage: iso, value: 3000 });
+  }
+  store.upsert('lbma_pm_usd', recs);
+  assert.throws(() => B.computeBaseline({ store, asOf: recs[recs.length - 1].observed_date, params: null }),
+    /零宽/, '数据停更导致的零波动不得被包装成「极高确定性」');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T15: 样本期跨到 as-of 之后的参数集必须被拒且留痕', () => {
+  // --params 是绕开 asOf 的第二条数据通路。样本期结束日晚于 as-of
+  // 就意味着系数拟合时见过未来,原样服务且输出上毫无痕迹是最坏的一种
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const recs = seedPrices(store, 400);
+  const asOf = recs[recs.length - 1].observed_date;
+  const bad = { params_id: 'p-future', sample_period: ['2000-01-01', '2099-12-31'],
+    coefficients: { short: [0, 0, 0, 10], medium: [0, 0, 0, 10], long: [0, 0, 0, 10] } };
+  const out = B.computeBaseline({ store, asOf, params: bad });
+  assert.equal(out.params_id, null, '被拒的参数集不得留下 params_id 让下游以为用上了');
+  assert.ok(out.params_rejected, '拒绝必须留痕,否则输出与「本来就没参数」无法区分');
+  assert.match(out.params_rejected.reason, /未来/);
+  assert.equal(out.horizons.short.model, 'p0_N');
+
+  // 对照组:只把样本期结束日拉回 as-of,其余全同 —— 否则「一律拒绝」也能过上面的断言
+  const ok = { ...bad, params_id: 'p-past', sample_period: ['2000-01-01', asOf] };
+  const good = B.computeBaseline({ store, asOf, params: ok });
+  assert.equal(good.params_rejected, null, '样本期结束日不晚于 as-of 的参数集应照常采纳');
+  assert.equal(good.params_id, 'p-past');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T16: 特征降级时不得跑 logistic,须退回 p0 并说明原因', () => {
+  // 插补 0.5 后照跑,会把「两个特征全靠插补」输出成 prob_up=0.9933 的高置信信号
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const recs = seedPrices(store, 400);
+  const asOf = recs[recs.length - 1].observed_date;
+  const params = { params_id: 'p-x', sample_period: ['2000-01-01', asOf],
+    coefficients: { short: [0, 0, 0, 10], medium: [0, 0, 0, 10], long: [0, 0, 0, 10] } };
+  const out = B.computeBaseline({ store, asOf, params });
+  assert.deepEqual(out.degraded_features.sort(), ['cot_pctile', 'real_yield_chg']);
+  for (const k of ['short', 'medium', 'long']) {
+    assert.equal(out.horizons[k].model, 'p0_N', `${k} 特征缺失时不得跑 logistic`);
+    assert.match(out.horizons[k].degraded_reason, /特征缺失/);
+    assert.ok(out.horizons[k].prob_up < 0.9, `实得 ${out.horizons[k].prob_up},高置信度不能来自插补值`);
+  }
+  assert.equal(out.features.real_yield_chg, null, '取不到就是 null,0 会被当成「今天利率没变」');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
