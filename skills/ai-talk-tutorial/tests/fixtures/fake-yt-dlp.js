@@ -33,6 +33,10 @@ try {
 }
 const step = plan[videoId] || null;
 
+if (process.env.FAKE_YTDLP_ARGV_OUT) {
+  fs.writeFileSync(process.env.FAKE_YTDLP_ARGV_OUT, JSON.stringify(argv));
+}
+
 const cookiePath = valueOf('--cookies');
 if (process.env.FAKE_YTDLP_TAMPER === '1' && cookiePath) {
   fs.writeFileSync(cookiePath, '# TAMPERED BY FAKE YT-DLP\n');

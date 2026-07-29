@@ -30,6 +30,7 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 | `SEND_NOTIFY` | ☐ | `1/true/yes/on` 才真发飞书;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
 | `YT_DLP_PATH` | ☐ | yt-dlp 二进制路径。未设时 `fetch-transcript.js` 依次探测 `/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/bin/yt-dlp`、`/usr/local/bin/yt-dlp`、`/opt/homebrew/bin/yt-dlp`,都不存在才回落到 PATH 里的 `yt-dlp` |
 | `DENO_PATH` | ☐ | deno 二进制路径,yt-dlp 解 n-challenge 用。未设时探测 `$HOME/.deno/bin/deno`、`/usr/local/bin/deno`、`/opt/homebrew/bin/deno`;都没有则不传 `--js-runtimes`,yt-dlp 会丢掉大量 format 与自动字幕轨 |
+| `BGUTIL_POT_HOME` | ☐ | PO token provider 的 server 目录,默认 `$HOME/bgutil-ytdlp-pot-provider/server`。目录里有 `build/generate_once.js` 才切 `player_client=web`,否则用 yt-dlp 默认 client |
 
 ## 插件根目录解析
 
@@ -142,6 +143,29 @@ VM 上 yt-dlp 已因 cookie 轮换 + 缺 JS runtime 失效,而这几个缩略图
 `n challenge solving failed` 并丢掉大量 format 与自动字幕轨。VM 上装在
 `~/.deno/bin/deno`,脚本按 `DENO_PATH` env → `~/.deno/bin/deno` → 系统路径探测,
 用 `--js-runtimes deno:<绝对路径>` 传给 yt-dlp(**不赌 cron 的 PATH**)。
+
+**PO token provider**:装了才切 `player_client=web`,没装就用默认 client ——
+没有 provider 的 web client 连 player API 都过不去,会把一个能工作的路径换成必然失败的路径。
+2026-07-29 VM 实测三种组合:
+
+| 组合 | 结果 |
+|---|---|
+| 无 cookie + PO token | ❌ 仍被 bot 检测拒 —— **IDC IP 上 PO token 替代不了登录态** |
+| cookie + 默认 client(android vr) | ⚠️ 时好时坏,报 `Automatic captions for 1 languages are missing` |
+| cookie + PO token + web client | ✅ 此前全败的两个视频都拿到字幕,`en-orig`/`en` 两轨齐全 |
+
+部署(script mode,**不要 server mode** —— VM 只有 1.9G 内存,常驻进程不划算):
+
+```bash
+git clone --single-branch --branch 1.3.1 --depth 1 \
+  https://github.com/Brainicism/bgutil-ytdlp-pot-provider.git /tmp/bgutil-build
+cd /tmp/bgutil-build/server && npm ci --no-audit --no-fund && npx tsc
+mkdir -p ~/bgutil-ytdlp-pot-provider && mv /tmp/bgutil-build/server ~/bgutil-ytdlp-pot-provider/server
+/home/ubuntu/.local/yt-dlp-venv/bin/pip install -U bgutil-ytdlp-pot-provider   # 装进 yt-dlp 所在 venv
+```
+
+实测开销:token 生成单次 5 秒 / 峰值 199MB,整步端到端 10.15 秒 / 峰值 299MB。
+`BGUTIL_POT_HOME` 可覆盖默认路径 `~/bgutil-ytdlp-pot-provider/server`。
 
 - exit 0 → 继续 Step 3
 - **exit 6(全部候选取不到字幕)→ 中止,不产出半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:所有候选视频取字幕均失败(fetch-transcript.js exit 6),已中止,请人工核查候选与 cookie/yt-dlp 状态。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码

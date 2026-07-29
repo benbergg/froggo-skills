@@ -279,6 +279,22 @@ function resolveJsRuntimeArgs() {
   return [];
 }
 
+// PO token provider 探测。2026-07-29 VM 实测三种组合:
+//   无 cookie + PO token            → 仍被 bot 检测拒(IDC IP 上 PO token 替代不了登录态)
+//   cookie,默认 client(android vr) → 时好时坏,且报 "Automatic captions for 1 languages are missing"
+//   cookie + PO token + web client  → 此前全败的 jyuyY86GJnA/vJYXvblW4_g 都拿到字幕,en-orig/en 两轨齐全
+//
+// 所以 web client 只在 provider 装了的时候才切 —— 没有 provider 的 web client
+// 连 player API 都过不去,会把一个能工作的默认路径换成必然失败的路径。
+// provider 走 script mode(按需起进程、跑完退出):实测单次 5 秒 / 峰值 199MB,
+// 而 VM 只有 1.9G 内存且 available 约 1.1G,常驻 server mode 不划算。
+function resolvePotArgs() {
+  const home = process.env.BGUTIL_POT_HOME
+    || path.join(os.homedir(), 'bgutil-ytdlp-pot-provider', 'server');
+  if (!fs.existsSync(path.join(home, 'build', 'generate_once.js'))) return [];
+  return ['--extractor-args', 'youtube:player_client=web'];
+}
+
 // 级 3:yt-dlp 兜底。--ignore-no-formats-error 必需:
 // 缺它则 format 选择阶段直接 "Requested format is not available" 中止,字幕不下载。
 //
@@ -296,6 +312,7 @@ function tryYtDlp(videoId, cookiesPath) {
     const r = spawnSync(bin, [
       '--no-update', '--socket-timeout', '30',
       ...resolveJsRuntimeArgs(),
+      ...resolvePotArgs(),
       '--cookies', cookieCopy,
       '--skip-download', '--ignore-no-formats-error',
       '--write-auto-subs', '--sub-langs', 'en-orig,en', '--sub-format', 'json3',
@@ -486,7 +503,7 @@ async function main() {
 module.exports = {
   parseTimedTextXml, mergeSegments, parseCookieString, formatTimestamp, decodeEntities,
   resolveYtDlpBin, tryWebWithCookies, tryYtDlp,
-  classifyYtDlpFailure, isTranscriptSufficient, tailLines, resolveJsRuntimeArgs,
+  classifyYtDlpFailure, isTranscriptSufficient, tailLines, resolveJsRuntimeArgs, resolvePotArgs,
 };
 
 if (require.main === module) {

@@ -376,3 +376,70 @@ test('T27: 取到但体量不足 → 视为该候选失败,继续下一个,不�
     r.cleanupAll();
   }
 });
+
+// ---- PO token provider(2026-07-29 实测结论) ---------------------------
+//
+// 三种组合在 VM 上的真实结果:
+//   无 cookie + PO token            → 仍被 bot 检测拒(IDC IP 上 PO token 替代不了登录态)
+//   cookie,默认 client(android vr) → 时好时坏,自动字幕报 "Automatic captions for 1 languages are missing"
+//   cookie + PO token + web client  → 两个此前全败的视频都拿到字幕,且 en-orig/en 两条轨齐全
+// 故 web client 只在 provider 装了的时候才启用 —— 没有 provider 的 web client
+// 连 player API 都过不去,会把一个能工作的默认路径换成必然失败的路径。
+
+test('T28: 装了 PO token provider 时启用 web client', () => {
+  const home = freshTmp();
+  fs.mkdirSync(path.join(home, 'bgutil-ytdlp-pot-provider', 'server', 'build'), { recursive: true });
+  fs.writeFileSync(path.join(home, 'bgutil-ytdlp-pot-provider', 'server', 'build', 'generate_once.js'), '');
+  const prev = process.env.BGUTIL_POT_HOME;
+  process.env.BGUTIL_POT_HOME = path.join(home, 'bgutil-ytdlp-pot-provider', 'server');
+  try {
+    const args = F.resolvePotArgs();
+    assert.deepEqual(args, ['--extractor-args', 'youtube:player_client=web']);
+  } finally {
+    if (prev === undefined) delete process.env.BGUTIL_POT_HOME; else process.env.BGUTIL_POT_HOME = prev;
+    fs.rmSync(home, { recursive: true, force: true });
+  }
+});
+
+test('T29: 没装 provider 时不得切到 web client(否则连 player API 都过不去)', () => {
+  const prev = process.env.BGUTIL_POT_HOME;
+  process.env.BGUTIL_POT_HOME = path.join(freshTmp(), 'nonexistent');
+  try {
+    assert.deepEqual(F.resolvePotArgs(), []);
+  } finally {
+    if (prev === undefined) delete process.env.BGUTIL_POT_HOME; else process.env.BGUTIL_POT_HOME = prev;
+  }
+});
+
+test('T30: tryYtDlp 把 provider 与 JS runtime 参数真的传给了 yt-dlp', () => {
+  const dir = freshTmp();
+  const cookiePath = path.join(dir, 'cookies.txt');
+  fs.writeFileSync(cookiePath, '# Netscape HTTP Cookie File\n.youtube.com\tTRUE\t/\tTRUE\t0\tSAPISID\tv\n');
+  const potHome = path.join(dir, 'server');
+  fs.mkdirSync(path.join(potHome, 'build'), { recursive: true });
+  fs.writeFileSync(path.join(potHome, 'build', 'generate_once.js'), '');
+  const denoPath = path.join(dir, 'deno');
+  fs.writeFileSync(denoPath, '');
+  const argvOut = path.join(dir, 'argv.json');
+
+  const saved = { bin: process.env.YT_DLP_PATH, pot: process.env.BGUTIL_POT_HOME, deno: process.env.DENO_PATH };
+  process.env.YT_DLP_PATH = FAKE_YTDLP;
+  process.env.BGUTIL_POT_HOME = potHome;
+  process.env.DENO_PATH = denoPath;
+  process.env.FAKE_YTDLP_ARGV_OUT = argvOut;
+  process.env.FAKE_YTDLP_JSON3 = '1';
+  try {
+    F.tryYtDlp('someVideoId', cookiePath);
+    const argv = JSON.parse(fs.readFileSync(argvOut, 'utf-8'));
+    const joined = argv.join(' ');
+    assert.match(joined, /--extractor-args youtube:player_client=web/);
+    assert.match(joined, new RegExp(`--js-runtimes deno:${denoPath.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}`));
+  } finally {
+    for (const [k, v] of [['YT_DLP_PATH', saved.bin], ['BGUTIL_POT_HOME', saved.pot], ['DENO_PATH', saved.deno]]) {
+      if (v === undefined) delete process.env[k]; else process.env[k] = v;
+    }
+    delete process.env.FAKE_YTDLP_ARGV_OUT;
+    delete process.env.FAKE_YTDLP_JSON3;
+    fs.rmSync(dir, { recursive: true, force: true });
+  }
+});

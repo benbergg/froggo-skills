@@ -295,9 +295,34 @@ cookie 源文件 sha256 与字节数跑前跑后完全一致。
 去掉 cookie 副本→只死 T23,去掉 stderr 保留→只死 T24,去掉环境分流→只死 T25,
 去掉体量校验→只死 T27,分类顺序颠倒→死 T15/T16/T19/T25,绝对下限归零→只死 T20。
 
-**遗留**:`discover.js` 的最低时长仍只有 60 秒硬门槛(`<8min` 只 ×0.3 降权),
-1-2 分钟的产品发布片照样进候选池(当天 87 个候选里 36 个短于 8 分钟)。
-A4 只能挡它进 Step 3,挡不住它占据排名。
+**PO token provider(同日追加)**。装 `bgutil-ytdlp-pot-provider` 1.3.1 script mode,
+三种组合实测结论明确:
+
+| 组合 | 结果 |
+|---|---|
+| 无 cookie + PO token | ❌ 仍被 bot 检测拒 —— **IDC IP 上 PO token 替代不了登录态** |
+| cookie + 默认 client(android vr) | ⚠️ 时好时坏,报 `Automatic captions for 1 languages are missing` |
+| cookie + PO token + `player_client=web` | ✅ 此前全败的两个视频都拿到字幕,`en-orig`/`en` 两轨齐全 |
+
+所以 PO token 的定位是**修好自动字幕缺失**,不是去 cookie 化。`resolvePotArgs()`
+探测到 `build/generate_once.js` 才切 web client —— 没有 provider 的 web client
+连 player API 都过不去,会把一个能工作的默认路径换成必然失败的路径。
+选 script mode 而非 server mode 是内存决定的:VM 只有 1.9G(available 约 1.1G,
+swap 已用 323M),常驻 Node 进程 24 小时只为每天用几次不划算;script mode
+单次 5 秒 / 峰值 199MB,端到端 10.15 秒 / 峰值 299MB。
+
+测试 30 项,9 组 revert-and-rerun。
+
+**遗留**:
+- `discover.js` 的最低时长仍只有 60 秒硬门槛(`<8min` 只 ×0.3 降权),1-2 分钟的
+  产品发布片照样进候选池(当天 87 个候选里 36 个短于 8 分钟)。A4 只能挡它进 Step 3,
+  挡不住它占据排名。
+- InnerTube 两级(android / web+cookies)仍恒 `LOGIN_REQUIRED`:当前 cookie 由
+  Cookie Editor 导出,只含非 HttpOnly 字段(`SID`/`SAPISID`/`APISID`/`__Secure-*APISID`),
+  缺 `HSID`/`SSID`/`__Secure-1PSID`/`__Secure-3PSID` 等 **HttpOnly** 那批 ——
+  分界线与 HttpOnly 完全吻合,说明导出走的是 `document.cookie` 而非扩展 API。
+  补齐需用 `yt-dlp --cookies-from-browser chrome` 或 Get cookies.txt LOCALLY。
+  整条链路目前只靠 yt-dlp 一级,是单点。
 
 ## 版本管理
 
