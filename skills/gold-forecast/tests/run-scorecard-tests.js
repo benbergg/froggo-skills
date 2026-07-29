@@ -347,3 +347,46 @@ test('T33: 教训无效触发器以 trials>=5 为界', () => {
   assert.ok(!run(4).review_triggers.some((x) => x.kind === 'lesson_ineffective'), 'trials=4 不触发');
   assert.ok(run(5).review_triggers.some((x) => x.kind === 'lesson_ineffective'), 'trials=5 触发');
 });
+
+// —— brier_series:报告的「三方演化曲线」唯一数据源 ——
+// 没有它,渲染层只能拿三个聚合标量连成折线冒充趋势,而读者会把它当趋势记住。
+
+test('T34: brier_series 每期一点,按 id 升序,三方齐全', () => {
+  const s = buildScorecard(mkDb(25), {}).by_horizon.short.brier_series;
+  assert.equal(s.length, 25, '序列长度须等于样本数,不是三个聚合点');
+  const ids = s.map((p) => p.id);
+  assert.deepEqual(ids, [...ids].sort(), '按 p.id 升序');
+  for (const k of ['final', 'baseline', 'naive']) assert.ok(Number.isFinite(s[0][k]), `缺 ${k}`);
+});
+
+test('T35: 是累积均值而非逐条值', () => {
+  // 前 10 条判错(brier 0.3364)、后 15 条判对(0.1764):逐条值会在第 11 点直接跳到 0.1764,
+  // 累积均值只会缓慢下行,末点必须等于聚合 brier。
+  const sc = buildScorecard(mkDb(25, { dirOk: (i) => i >= 10 }), {}).by_horizon.short;
+  const s = sc.brier_series;
+  assert.ok(Math.abs(s[0].final - 0.3364) < 1e-9, '首点等于首条值');
+  assert.ok(Math.abs(s[10].final - (10 * 0.3364 + 0.1764) / 11) < 1e-9, '第 11 点是前 11 条的均值');
+  assert.ok(Math.abs(s[24].final - sc.final.brier) < 1e-9, '末点必须与聚合 brier 相等');
+  assert.ok(s[10].final > s[24].final, '累积均值单向收敛,不该跟着逐条值跳变');
+});
+
+test('T36: 样本不足时为 null,不给半截曲线', () => {
+  assert.equal(buildScorecard(mkDb(10), {}).by_horizon.short.brier_series, null);
+});
+
+test('T37: 非有限值被跳过而非当 0 计入', () => {
+  const db = mkDb(25);
+  db.predictions.slice(0, 5).forEach((p) => { p.horizons.short.score.baseline_brier = null; });
+  const s = buildScorecard(db, {}).by_horizon.short.brier_series;
+  assert.equal(s[0].baseline, null, '一条有效值都没有时给 null');
+  assert.ok(Math.abs(s[24].baseline - 0.2209) < 1e-9, '剩余 20 条均为 0.2209,不得被 0 稀释成 0.1767');
+});
+
+test('T38: 乱序 append 不影响序列顺序', () => {
+  const db = mkDb(25);
+  const shuffled = { ...db, predictions: [...db.predictions].reverse() };
+  assert.deepEqual(
+    buildScorecard(shuffled, {}).by_horizon.short.brier_series,
+    buildScorecard(db, {}).by_horizon.short.brier_series,
+    '曲线的横轴是日期,不能是 db.predictions 的插入次序');
+});

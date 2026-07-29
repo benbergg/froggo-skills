@@ -166,9 +166,27 @@ test('T17: 无 brier_series 时不画假曲线', () => {
   assert.equal(bodyOf(html).includes('ln-final'), false, '拿不到序列就该留白,不能拿标量凑一条线');
 });
 
+test('T18: 真实 buildScorecard 产物能直接喂出曲线', () => {
+  // 前一条用手搓 series,字段名对不上时照样绿 —— 两个模块之间的契约得由真实产物验
+  const { buildScorecard } = require('../references/scripts/scorecard');
+  const predictions = Array.from({ length: 22 }, (_, i) => ({
+    id: `2026-02-${String(i + 1).padStart(2, '0')}`, base_price: 4000,
+    horizons: { short: { n_sessions: 1, settled: true, actual: 4010,
+      final: { prob_up: 0.58, low: 3950, high: 4050 },
+      score: { dir_correct: true, brier: 0.1764, winkler: 100, in_range: true,
+        baseline_brier: 0.2209, baseline_winkler: 120, baseline_dir_correct: true,
+        naive_brier: 0.2256, naive_p: 0.52 } } },
+  }));
+  const sc = buildScorecard({ schema_version: 2, predictions, skipped_dates: [] }, {});
+  const { html } = RENDER({ scorecard: sc });
+  const m = bodyOf(html).match(/class="ln ln-final" d="([^"]+)"/);
+  assert.ok(m, 'scorecard 真产的 brier_series 应能画出曲线');
+  assert.equal((m[1].match(/[ML]/g) || []).length, 22);
+});
+
 // —— 附录 §1.1:11 项测试全走函数直调,CLI 的 --settlement 缺口不会被发现 ——
 
-test('T18: CLI 跑通并落 html/md 两份产物', () => {
+test('T19: CLI 跑通并落 html/md 两份产物', () => {
   const dir = freshTmp();
   const p = (n) => path.join(dir, n);
   fs.writeFileSync(p('sc.json'), JSON.stringify(SC()));
@@ -190,7 +208,7 @@ test('T18: CLI 跑通并落 html/md 两份产物', () => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-test('T19: CLI 缺 --settlement 直接报错退出', () => {
+test('T20: CLI 缺 --settlement 直接报错退出', () => {
   const dir = freshTmp();
   const p = (n) => path.join(dir, n);
   fs.writeFileSync(p('sc.json'), JSON.stringify(SC()));

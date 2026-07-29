@@ -68,6 +68,24 @@ function group(rows, pick, label, issues) {
   };
 }
 
+// 三方 Brier 的累积均值序列,供报告画「演化曲线」。
+// 累积均值而非逐条值:逐条 Brier 抖动太大,画出来只是噪声;这条曲线要回答的是
+// 「随样本累积谁在赢」。非有限值跳过不计,与 meanWithDrops 同口径 ——
+// 当 0 吸收会让曲线凭空下探,而 Brier 越低越好,等于伪造模型在变强。
+function brierSeries(rows) {
+  const picks = { final: (s) => s.brier, baseline: (s) => s.baseline_brier, naive: (s) => s.naive_brier };
+  const acc = { final: { sum: 0, n: 0 }, baseline: { sum: 0, n: 0 }, naive: { sum: 0, n: 0 } };
+  return [...rows].sort((a, b) => cmp(a.p.id || '', b.p.id || '')).map((r) => {
+    const point = { id: r.p.id };
+    for (const [key, pick] of Object.entries(picks)) {
+      const v = pick(r.h.score);
+      if (Number.isFinite(v)) { acc[key].sum += v; acc[key].n += 1; }
+      point[key] = acc[key].n ? acc[key].sum / acc[key].n : null;
+    }
+    return point;
+  });
+}
+
 function report(issues, group_, field, dropped) {
   if (dropped > 0) issues.push({ group: group_, field, dropped });
 }
@@ -75,7 +93,8 @@ function report(issues, group_, field, dropped) {
 function horizonStats(rows, issues = []) {
   if (rows.length < MIN_SAMPLE) {
     return { n: rows.length, insufficient_sample: true, naive: null, baseline: null, final: null,
-             by_confidence: null, calibration_buckets: null, range_bias: null, current_streak: 0 };
+             by_confidence: null, calibration_buckets: null, range_bias: null, current_streak: 0,
+             brier_series: null };
   }
   const f = group(rows, (r) => ({ dir: r.h.score.dir_correct, brier: r.h.score.brier, winkler: r.h.score.winkler }), 'final', issues);
   const b = group(rows, (r) => ({ dir: r.h.score.baseline_dir_correct, brier: r.h.score.baseline_brier, winkler: r.h.score.baseline_winkler }), 'baseline', issues);
@@ -116,6 +135,7 @@ function horizonStats(rows, issues = []) {
   }
 
   return { n: rows.length, insufficient_sample: false, naive: n, baseline: b, final: f,
+    brier_series: brierSeries(rows),
     by_confidence, calibration_buckets: buckets,
     range_bias: { above: rows.filter((r) => r.h.actual > r.h.final.high).length,
                   below: rows.filter((r) => r.h.actual < r.h.final.low).length },
