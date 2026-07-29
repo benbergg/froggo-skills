@@ -22,8 +22,7 @@ function sigmaDaily(prices, window = SIGMA_WINDOW) {
   return Math.sqrt(r.reduce((a, x) => a + (x - m) ** 2, 0) / Math.max(1, r.length - 1));
 }
 
-// 按周期分别估计:单日上涨概率不等于 N 日后仍高于起点的概率。
-// 重叠窗口使样本高度自相关,任何显著性检验须用 Newey-West 修正。
+// 按周期分别估计;重叠窗口自相关,显著性检验需 Newey-West 修正
 function p0N(prices, n, window = TRAIN_WINDOW) {
   const px = prices.slice(-(window + n));
   let up = 0, total = 0;
@@ -44,8 +43,7 @@ function readFeature(store, series, asOf) {
   return store.read(series, { availableOn: asOf });
 }
 
-// 投机净多分位数(拥挤度)。样本不足 20 期时单点即可能贴 0/1,无统计意义,
-// 与 collect-facts.js 的持仓分位判据同源但独立实现,不跨文件抽取公共函数。
+// 净多分位(拥挤度);样本<20 无统计意义,与 collect-facts 判据同源但独立实现
 function cotPctile(cotRows, minSamples = COT_PCTILE_MIN_SAMPLES) {
   const series = cotRows.map((r) => r.value && r.value.net_spec).filter((v) => typeof v === 'number');
   if (series.length < minSamples) return null;
@@ -55,6 +53,7 @@ function cotPctile(cotRows, minSamples = COT_PCTILE_MIN_SAMPLES) {
 
 function computeBaseline({ store, asOf, params }) {
   const priceRows = readFeature(store, 'lbma_pm_usd', asOf);
+  if (priceRows.length === 0) throw new Error(`无可用价格历史: lbma_pm_usd as of ${asOf}`);
   const prices = priceRows.map((r) => r.value);
   const basePrice = prices[prices.length - 1];
   const sigma = sigmaDaily(prices);
@@ -77,8 +76,7 @@ function computeBaseline({ store, asOf, params }) {
   const horizons = {};
   for (const [key, n] of Object.entries(N_BY_HORIZON)) {
     const p0 = features[`p0_${n}`];
-    // 没有通过验收的参数集就退化为纯 p0 + 波动率区间 ——
-    // 宁可基线简单,不要一个假装聪明的参照系。
+    // 未过验收的参数集退化为纯 p0+波动率区间,不假装聪明
     const coef = params && params.coefficients && params.coefficients[key];
     const prob = coef
       ? predictLogistic(coef, [features.momentum_z, features.real_yield_chg, features.cot_pctile ?? 0.5])

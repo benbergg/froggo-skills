@@ -128,8 +128,7 @@ test('T10: 软依赖特征缺失时记入 degraded_features', () => {
 });
 
 test('T11: COT 期数不足 20 时 cot_pctile 为 null 且记入 degraded_features', () => {
-  // 与 T10 的区别:这里灌了 COT 数据,但期数不足以计算可信分位——
-  // 必须钉住「取不到值就必须记降级」不允许脱节的场景。
+  // 与 T10 区别:灌了 COT 但期数不足,须钉住「取不到值就必须降级」不脱节
   const tmp = freshTmp();
   const store = new HistoryStore(tmp);
   const recs = seedPrices(store, 400);
@@ -138,5 +137,21 @@ test('T11: COT 期数不足 20 时 cot_pctile 为 null 且记入 degraded_featur
   const out = B.computeBaseline({ store, asOf, params: null });
   assert.equal(out.features.cot_pctile, null, '样本不足 20 期时分位不可信,必须为 null');
   assert.ok(out.degraded_features.includes('cot_pctile'), 'cot_pctile 为 null 时必须记入 degraded_features');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T12: 空价格历史时大声失败,报错须带序列名与 asOf', () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  assert.throws(
+    () => B.computeBaseline({ store, asOf: '2026-01-01', params: null }),
+    /lbma_pm_usd/,
+    '空历史下不得静默产出假基线,须报错并点名缺失序列',
+  );
+  assert.throws(
+    () => B.computeBaseline({ store, asOf: '2026-01-01', params: null }),
+    /2026-01-01/,
+    '报错须带 asOf,值班人才能定位是哪天的数据缺失',
+  );
   fs.rmSync(tmp, { recursive: true, force: true });
 });
