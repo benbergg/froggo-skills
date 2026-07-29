@@ -54,22 +54,39 @@ function safeUrl(u) {
 
 // markdown 链接与裸 URL 一次扫完:分两遍做的话,第二遍会撞进第一遍生成的 href="…" 里。
 // 全角标点排除在 URL 之外,否则紧跟 URL 的中文句读会被吃进链接。
-const LINK_RE = /\[([^\]\n]+)\]\(([^)\s]*)\)|[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s<>"'()（），。、；：！？【】「」]+/g;
+const LINK_RE_SRC = /\[([^\]\n]+)\]\(([^)\s]*)\)|[a-zA-Z][a-zA-Z0-9+.-]*:\/\/[^\s<>"'()（），。、；：！？【】「」]+/;
 
-function linkify(escaped) {
-  return escaped.replace(LINK_RE, (m, text, url) => {
-    const raw = text === undefined ? m : url;
-    const href = safeUrl(raw);
-    const label = text === undefined ? m : text;
-    // 协议不过关时连 URL 字面量一起丢掉,只留文字
-    return href ? `<a href="${href}" rel="noopener nofollow">${label}</a>` : label;
-  });
-}
+// escapeHtml 已经跑过,此刻 `"` `'` 是 &quot; / &#39; —— 组成它们的字符都在放行集内,
+// 裸 URL 会一路吞下去,href 里出现转义实体。故在这些实体处截断。
+const ENTITY_STOP = /&quot;|&#39;|&lt;|&gt;/;
 
+const emphasis = (s) => s
+  .replace(/`([^`\n]+)`/g, '<code>$1</code>')
+  .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+
+// 强调标记只作用于链接之外的文本与链接文字,绝不进 href ——
+// 顺序反过来会把 <code> 注入 href(实测 `[x](https://a/?q=\`y\`)`),链接直接失效。
 function inline(s) {
-  return linkify(escapeHtml(s))
-    .replace(/`([^`\n]+)`/g, '<code>$1</code>')
-    .replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  const src = escapeHtml(s);
+  // 每次新建:带 g 的模块级正则在 exec 循环里会跨调用串 lastIndex
+  const re = new RegExp(LINK_RE_SRC.source, 'g');
+  let out = '';
+  let last = 0;
+  let m;
+  while ((m = re.exec(src)) !== null) {
+    out += emphasis(src.slice(last, m.index));
+    const isMd = m[1] !== undefined;
+    const url = isMd ? m[2] : m[0].split(ENTITY_STOP)[0];
+    // &amp; 还原成 &:query 里的合法分隔符,不还原会让 href 指向错误地址
+    const href = safeUrl(url.replace(/&amp;/g, '&'));
+    const label = emphasis(isMd ? m[1] : url);
+    // 协议不过关时连 URL 字面量一起丢掉,只留文字
+    out += href ? `<a href="${escapeHtml(href)}" rel="noopener nofollow">${label}</a>` : label;
+    // 裸 URL 被实体截短时,剩下的部分退回普通文本重新扫
+    last = m.index + (isMd ? m[0].length : (url.length || m[0].length));
+    re.lastIndex = last;
+  }
+  return out + emphasis(src.slice(last));
 }
 
 const LIST_RE = /^(?:[-*]|\d+[.、])\s+(.+)$/;
@@ -111,9 +128,20 @@ function renderBlocks(text) {
 
 const fmt = (n) => Number(n).toFixed(1);
 
+// Number(null) 与 Number('') 都是 0 且 isFinite,直接 map(Number).filter(isFinite)
+// 等于把「这期没有数据」画成「这期的值是 0」—— Brier 图上就是基线从完美的 0 起步,
+// 价格图上就是折线一头扎到底。null 是 brier_series 与 history 的契约内正常产出,
+// 渲染层是归档件的最后一道,不该指望上游过滤得干净。
+function finiteNum(v) {
+  if (v === null || v === undefined || typeof v === 'boolean') return NaN;
+  if (String(v).trim() === '') return NaN;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : NaN;
+}
+
 // points 为纯数值序列;bands 画在折线右侧的预留区(未来三期),refs 为贯穿全宽的参考线。
 function sparkline(points, { width = 640, height = 160, band = null, bands = [], refs = [], plotRatio = null } = {}) {
-  const pts = (points || []).map(Number).filter(Number.isFinite);
+  const pts = (points || []).map(finiteNum).filter(Number.isFinite);
   const boxes = (band ? [{ key: 'band', low: band.low, high: band.high }] : [])
     .concat(bands || []).filter((b) => b && Number.isFinite(b.low) && Number.isFinite(b.high));
   const refVals = (refs || []).filter((r) => Number.isFinite(r.value));
@@ -157,7 +185,7 @@ function sparkline(points, { width = 640, height = 160, band = null, bands = [],
 // 三期区间取自 doc.json.horizons(三期恒全);baseline 只做 short 的参考线 ——
 // baseline.horizons 在真实产物里也只有它是被逐日校准过的对照。
 function priceChart({ history, horizons, baseline }) {
-  const pts = (history || []).map((r) => Number(r && r.value));
+  const pts = (history || []).map((r) => finiteNum(r && r.value));
   const bands = HORIZONS
     .filter((k) => horizons[k] && Number.isFinite(horizons[k].low) && Number.isFinite(horizons[k].high))
     .map((k) => ({ key: k, low: horizons[k].low, high: horizons[k].high, label: BAND_LABEL[k] }));
@@ -179,7 +207,7 @@ function brierChart(series, { width = 640, height = 160 } = {}) {
   const rows = Array.isArray(series) ? series : [];
   if (rows.length < 2) return '';
   const keys = ['final', 'baseline', 'naive'];
-  const all = rows.flatMap((p) => keys.map((k) => Number(p[k]))).filter(Number.isFinite);
+  const all = rows.flatMap((p) => keys.map((k) => finiteNum(p[k]))).filter(Number.isFinite);
   if (!all.length) return '';
   const lo = Math.min(...all);
   const hi = Math.max(...all);
@@ -189,7 +217,7 @@ function brierChart(series, { width = 640, height = 160 } = {}) {
   const paths = keys.map((k) => {
     let started = false;
     const d = rows.map((p, i) => {
-      const v = Number(p[k]);
+      const v = finiteNum(p[k]);
       if (!Number.isFinite(v)) return '';
       const cmd = started ? 'L' : 'M';
       started = true;
@@ -201,7 +229,7 @@ function brierChart(series, { width = 640, height = 160 } = {}) {
     + `<text class="axis-lbl" x="0" y="${fmt(height - 2)}">${escapeHtml(lo.toFixed(4))}</text>`;
   return '<figure class="chart">'
     + `<svg class="spark" viewBox="0 0 ${width} ${height}" width="100%" height="${height}" role="img">${paths}${axis}</svg>`
-    + `<div class="lg">— 最终模型 &nbsp; — 量化基线 &nbsp; -- 朴素基准 &nbsp;(${rows.length} 期累积均值)</div>`
+    + `<div class="lg">短周期 · — 最终模型 &nbsp; — 量化基线 &nbsp; -- 朴素基准 &nbsp;(${rows.length} 期累积均值)</div>`
     + '<figcaption>Brier 越低越好。画累积均值而非逐条值:逐条 Brier 抖动太大,'
     + '「随样本累积谁在赢」才是这张图要回答的问题。</figcaption></figure>';
 }

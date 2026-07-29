@@ -77,6 +77,10 @@ test('T8: 样本不足时不渲染胜率数字', () => {
   // 只断言提示存在,一个压根不读 insufficient_sample、无条件打印提示的实现也能全绿
   assert.equal(body.includes('57.1%'), false, 'fixture 第五段的胜率建在 8 期样本上,不得呈现');
   assert.equal(body.includes('0.2377'), false, '三方 Brier 对照同样不得呈现');
+  // 分开断言两个抑制点:只查「样本不足」四个字时,withhold 的提示语会把断言喂饱,
+  // 于是「表格分支单独失效」变成零覆盖
+  assert.ok(body.includes('样本不足(已结算 8 期)'), '记分卡表格那一行也须抑制');
+  assert.ok(body.includes('短周期样本不足'), '第五段叙述须被撤下');
 });
 
 test('T9: 样本充分时不出现「样本不足」', () => {
@@ -159,6 +163,9 @@ test('T16: Brier 演化曲线画的是累积序列而非三个点', () => {
   assert.ok(m, '缺最终模型演化曲线');
   assert.equal((m[1].match(/[ML]/g) || []).length, 25, '顶点数须等于序列长度');
   for (const k of ['ln-baseline', 'ln-naive']) assert.ok(body.includes(k), `缺 ${k} 曲线`);
+  // 曲线只画短周期,而它上方的记分卡表是三行 —— 不标周期读者无从知道画的是哪一行
+  const lg = body.match(/<div class="lg">([^<]*)</);
+  assert.ok(lg && /短周期/.test(lg[1]), `图例须标周期,实得 ${lg && lg[1]}`);
 });
 
 test('T17: 无 brier_series 时不画假曲线', () => {
@@ -221,4 +228,76 @@ test('T20: CLI 缺 --settlement 直接报错退出', () => {
   assert.ok(/settlement/.test(r.stderr));
   assert.equal(fs.existsSync(p('r.html')), false, '参数不全不得留半成品');
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+// —— 修复轮 1:Number(null) === 0 且 isFinite,「没有数据」会被画成「值是 0」 ——
+
+test('T21: brier_series 里的 null 不被当成 0 画进曲线', () => {
+  const sc = SC();
+  // 前 5 期 baseline 为 null(T37 同款形状:settle.js 在 h.baseline 缺 prob_up 时得 NaN,
+  // 落盘即 null),错的实现会画成「量化基线从完美的 Brier 0 起步」
+  sc.by_horizon.short.brier_series = Array.from({ length: 25 }, (_, i) => ({
+    id: `2026-06-${String(i + 1).padStart(2, '0')}`,
+    final: 0.1764, baseline: i < 5 ? null : 0.2209, naive: 0.2256,
+  }));
+  const { html } = RENDER({ scorecard: sc });
+  const body = bodyOf(html);
+  const bl = body.match(/class="ln ln-baseline" d="([^"]+)"/);
+  assert.ok(bl, '缺基线曲线');
+  assert.equal((bl[1].match(/[ML]/g) || []).length, 20, 'null 期不该有顶点');
+  assert.equal(bl[1].startsWith('M0.0,'), false, '曲线须从第 6 期起,不能从原点起步');
+  const lo = body.match(/class="axis-lbl" x="0" y="158\.0">([\d.]+)</);
+  assert.ok(lo, '缺 Y 轴下界标注');
+  assert.equal(lo[1], '0.1764', `值域下界被拉到 ${lo[1]} ⇒ 真实信号被压进图高顶部`);
+});
+
+test('T22: settlement.history 里的非有限值不被当成 0 画', () => {
+  const sp = { history: [
+    { date: 'a', value: 4067.3 }, { date: 'b', value: null },
+    { date: 'c', value: '' }, { date: 'd', value: 4022.2 }] };
+  const { html } = RENDER({ settlement: sp });
+  const body = bodyOf(html);
+  const pl = body.match(/class="pl" d="([^"]+)"/);
+  assert.ok(pl, '缺定盘价折线');
+  assert.equal((pl[1].match(/[ML]/g) || []).length, 2, '非有限值须剔除而非落成 0 点');
+  // 上游 lbma-gold-pm.js 只判 null/undefined,`v[0] === ""` 会漏过去;
+  // 渲染层是归档件最后一道,不该指望上游过滤得精确
+  const lo = body.match(/class="axis-lbl" x="0" y="178\.0">([\d.]+)</);
+  assert.ok(lo && Number(lo[1]) > 3000, `Y 轴下界被拉到 ${lo && lo[1]},折线一头扎到底`);
+});
+
+test('T23: 仅 medium/long 样本不足时,表格是唯一抑制点', () => {
+  const sc = SC();
+  sc.by_horizon.medium = { n: 12, insufficient_sample: true, final: null, baseline: null, naive: null };
+  sc.by_horizon.long = { n: 3, insufficient_sample: true, final: null, baseline: null, naive: null };
+  const { html, md } = RENDER({ scorecard: sc });
+  const body = bodyOf(html);
+  assert.ok(body.includes('57.1%'), 'withhold=false,短周期叙述照常呈现');
+  assert.equal(body.includes('短周期样本不足'), false, '此场景不该走整段撤下那条路');
+  assert.equal((body.match(/样本不足\(已结算/g) || []).length, 2, 'medium/long 各一个抑制单元');
+  assert.ok(body.includes('样本不足(已结算 12 期)') && body.includes('样本不足(已结算 3 期)'));
+  assert.equal(md.includes('样本不足(已结算 12 期)'), true, 'md 侧同一条规则');
+});
+
+// —— 修复轮 1(可选项):强调标记注入 href 与裸 URL 吞转义实体 ——
+
+test('T24: 强调标记不注入 href', () => {
+  const doc = DOC();
+  doc.sections['三'] += '\n\n参见 [示例 **要点**](https://example.com/d?q=1) 结束。';
+  const { html } = RENDER({ doc });
+  const body = bodyOf(html);
+  assert.ok(body.includes('href="https://example.com/d?q=1"'),
+    `href 被污染: ${body.match(/href="[^"]*example[^"]*"/g)}`);
+  assert.equal(/href="[^"]*(?:<|&lt;)/.test(body), false, 'href 里出现标签 ⇒ 链接失效');
+  assert.ok(body.includes('<strong>要点</strong>'), '链接文字里的强调仍要生效');
+});
+
+test('T25: 裸 URL 不把转义实体吞进 href', () => {
+  const doc = DOC();
+  doc.sections['三'] += '\n\n他说"https://example.com/c"随后离开。';
+  const { html } = RENDER({ doc });
+  const body = bodyOf(html);
+  assert.ok(body.includes('href="https://example.com/c"'),
+    `href 吞进了实体: ${body.match(/href="[^"]*example\.com\/c[^"]*"/g)}`);
+  assert.ok(body.includes('&quot;随后离开'), '截断后的余下部分退回普通文本');
 });
