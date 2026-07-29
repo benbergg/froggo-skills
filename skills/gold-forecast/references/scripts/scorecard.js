@@ -7,8 +7,35 @@ const HORIZONS = ['short', 'medium', 'long'];
 const C9_WINDOW = 20;
 const C9_RATE_THRESHOLD = 0.6;
 
-const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
+// 非有限值(缺字段、null)被 a+b 当 0 吸收后,均值会静默偏低,而 NaN 序列化出来
+// 又与「样本不足」的正常 null 同形。故剔除并回传剔除数,由调用方显式上报。
+function meanWithDrops(xs) {
+  const good = xs.filter((x) => Number.isFinite(x));
+  return {
+    value: good.length ? good.reduce((a, b) => a + b, 0) / good.length : null,
+    dropped: xs.length - good.length,
+  };
+}
+const mean = (xs) => meanWithDrops(xs).value;
 const confidenceOf = (probUp) => Math.max(probUp, 1 - probUp);
+
+const BUCKET_COUNT = 10;   // [0.50,0.55) … [0.95,1.00],步长 0.05
+
+// 分箱一律下闭上开,索引必须用整数算:`lo += 0.05` 累加到第 3 档会漂成 0.6000000000000001,
+// 而边界打印出来仍是干净数字,0.60/0.65/0.70 这些模型最爱输出的整数概率会静默掉进下一档。
+// 末档上闭,否则 conf=1.0 整箱丢失。
+function bucketIndex(conf) {
+  const idx = Math.floor((Math.round(conf * 1e6) - 500000) / 50000);
+  return Math.min(Math.max(idx, 0), BUCKET_COUNT - 1);
+}
+
+function bucketRange(idx) {
+  return [(50 + idx * 5) / 100, (55 + idx * 5) / 100];
+}
+
+const cmp = (a, b) => (a < b ? -1 : a > b ? 1 : 0);
+const bySettlementOrder = (x, y) =>
+  cmp(x.h.settled_date || '', y.h.settled_date || '') || cmp(x.p.id || '', y.p.id || '');
 
 function settledOf(db, key) {
   return db.predictions
@@ -17,34 +44,50 @@ function settledOf(db, key) {
     .filter((x) => x.h && x.h.settled && x.h.score);
 }
 
+// 粗档由细箱索引派生,保证 by_confidence 与 calibration_buckets 对同一个 conf 归属一致
 function confidenceBucket(probUp) {
-  const conf = confidenceOf(probUp);
-  // 65% 用严格 >、55% 用 >=,和分箱下界对齐,避免边界值同时落入两档
-  if (conf > 0.65) return 'gt65';
-  if (conf >= 0.55) return '55to65';
+  const idx = bucketIndex(confidenceOf(probUp));
+  if (idx >= 3) return 'gt65';
+  if (idx >= 1) return '55to65';
   return 'lt55';
 }
 
-function group(rows, pick) {
+function group(rows, pick, label, issues) {
+  const brier = meanWithDrops(rows.map((r) => pick(r).brier));
+  const winkler = meanWithDrops(rows.map((r) => pick(r).winkler));
+  const dirs = rows.map((r) => pick(r).dir);
+  const goodDirs = dirs.filter((d) => typeof d === 'boolean');
+  report(issues, label, 'brier', brier.dropped);
+  report(issues, label, 'winkler', winkler.dropped);
+  report(issues, label, 'dir_correct', dirs.length - goodDirs.length);
   return {
     n: rows.length,
-    dir_rate: rows.length ? rows.filter((r) => pick(r).dir).length / rows.length : null,
-    brier: mean(rows.map((r) => pick(r).brier)),
-    winkler: mean(rows.map((r) => pick(r).winkler)),
+    dir_rate: goodDirs.length ? goodDirs.filter(Boolean).length / goodDirs.length : null,
+    brier: brier.value,
+    winkler: winkler.value,
   };
 }
 
-function horizonStats(rows) {
+function report(issues, group_, field, dropped) {
+  if (dropped > 0) issues.push({ group: group_, field, dropped });
+}
+
+function horizonStats(rows, issues = []) {
   if (rows.length < MIN_SAMPLE) {
     return { n: rows.length, insufficient_sample: true, naive: null, baseline: null, final: null,
              by_confidence: null, calibration_buckets: null, range_bias: null, current_streak: 0 };
   }
-  const f = group(rows, (r) => ({ dir: r.h.score.dir_correct, brier: r.h.score.brier, winkler: r.h.score.winkler }));
-  const b = group(rows, (r) => ({ dir: r.h.score.baseline_dir_correct, brier: r.h.score.baseline_brier, winkler: r.h.score.baseline_winkler }));
-  // naive 恒定猜涨,不产生区间,故 Winkler 无从计算。
+  const f = group(rows, (r) => ({ dir: r.h.score.dir_correct, brier: r.h.score.brier, winkler: r.h.score.winkler }), 'final', issues);
+  const b = group(rows, (r) => ({ dir: r.h.score.baseline_dir_correct, brier: r.h.score.baseline_brier, winkler: r.h.score.baseline_winkler }), 'baseline', issues);
+  // naive 不产生区间,故 Winkler 无从计算。dir_rate 必须与 naive_brier 同源:
+  // 用 actual > base_price(恒猜涨命中率)会让同一行的两个数字来自两个不同预测器。
+  const naivePOf = (r) => (Number.isFinite(r.h.score.naive_p) ? r.h.score.naive_p : 0.5);
+  report(issues, 'naive', 'naive_p', rows.filter((r) => !Number.isFinite(r.h.score.naive_p)).length);
+  const naiveBrier = meanWithDrops(rows.map((r) => r.h.score.naive_brier));
+  report(issues, 'naive', 'brier', naiveBrier.dropped);
   const n = { n: rows.length,
-              dir_rate: rows.filter((r) => r.h.actual > r.p.base_price).length / rows.length,
-              brier: mean(rows.map((r) => r.h.score.naive_brier)), winkler: null };
+              dir_rate: rows.filter((r) => (naivePOf(r) > 0.5) === (r.h.actual > r.p.base_price)).length / rows.length,
+              brier: naiveBrier.value, winkler: null };
 
   const by_confidence = {};
   for (const key of ['gt65', '55to65', 'lt55']) {
@@ -53,14 +96,18 @@ function horizonStats(rows) {
       dir_rate: sub.length ? sub.filter((r) => r.h.score.dir_correct).length / sub.length : null };
   }
 
-  const buckets = [];
-  for (let lo = 0.5; lo < 1.0; lo += 0.05) {
-    const hi = lo + 0.05;
-    const sub = rows.filter((r) => { const p = confidenceOf(r.h.final.prob_up); return p >= lo && p < hi; });
-    if (sub.length) buckets.push({ range: [Number(lo.toFixed(2)), Number(hi.toFixed(2))],
-      claimed: mean(sub.map((r) => confidenceOf(r.h.final.prob_up))),
-      actual: sub.filter((r) => r.h.score.dir_correct).length / sub.length, n: sub.length });
+  const byIndex = new Map();
+  for (const r of rows) {
+    const idx = bucketIndex(confidenceOf(r.h.final.prob_up));
+    if (!byIndex.has(idx)) byIndex.set(idx, []);
+    byIndex.get(idx).push(r);
   }
+  const buckets = [...byIndex.keys()].sort((x, y) => x - y).map((idx) => {
+    const sub = byIndex.get(idx);
+    return { range: bucketRange(idx),
+      claimed: mean(sub.map((r) => confidenceOf(r.h.final.prob_up))),
+      actual: sub.filter((r) => r.h.score.dir_correct).length / sub.length, n: sub.length };
+  });
 
   let streak = 0;
   for (let i = rows.length - 1; i >= 0; i--) {
@@ -116,7 +163,9 @@ function triggers(db, byHorizon, lessonsStat) {
   for (const key of HORIZONS) {
     const stat = byHorizon[key];
     if (stat.insufficient_sample) continue; // 样本不足的周期跳过判定,避免误触发
-    const tail = settledOf(db, key).slice(-3);
+    // 必须按结算时序取尾,不能按数组下标:long 天然比 short 晚 19 个交易日到达,
+    // 乱序 append 会让「最近连续 3 期」指向最旧的 3 条。
+    const tail = settledOf(db, key).sort(bySettlementOrder).slice(-3);
     if (tail.length === 3 && tail.every((r) => r.h.score.brier > r.h.score.baseline_brier)) {
       t.push({ kind: 'final_worse_than_baseline', horizon: key, ids: tail.map((r) => r.p.id) });
     }
@@ -137,7 +186,12 @@ function triggers(db, byHorizon, lessonsStat) {
 
 function buildScorecard(db, { lessons = [] } = {}) {
   const by_horizon = {};
-  for (const key of HORIZONS) by_horizon[key] = horizonStats(settledOf(db, key));
+  const data_quality = [];
+  for (const key of HORIZONS) {
+    const issues = [];
+    by_horizon[key] = horizonStats(settledOf(db, key), issues);
+    for (const it of issues) data_quality.push({ horizon: key, ...it });
+  }
 
   const all = db.predictions.flatMap((p) => HORIZONS.map((k) => p.horizons[k]).filter(Boolean));
   const coverage = {
@@ -159,6 +213,8 @@ function buildScorecard(db, { lessons = [] } = {}) {
   return {
     generated_at: new Date().toISOString(),
     coverage, by_horizon, by_model,
+    // 非有限值被剔除的显式回执;放在 by_horizon 之外,免得计数被 C4/C7 当成可引用数值
+    data_quality,
     excluded: { degraded: db.predictions.filter((p) => p.degraded).length },
     review_triggers: triggers(db, by_horizon, lessonsStat),
     lessons: lessonsStat,
@@ -179,7 +235,10 @@ function main() {
   const sc = buildScorecard(db, { lessons });
   atomicWriteJSON(args.out, sc);
   console.error(`scorecard: short n=${sc.by_horizon.short.n}, 触发器 ${sc.review_triggers.length} 条`);
+  for (const q of sc.data_quality) {
+    console.error(`警告: ${q.horizon}.${q.group} 的 ${q.field} 有 ${q.dropped} 条非法值,已剔除后再取均值`);
+  }
 }
 
 if (require.main === module) main();
-module.exports = { buildScorecard, horizonStats, lessonStats };
+module.exports = { buildScorecard, horizonStats, lessonStats, bucketIndex, confidenceBucket };
