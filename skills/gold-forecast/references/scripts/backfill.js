@@ -55,6 +55,11 @@ async function runBackfill({ store, plan, fetchers = DEFAULT_FETCHERS, fredApiKe
       const r = await fetcher(item, { fredApiKey, cacheDir });
       if (!r || r.status !== 'ok') throw new Error((r && r.error) || `拉取失败(status=${r && r.status})`);
       const { inserted, updated } = store.upsert(item.series, r.records);
+      // cot-history 逐年容错,部分失败仍 status:'ok' 靠 failed_years 上报;
+      // 不能只看 status,否则残缺数据会被误标记成完整回填、缺口永久跳过。
+      if (r.failed_years && r.failed_years.length) {
+        throw new Error(`部分年份采集失败(已写入其余年份数据): ${r.failed_years.join(',')}`);
+      }
       // setMeta 是浅合并,须先取出 series 整体再回写,否则会冲掉其他序列已记录的进度。
       const seriesMeta = store.meta().series || {};
       store.setMeta({
@@ -83,11 +88,18 @@ async function main() {
     process.exit(1);
     return;
   }
+  const fullPlan = buildPlan({ since: args.since, until: args.until });
+  if (args.only && !fullPlan.some((p) => p.series === args.only)) {
+    // 拼错序列名不该悄悄产出 0/0——那看起来像"跑完了",实际什么都没做。
+    console.error(`未知序列名: ${args.only}；合法序列名: ${fullPlan.map((p) => p.series).join(', ')}`);
+    process.exit(1);
+    return;
+  }
   const historyDir = path.resolve(args.history);
   // 年度 zip 缓存放 history 旁边,与建模用的 history/ 目录分开,避免被当作序列数据扫入。
   const cacheDir = path.join(path.dirname(historyDir), 'cache', 'cot');
   const store = new HistoryStore(historyDir);
-  const plan = applyOnly(buildPlan({ since: args.since, until: args.until }), args.only);
+  const plan = applyOnly(fullPlan, args.only);
 
   const { ok, failed } = await runBackfill({ store, plan, cacheDir, log: (m) => console.error(m) });
   console.error(`回填完成: 成功 ${ok.length}, 失败 ${failed.length}`);

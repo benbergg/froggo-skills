@@ -122,3 +122,40 @@ test('T10: FRED_API_KEY 缺失时该序列记为失败而不是崩溃', async ()
   assert.equal(r.status, 'missing');
   assert.ok(r.error, '应说明缺 key 的原因,而不是抛异常让上层崩溃');
 });
+
+test('T11: cot-history 部分年份失败时不得静默标记为完整回填', async () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const plan = B.buildPlan({ since: '2021-07-01', until: '2026-07-28' });
+  // sources/cftc-cot-history.js 的真实契约:逐年容错,部分成功仍 status:'ok',
+  // 失败年份靠 failed_years 上报——调用方必须自己识别这个信号,不能只看 status。
+  const partialCot = async () => ({
+    status: 'ok',
+    records: [stubRecord('cftc_gold', '2021-07-02')],
+    failed_years: [2023],
+  });
+  const fetchers = { ...OK_FETCHERS, 'cot-history': partialCot };
+  const logs = [];
+  const { failed } = await B.runBackfill({ store, plan, fetchers, log: (m) => logs.push(m) });
+
+  const cotFailure = failed.find((f) => f.series === 'cftc_gold');
+  assert.ok(cotFailure, 'cot-history 部分年份失败应计入 failed,不能悄悄算成功');
+  assert.ok(cotFailure.error.includes('2023'), `失败原因应带上缺失年份: ${cotFailure.error}`);
+  assert.ok(logs.some((l) => l.includes('2023')), 'failed_years 必须出现在日志里,不能被静默吞掉');
+
+  assert.equal((store.meta().series || {}).cftc_gold, undefined, '部分失败不得标记为完整覆盖,否则续跑会永久跳过缺口');
+  const todo2 = B.pendingSeries(store, plan);
+  assert.ok(todo2.some((p) => p.series === 'cftc_gold'), '部分失败后下一次续跑必须仍把该序列列为待办');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T12: --only 指定不存在的序列名时报错退出,不静默产出 0/0', () => {
+  const r = runCli({
+    script: 'backfill.js',
+    args: ['--history', 'hist', '--since', '2021-07-01', '--until', '2026-07-28', '--only', 'not_a_series'],
+  });
+  assert.notEqual(r.code, 0, '拼错序列名不该假装跑完了');
+  assert.ok(r.stderr.includes('not_a_series'));
+  assert.ok(r.stderr.includes('lbma_pm_usd'), '应列出合法序列名帮助定位拼写错误');
+  r.cleanup();
+});
