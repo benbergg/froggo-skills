@@ -63,18 +63,36 @@ function deriveContextTags(facts, { sigmaPctile } = {}) {
   return tags;
 }
 
-// 先写 history 再写 facts;facts 失败即按主键回滚,避免建模源与快照分叉。
+// 先写 history 再写 facts;facts 失败(或 upsert 半途失败)即回滚,避免建模源与快照分叉。
+// 回滚区分「新插入」与「更新已有 key」:新插入直接 remove,更新的 key 用写入前快照的
+// 旧值 upsert 回去——否则同一天重跑撞见已存在的 key(如 FRED 修订落在同一 vintage),
+// 回滚会把整条历史记录抹掉,而不是撤销本次改动。upsert 循环本身也纳入 try,
+// 防止第 2 个 series 抛错时第 1 个已落盘的记录永不回滚。
 function writeWithRollback({ historyDir, factsPath, appended, facts }) {
   const store = new HistoryStore(historyDir);
-  const written = [];
-  for (const [series, records] of Object.entries(appended)) {
-    store.upsert(series, records);
-    written.push([series, records.map((r) => ({ observed_date: r.observed_date, vintage: r.vintage }))]);
-  }
+  const applied = [];
   try {
+    for (const [series, records] of Object.entries(appended)) {
+      // 显式读全部物理行(不按 availableOn 过滤)——这里要的是"此刻磁盘上有什么"用于
+      // 回滚快照,与"按 today 截断避免前视"的读取语义无关,不能被要求 availableOn 的签名卡住。
+      const beforeByKey = new Map(
+        store.read(series, { availableOn: null }).map((r) => [`${r.observed_date}|${r.vintage}`, r]));
+      const insertedKeys = [];
+      const previousRecords = [];
+      for (const rec of records) {
+        const k = `${rec.observed_date}|${rec.vintage}`;
+        if (beforeByKey.has(k)) previousRecords.push(beforeByKey.get(k));
+        else insertedKeys.push({ observed_date: rec.observed_date, vintage: rec.vintage });
+      }
+      store.upsert(series, records);
+      applied.push({ series, insertedKeys, previousRecords });
+    }
     atomicWriteJSON(factsPath, facts);
   } catch (e) {
-    for (const [series, keys] of written) store.remove(series, keys);
+    for (const { series, insertedKeys, previousRecords } of applied) {
+      if (insertedKeys.length) store.remove(series, insertedKeys);
+      if (previousRecords.length) store.upsert(series, previousRecords);
+    }
     throw e;
   }
 }
@@ -127,7 +145,7 @@ function readFixtureText(fixtureDir, name) {
   try { return fs.readFileSync(path.join(fixtureDir, name), 'utf-8'); } catch { return null; }
 }
 
-async function loadLbma({ fixtureDir }) {
+async function loadLbma({ fixtureDir, fetchImpl }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, 'lbma.raw.json');
     if (!raw) return { records: [], status: 'missing' };
@@ -136,10 +154,15 @@ async function loadLbma({ fixtureDir }) {
       return { records, status: records.length ? 'ok' : 'missing' };
     } catch (e) { console.error(`LBMA 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchLbma({}); } catch (e) { console.error(`LBMA 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
+  try {
+    const r = await fetchLbma(fetchImpl ? { fetchImpl } : {});
+    // fetchLbma 内部不吞异常,但「200 且结构合法却空」这条不抛错,靠 status 才看得见。
+    if (r.status !== 'ok') console.error(`LBMA 采集失败: ${r.error || '响应为空或结构异常'}`);
+    return r;
+  } catch (e) { console.error(`LBMA 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
-async function loadFred({ fixtureDir, id, today, apiKey }) {
+async function loadFred({ fixtureDir, id, today, apiKey, fetchImpl }) {
   const series = `fred_${id}`;
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, `fred-${id}.raw.json`);
@@ -149,11 +172,16 @@ async function loadFred({ fixtureDir, id, today, apiKey }) {
       return { records, status: records.length ? 'ok' : 'missing' };
     } catch (e) { console.error(`FRED ${id} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchFred({ mode: 'default', until: today }, { seriesId: id, series, apiKey }); }
-  catch (e) { console.error(`FRED ${id} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
+  try {
+    const r = await fetchFred({ mode: 'default', until: today },
+      { seriesId: id, series, apiKey, ...(fetchImpl ? { fetchImpl } : {}) });
+    // fetchFred 内部吞异常从不外抛,诊断只能靠 status/error 字段浮出来,否则本 catch 是死代码。
+    if (r.status !== 'ok') console.error(`FRED ${id} 采集失败: ${r.error || '响应为空或结构异常'}`);
+    return r;
+  } catch (e) { console.error(`FRED ${id} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
-async function loadEastmoney({ fixtureDir, key, secid, suffix, today }) {
+async function loadEastmoney({ fixtureDir, key, secid, suffix, today, fetchImpl }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, `eastmoney-${suffix}.raw.json`);
     if (!raw) return { records: [], status: 'missing' };
@@ -162,11 +190,15 @@ async function loadEastmoney({ fixtureDir, key, secid, suffix, today }) {
       return { records, status: records.length ? 'ok' : 'missing' };
     } catch (e) { console.error(`东财 ${suffix} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchEastmoney({ mode: 'incremental', until: today }, { secid, series: key }); }
-  catch (e) { console.error(`东财 ${suffix} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
+  try {
+    const r = await fetchEastmoney({ mode: 'incremental', until: today },
+      { secid, series: key, ...(fetchImpl ? { fetchImpl } : {}) });
+    if (r.status !== 'ok') console.error(`东财 ${suffix} 采集失败: ${r.error || '响应为空或结构异常'}`);
+    return r;
+  } catch (e) { console.error(`东财 ${suffix} 采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
-async function loadCftcCurrent({ fixtureDir }) {
+async function loadCftcCurrent({ fixtureDir, fetchImpl }) {
   if (fixtureDir) {
     const text = readFixtureText(fixtureDir, 'cftc-current.raw.txt');
     if (!text) return { records: [], status: 'missing' };
@@ -176,10 +208,14 @@ async function loadCftcCurrent({ fixtureDir }) {
       return { records: [{ series: 'cftc_gold', observed_date: r.observed_date, available_date: avail, vintage: avail, value: r }], status: 'ok' };
     } catch (e) { console.error(`CFTC 当期解析失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchCftcCurrent({}, {}); } catch (e) { console.error(`CFTC 当期采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
+  try {
+    const r = await fetchCftcCurrent({}, fetchImpl ? { fetchImpl } : {});
+    if (r.status !== 'ok') console.error(`CFTC 当期采集失败: ${r.error || '响应为空或结构异常'}`);
+    return r;
+  } catch (e) { console.error(`CFTC 当期采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
-async function loadCalendar({ fixtureDir, releaseIds, today, apiKey }) {
+async function loadCalendar({ fixtureDir, releaseIds, today, apiKey, fetchImpl }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, 'fred-releases.json');
     if (!raw) return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' };
@@ -188,11 +224,17 @@ async function loadCalendar({ fixtureDir, releaseIds, today, apiKey }) {
       return { records: raw, status: 'ok' };
     } catch (e) { console.error(`FRED 发布日历采集失败: ${e.message}`); return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' }; }
   }
-  try { return await fetchReleases({ until: today }, { releaseIds, apiKey }); }
-  catch (e) { console.error(`FRED 发布日历采集失败: ${e.message}`); return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' }; }
+  try {
+    const r = await fetchReleases({ until: today }, { releaseIds, apiKey, ...(fetchImpl ? { fetchImpl } : {}) });
+    // nfp:[] 与"这周确实没有发布"同形,必须把逐 release 失败原因打到 stderr(A7)。
+    if (r.errors && Object.keys(r.errors).length) {
+      for (const [name, msg] of Object.entries(r.errors)) console.error(`FRED 发布日历 ${name} 采集失败: ${msg}`);
+    }
+    return r;
+  } catch (e) { console.error(`FRED 发布日历采集失败: ${e.message}`); return { records: { cpi: [], nfp: [], pce: [] }, status: 'missing' }; }
 }
 
-async function loadNews({ fixtureDir }) {
+async function loadNews({ fixtureDir, spawnImpl }) {
   if (fixtureDir) {
     const raw = readFixtureJSON(fixtureDir, 'news.json');
     if (!raw) return { records: [], status: 'missing' };
@@ -200,25 +242,37 @@ async function loadNews({ fixtureDir }) {
       return { records: normalizeNews(raw), status: 'ok' };
     } catch (e) { console.error(`新闻采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
   }
-  try { return await fetchNews({}); } catch (e) { console.error(`新闻采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
+  try {
+    const r = await fetchNews(spawnImpl ? { spawnImpl } : {});
+    if (r.status !== 'ok') console.error(`新闻采集失败: ${r.error || '响应为空或结构异常'}`);
+    return r;
+  } catch (e) { console.error(`新闻采集失败: ${e.message}`); return { records: [], status: 'missing' }; }
 }
 
 // 持仓分位只从 history/ 累积算,不足时一次性拉 zip 回补(设计 5.7.3)。
-async function computeCftcSpecPctile({ store, fixtureDir, currentRecord, today }) {
-  const existing = store.read('cftc_gold');
+// fetchCftcHistoryImpl 可注入,测试借此模拟部分年份失败,不必发真实请求。
+async function computeCftcSpecPctile({ store, fixtureDir, currentRecord, today, fetchCftcHistoryImpl = fetchCftcHistory }) {
+  // availableOn: today 显式截断——分位数用到 today 之后才可得的行就是前视偏差。
+  const existing = store.read('cftc_gold', { availableOn: today });
   let backfill = [];
+  let failedYears = [];
   if (!fixtureDir && existing.length < CFTC_HISTORY_MIN_ROWS) {
     const since = `${Number(today.slice(0, 4)) - CFTC_HISTORY_YEARS}-01-01`;
     const cacheDir = path.join(store.root, '.cftc-year-cache');
-    try { backfill = (await fetchCftcHistory({ since, until: today }, { cacheDir })).records; }
-    catch (e) { console.error(`CFTC 历史回补失败: ${e.message}`); backfill = []; }
+    try {
+      const r = await fetchCftcHistoryImpl({ since, until: today }, { cacheDir });
+      backfill = r.records;
+      failedYears = r.failed_years || [];
+      // failed_years 若被静默丢弃,分位数就在"样本不足"和"某几年悄悄取不到"之间失去区分(A6)。
+      if (failedYears.length) console.error(`CFTC 历史回补部分年份失败: ${failedYears.join(', ')}`);
+    } catch (e) { console.error(`CFTC 历史回补失败: ${e.message}`); backfill = []; }
   }
   const merged = mergeRecords(mergeRecords(existing, backfill), currentRecord ? [currentRecord] : []);
   const netSpecSeries = merged.map((r) => r.value && r.value.net_spec).filter((v) => typeof v === 'number');
   const current = currentRecord && currentRecord.value ? currentRecord.value.net_spec : undefined;
   // 样本太少时分位必然贴 0/1(单点即 100 分位),没有统计意义。
-  if (netSpecSeries.length < CFTC_PCTILE_MIN_SAMPLES) return { pctile: undefined, backfill };
-  return { pctile: percentileRank(netSpecSeries, current), backfill };
+  if (netSpecSeries.length < CFTC_PCTILE_MIN_SAMPLES) return { pctile: undefined, backfill, failedYears };
+  return { pctile: percentileRank(netSpecSeries, current), backfill, failedYears };
 }
 
 function parseArgs(argv) {
@@ -306,12 +360,15 @@ async function main() {
   // —— Phase B:通过闸门后才允许接触 HistoryStore ——
 
   const store = new HistoryStore(historyDir);
-  const existingLbma = store.read('lbma_pm_usd');
+  // availableOn: today 显式截断——prevSession/sigmaPctile 算的是"截至 today 能看到什么",
+  // 读全部物理行会把补跑历史日期时尚不可得的未来行也纳入,等于前视。
+  const existingLbma = store.read('lbma_pm_usd', { availableOn: today });
   const mergedLbma = mergeRecords(existingLbma, lbma.records);
   const prevSession = computePrevSession(mergedLbma, today);
   const sigmaPctile = computeSigmaPctile(mergedLbma);
 
-  const { pctile: specPctile, backfill } = await computeCftcSpecPctile({ store, fixtureDir, currentRecord: cotLatest, today });
+  const { pctile: specPctile, backfill, failedYears: cftcHistoryFailedYears } =
+    await computeCftcSpecPctile({ store, fixtureDir, currentRecord: cotLatest, today });
   if (backfill.length) appended.cftc_gold = mergeRecords(cot.records, backfill);
   else if (cot.records.length) appended.cftc_gold = cot.records;
   statusByField['cftc.spec_pctile'] = typeof specPctile === 'number' ? 'ok' : 'missing';
@@ -327,8 +384,9 @@ async function main() {
       net_comm: cotLatest ? cotLatest.value.net_comm : null,
       spec_pctile: typeof specPctile === 'number' ? specPctile : null,
       available_date: cotLatest ? cotLatest.available_date : null,
+      history_failed_years: cftcHistoryFailedYears,
     },
-    calendar: { next_releases: cal.records },
+    calendar: { next_releases: cal.records, failed_releases: Object.keys(cal.errors || {}) },
   };
   const contextTags = deriveContextTags(factsCore, { sigmaPctile });
 
@@ -364,4 +422,8 @@ async function main() {
 
 if (require.main === module) main().catch((e) => { console.error(e.message); process.exit(1); });
 
-module.exports = { classify, deriveContextTags, writeWithRollback };
+module.exports = {
+  classify, deriveContextTags, writeWithRollback,
+  loadLbma, loadFred, loadEastmoney, loadCftcCurrent, loadCalendar, loadNews,
+  computeCftcSpecPctile,
+};

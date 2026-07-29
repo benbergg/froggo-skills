@@ -20,18 +20,25 @@ function buildUrl(seriesId, range, apiKey) {
   return `${BASE}?${p}`;
 }
 
-async function fetchSeries(range, { seriesId, series, apiKey, timeoutMs = 30_000 } = {}) {
+// fetchImpl 可注入,测试借此模拟 200-空数组/结构畸形/HTTP 失败,不必发真实请求。
+async function fetchSeries(range, { seriesId, series, apiKey, timeoutMs = 30_000, fetchImpl = fetch } = {}) {
   const url = buildUrl(seriesId, range, apiKey);
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(url, { signal: ctrl.signal });
-    if (!res.ok) return { records: [], status: 'missing', provenance: { url: BASE, fetched_at: new Date().toISOString() } };
+    const res = await fetchImpl(url, { signal: ctrl.signal });
+    if (!res.ok) {
+      return { records: [], status: 'missing', error: `HTTP ${res.status}`,
+               provenance: { url: BASE, fetched_at: new Date().toISOString() } };
+    }
     const raw = await res.json();
-    return { records: parseObservations(raw, series, { availableAt: range.until }), status: 'ok',
+    const records = parseObservations(raw, series, { availableAt: range.until });
+    // 200 但空数组/结构变了不等于「今天确实没有新数据」,status 必须跟着 records 走(与 fixture 分支同规则)。
+    return { records, status: records.length ? 'ok' : 'missing',
              provenance: { url: BASE, fetched_at: new Date().toISOString() } };
-  } catch {
-    return { records: [], status: 'missing', provenance: { url: BASE, fetched_at: new Date().toISOString() } };
+  } catch (e) {
+    return { records: [], status: 'missing', error: e.message,
+             provenance: { url: BASE, fetched_at: new Date().toISOString() } };
   } finally { clearTimeout(timer); }
 }
 

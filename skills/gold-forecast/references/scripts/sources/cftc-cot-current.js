@@ -36,12 +36,16 @@ function cotAvailableDate(observedDate) {
   return d.toISOString().slice(0, 10);
 }
 
-async function fetchSeries(range, { timeoutMs = 30_000 } = {}) {
+// fetchImpl 可注入,测试借此模拟 HTTP 失败/网络异常,不必发真实请求。
+async function fetchSeries(range, { timeoutMs = 30_000, fetchImpl = fetch } = {}) {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
   try {
-    const res = await fetch(URL_CUR, { headers: { 'User-Agent': UA }, signal: ctrl.signal });
-    if (!res.ok) return { records: [], status: 'missing', provenance: { url: URL_CUR, fetched_at: new Date().toISOString() } };
+    const res = await fetchImpl(URL_CUR, { headers: { 'User-Agent': UA }, signal: ctrl.signal });
+    if (!res.ok) {
+      return { records: [], status: 'missing', error: `HTTP ${res.status}`,
+               provenance: { url: URL_CUR, fetched_at: new Date().toISOString() } };
+    }
     const r = parseCot(await res.text());
     return { records: [{ series: 'cftc_gold', observed_date: r.observed_date,
                          available_date: cotAvailableDate(r.observed_date),

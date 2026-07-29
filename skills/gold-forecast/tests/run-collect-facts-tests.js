@@ -100,6 +100,55 @@ test('T11: 正常路径下 history 与 facts 都写成功', () => {
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
+// —— A3:回滚"更新已有 key"必须恢复旧值,不能整条删除 ——
+
+test('T11b(A3): 同一天重跑撞见已存在的 key,facts 写失败时回滚恢复写入前的旧值', () => {
+  const tmp = freshTmp();
+  const hist = path.join(tmp, 'h');
+  // 第一次成功写入 value:3400
+  C.writeWithRollback({
+    historyDir: hist, factsPath: path.join(tmp, 'facts1.json'),
+    appended: { lbma_pm_usd: [{ observed_date: '2026-07-29', available_date: '2026-07-29', vintage: '2026-07-29', value: 3400 }] },
+    facts: { x: 1 },
+  });
+  // 第二次重跑同一 key 改成 3500,但 facts 写入被迫失败
+  const bad = path.join(tmp, 'nodir', 'x', 'facts2.json');
+  fs.mkdirSync(path.dirname(path.dirname(bad)), { recursive: true });
+  fs.writeFileSync(path.dirname(bad), '');
+  assert.throws(() => C.writeWithRollback({
+    historyDir: hist, factsPath: bad,
+    appended: { lbma_pm_usd: [{ observed_date: '2026-07-29', available_date: '2026-07-29', vintage: '2026-07-29', value: 3500 }] },
+    facts: { x: 2 },
+  }));
+  const rows = fs.readFileSync(path.join(hist, 'lbma_pm_usd.jsonl'), 'utf-8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
+  assert.equal(rows.length, 1, '回滚不得把已存在的记录整条删除');
+  assert.equal(rows[0].value, 3400, '回滚必须恢复写入前的旧值,而不是留下本次半写的新值');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// —— A4:upsert 循环体本身失败也要回滚已写入的其他 series ——
+
+test('T11c(A4): 第 2 个 series 的 upsert 失败时,第 1 个已落盘的记录也会被回滚', () => {
+  const tmp = freshTmp();
+  const hist = path.join(tmp, 'h');
+  fs.mkdirSync(hist, { recursive: true });
+  // series_b.jsonl 预先占位成目录,迫使它的 upsert 内部写入必然抛错
+  fs.mkdirSync(path.join(hist, 'series_b.jsonl'), { recursive: true });
+  assert.throws(() => C.writeWithRollback({
+    historyDir: hist, factsPath: path.join(tmp, 'facts.json'),
+    appended: {
+      series_a: [{ observed_date: '2026-07-29', available_date: '2026-07-29', vintage: '2026-07-29', value: 1 }],
+      series_b: [{ observed_date: '2026-07-29', available_date: '2026-07-29', vintage: '2026-07-29', value: 2 }],
+    },
+    facts: { x: 1 },
+  }));
+  const fa = path.join(hist, 'series_a.jsonl');
+  const rowsA = fs.existsSync(fa) ? fs.readFileSync(fa, 'utf-8').split('\n').filter(Boolean) : [];
+  assert.equal(rowsA.length, 0, 'series_a 已落盘的记录必须回滚,不能因 series_b 失败留下半截产物');
+  assert.equal(fs.existsSync(path.join(tmp, 'facts.json')), false, 'facts.json 不应被写出');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
 // —— CLI 主体:--fixture-dir 模式 ——
 // 约定见 collect-facts.js 顶部注释:lbma.raw.json / fred-<ID>.raw.json /
 // eastmoney-<suffix>.raw.json / cftc-current.raw.txt / fred-releases.json / news.json
@@ -164,4 +213,72 @@ test('T14: LBMA fixture 数据格式错误时输出诊断日志', () => {
   assert.ok(r.stderr.includes('LBMA 采集失败'), `stderr 应包含 LBMA 失败消息; actual: ${r.stderr}`);
   r.cleanup();
   fs.rmSync(fixtureDir, { recursive: true, force: true });
+});
+
+// —— A2:load* 的诊断不能是死代码——源模块内部吞异常时,诊断必须靠 status/error 字段浮出来 ——
+
+test('T15(A2): loadFred 对"200 但空数组"给出诊断,而不是静默返回 ok', async () => {
+  const logs = [];
+  const orig = console.error;
+  console.error = (msg) => logs.push(msg);
+  try {
+    const fetchImpl = async () => ({ ok: true, json: async () => ({ observations: [] }) });
+    const r = await C.loadFred({ fixtureDir: null, id: 'DFII10', today: '2026-07-29', apiKey: 'x', fetchImpl });
+    assert.equal(r.status, 'missing');
+    assert.ok(logs.some((m) => m.includes('FRED DFII10 采集失败')), `应输出诊断,实际: ${JSON.stringify(logs)}`);
+  } finally { console.error = orig; }
+});
+
+test('T16(A2): loadFred 对 HTTP 403 给出带状态码的诊断(源从不外抛,靠 r.error 浮出原因)', async () => {
+  const logs = [];
+  const orig = console.error;
+  console.error = (msg) => logs.push(msg);
+  try {
+    const fetchImpl = async () => ({ ok: false, status: 403 });
+    const r = await C.loadFred({ fixtureDir: null, id: 'DFII10', today: '2026-07-29', apiKey: 'x', fetchImpl });
+    assert.equal(r.status, 'missing');
+    assert.ok(logs.some((m) => m.includes('HTTP 403')), `诊断应带失败原因,实际: ${JSON.stringify(logs)}`);
+  } finally { console.error = orig; }
+});
+
+test('T17(A2): loadCalendar 逐 release 失败原因分别打诊断,不是笼统一条', async () => {
+  const logs = [];
+  const orig = console.error;
+  console.error = (msg) => logs.push(msg);
+  try {
+    const fetchImpl = async (url) => {
+      if (url.includes('release_id=50')) return { ok: false, status: 403 };
+      return { ok: true, json: async () => ({ release_dates: [{ date: '2026-08-01' }] }) };
+    };
+    const r = await C.loadCalendar({ fixtureDir: null, releaseIds: { cpi: 10, nfp: 50 }, today: '2026-07-29', apiKey: 'x', fetchImpl });
+    assert.equal(r.status, 'ok', 'cpi 成功,整体仍是 ok');
+    assert.deepEqual(r.records.nfp, []);
+    assert.ok(logs.some((m) => m.includes('nfp') && m.includes('403')), `应有 nfp 专属诊断,实际: ${JSON.stringify(logs)}`);
+  } finally { console.error = orig; }
+});
+
+// —— A6:CFTC 历史回补部分年份失败不得被静默丢弃 ——
+
+test('T18(A6): computeCftcSpecPctile 把历史回补部分年份失败透传到 failedYears', async () => {
+  const { HistoryStore } = require('../references/scripts/lib/history-store');
+  const tmp = freshTmp();
+  const store = new HistoryStore(path.join(tmp, 'h'));
+  const fetchCftcHistoryImpl = async () => ({ records: [], failed_years: [2023, 2024], status: 'missing' });
+  const r = await C.computeCftcSpecPctile({
+    store, fixtureDir: null, currentRecord: null, today: '2026-07-29', fetchCftcHistoryImpl,
+  });
+  assert.deepEqual(r.failedYears, [2023, 2024], 'failed_years 不得被 collect-facts 丢弃(A6)');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T19(A6): 历史回补全部成功时 failedYears 为空数组', async () => {
+  const { HistoryStore } = require('../references/scripts/lib/history-store');
+  const tmp = freshTmp();
+  const store = new HistoryStore(path.join(tmp, 'h'));
+  const fetchCftcHistoryImpl = async () => ({ records: [], failed_years: [], status: 'missing' });
+  const r = await C.computeCftcSpecPctile({
+    store, fixtureDir: null, currentRecord: null, today: '2026-07-29', fetchCftcHistoryImpl,
+  });
+  assert.deepEqual(r.failedYears, []);
+  fs.rmSync(tmp, { recursive: true, force: true });
 });

@@ -18,11 +18,13 @@ function fetchNews({ query = 'gold price XAU', timeoutMs = 45_000, spawnImpl = s
   const provenance = { url: SOURCE_ID, fetched_at: new Date().toISOString() };
   const r = spawnImpl(OPENCLAW, ['infer', 'web', 'search', '--json', '--query', query],
     { encoding: 'utf-8', timeout: timeoutMs, maxBuffer: 16 << 20 });
-  if (r.status !== 0) return { records: [], status: 'missing', provenance };
+  if (r.status !== 0) return { records: [], status: 'missing', error: `exit ${r.status}`, provenance };
   try {
     const j = JSON.parse(r.stdout);
-    return { records: normalize(j.results || j.outputs || []), status: 'ok', provenance };
-  } catch { return { records: [], status: 'missing', provenance }; }
+    const records = normalize(j.results || j.outputs || []);
+    // 空结果数组时不得仍标 'ok',否则与「今天确实没有新闻」以外的失败(如响应结构变了)无法区分。
+    return { records, status: records.length ? 'ok' : 'missing', provenance };
+  } catch (e) { return { records: [], status: 'missing', error: e.message, provenance }; }
 }
 
 module.exports = { normalize, fetchNews };

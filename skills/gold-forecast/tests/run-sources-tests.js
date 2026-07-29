@@ -1,5 +1,6 @@
 'use strict';
 const fs = require('node:fs');
+const path = require('node:path');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { FIXTURE, freshTmp } = require('./helpers');
@@ -9,6 +10,7 @@ const cot = require('../references/scripts/sources/cftc-cot-current');
 const cotHistory = require('../references/scripts/sources/cftc-cot-history');
 const fredDates = require('../references/scripts/sources/fred-release-dates');
 const news = require('../references/scripts/sources/news-search');
+const lbma = require('../references/scripts/sources/lbma-gold-pm');
 const GOLD = JSON.parse(fs.readFileSync(require('node:path').join(__dirname, '..', 'references', 'instruments', 'gold.json'), 'utf-8'));
 const SCHEMA = JSON.parse(fs.readFileSync(require('node:path').join(__dirname, '..', 'references', 'schemas', 'facts.schema.json'), 'utf-8'));
 
@@ -189,4 +191,108 @@ test('T20: news-search normalize 丢弃正文字段,只保留标题/链接/时�
   assert.equal(out.length, 1);
   assert.deepEqual(Object.keys(out[0]).sort(), ['published_at', 'source', 'title', 'url']);
   assert.equal(out[0].body, undefined);
+});
+
+// —— A1:200 但空数组/结构变了不得仍标 'ok'(四个适配器同型修复) ——
+
+test('T21: fred-series 实时抓取 200 但 observations 为空数组时 status 为 missing', async () => {
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ observations: [] }) });
+  const r = await fred.fetchSeries({ mode: 'default', until: '2026-07-29' },
+    { seriesId: 'DFII10', series: 'fred_DFII10', apiKey: 'secret-key', fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.deepEqual(r.records, []);
+});
+
+test('T22: fred-series HTTP 非 200 时 error 字段带状态码,且 provenance.url 不含 query(不泄漏 key)', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 403 });
+  const r = await fred.fetchSeries({ mode: 'default', until: '2026-07-29' },
+    { seriesId: 'DFII10', series: 'fred_DFII10', apiKey: 'secret-key', fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.equal(r.error, 'HTTP 403');
+  assert.ok(!r.provenance.url.includes('secret-key'), 'provenance.url 不得携带 query,更不能泄漏 key');
+  assert.ok(!r.provenance.url.includes('?'), 'provenance.url 必须只记不含 query 的 BASE');
+});
+
+test('T23: fred-series 抓取抛异常时 error 为 e.message 且不含 apiKey', async () => {
+  const fetchImpl = async () => { throw new Error('network timeout'); };
+  const r = await fred.fetchSeries({ mode: 'default', until: '2026-07-29' },
+    { seriesId: 'DFII10', series: 'fred_DFII10', apiKey: 'secret-key', fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.equal(r.error, 'network timeout');
+});
+
+test('T24: 东财 K 线实时抓取 200 但 data.klines 缺失时 status 为 missing', async () => {
+  const fetchImpl = async () => ({ ok: true, json: async () => ({ rc: 0, data: {} }) });
+  const r = await em.fetchSeries({ mode: 'incremental', until: '2026-07-29' },
+    { secid: '100.UDI', series: 'eastmoney_UDI', fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.deepEqual(r.records, []);
+});
+
+test('T25: 东财 K 线 HTTP 非 200 时记录 error', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 500 });
+  const r = await em.fetchSeries({ mode: 'incremental', until: '2026-07-29' },
+    { secid: '100.UDI', series: 'eastmoney_UDI', fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.equal(r.error, 'HTTP 500');
+});
+
+test('T26: LBMA 实时抓取 200 但空数组时 status 为 missing', async () => {
+  const fetchImpl = async () => ({ ok: true, json: async () => [] });
+  const r = await lbma.fetchSeries({ fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.deepEqual(r.records, []);
+});
+
+test('T27: news-search 有效 JSON 但 results 为空数组时 status 为 missing', () => {
+  const okEmptyImpl = () => ({ status: 0, stdout: JSON.stringify({ results: [] }) });
+  const r = news.fetchNews({ spawnImpl: okEmptyImpl });
+  assert.equal(r.status, 'missing');
+  assert.deepEqual(r.records, []);
+});
+
+// —— A5:cot-history 真实 fetchYear 对 HTTP 失败/解压异常必须抛错,不能静默返回 [] ——
+
+test('T28: cot-history 真实 fetchYear 对 HTTP 失败抛错(而非返回空数组)', async () => {
+  const fetchImpl = async () => ({ ok: false, status: 503 });
+  await assert.rejects(
+    cotHistory.fetchYear(2099, freshTmp(), { fetchImpl }),
+    /HTTP 503/,
+  );
+});
+
+test('T29: cot-history 真实 fetchYear 解压后找不到 txt 时抛错(而非返回空数组)', async () => {
+  // 预置一个非法 zip,跳过网络路径直接进入解压分支;真实 unzip 对非法内容会失败,readdir 拿不到 txt。
+  const cacheDir = freshTmp();
+  fs.writeFileSync(path.join(cacheDir, 'deacot2098.zip'), 'not a real zip');
+  await assert.rejects(
+    cotHistory.fetchYear(2098, cacheDir, {}),
+    /未找到 txt/,
+  );
+});
+
+test('T30: cot-history fetchSeries 用真实 fetchYear 时,HTTP 失败年份被正确记入 failed_years', async () => {
+  const fetchImpl = async (url) => {
+    if (url.includes('2097')) return { ok: false, status: 503 };
+    throw new Error('不该请求到这一年');
+  };
+  const r = await cotHistory.fetchSeries({ since: '2097-01-01', until: '2097-01-01' },
+    { cacheDir: freshTmp(), fetchYearImpl: (y, dir) => cotHistory.fetchYear(y, dir, { fetchImpl }) });
+  assert.deepEqual(r.failed_years, [2097]);
+  assert.equal(r.status, 'missing');
+});
+
+// —— A7:fred-release-dates 逐 release 失败原因不得被 nfp:[] 吞掉 ——
+
+test('T31: fred-release-dates errors 字段记录逐 release 失败原因', async () => {
+  const fetchImpl = async (url) => {
+    if (url.includes('release_id=50')) return { ok: false, status: 403 };
+    return { ok: true, json: async () => ({ release_dates: [{ date: '2026-08-01' }] }) };
+  };
+  const r = await fredDates.fetchReleases({ until: '2026-07-29' },
+    { releaseIds: { cpi: 10, nfp: 50 }, apiKey: 'x', fetchImpl });
+  assert.equal(r.status, 'ok');
+  assert.deepEqual(r.records.nfp, [], 'nfp 失败时 records.nfp 仍是空数组');
+  assert.equal(r.errors.nfp, 'HTTP 403', 'nfp:[] 必须能在 errors 里查到失败原因,不能与"这周确实没有发布"同形');
+  assert.equal(r.errors.cpi, undefined, '成功的 release 不应出现在 errors 里');
 });
