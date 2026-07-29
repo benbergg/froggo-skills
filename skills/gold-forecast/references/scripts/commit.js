@@ -5,7 +5,9 @@
 // 三份副本职责不同(设计 3.3):权威库 ~/.local/state 是唯一读取源,
 // ~/backup 是唯一恢复源(在任何同步范围之外),知识库 05-Reports/gold 只供查阅。
 //
-// 退出码:0=成功 1=参数错 3=入库与归档已成功但备份失败
+// 退出码:0=成功 1=参数错 3=入库与归档已成功但备份失败 5=运行期异常
+//
+// 5 必须与 1 分开:run.js 要能分清「我传错参数」和「权威库损坏/文件读不了」。
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -21,16 +23,24 @@ const BACKUP_TIMEOUT_MS = 120_000;
 
 // 整条覆盖而非字段合并:只有通过自检的产物才走到 Step 6,覆盖的一定是更完整的版本;
 // 合并会让上一版的残留字段永生,而记分卡分不出「本期没算」和「上期留下的」。
-// record 直接落库不做拷贝 —— 上游装配的 naive_p / c9_triggered 等字段一个都不能丢。
+// 落库前 structuredClone:上游装配的 naive_p / c9_triggered 等字段一个都不丢,
+// 同时切断与调用方 record 的别名 —— 拷贝与不丢字段是两件事,别混。
 function upsertPrediction(db, record) {
   if (!record || typeof record.id !== 'string' || !ISO_DATE_RE.test(record.id)) {
     throw new Error(`commit: record.id 必须是 YYYY-MM-DD,实得 ${JSON.stringify(record && record.id)}`);
   }
+  // 非数组绝不静默重置成 []:紧接着的 atomicWriteJSON 会用这一条记录覆盖掉整个权威历史库,
+  // 静默 + 不可逆 + 打在唯一事实源上。同仓 settle.js / scorecard.js 遇此直接崩,那才是对的。
+  if (db.predictions !== undefined && !Array.isArray(db.predictions)) {
+    throw new Error('commit: db.predictions 必须是数组,实得 '
+      + `${JSON.stringify(db.predictions).slice(0, 80)} —— 拒绝写入,以免覆盖权威历史库`);
+  }
   const predictions = Array.isArray(db.predictions) ? db.predictions : [];
+  const stored = structuredClone(record);
   const at = predictions.findIndex((p) => p && p.id === record.id);
   let action;
-  if (at >= 0) { predictions[at] = record; action = 'updated'; }
-  else { predictions.push(record); action = 'inserted'; }
+  if (at >= 0) { predictions[at] = stored; action = 'updated'; }
+  else { predictions.push(stored); action = 'inserted'; }
   // ISO 日期字符串的字典序即时间序,直接比较即可
   predictions.sort((a, b) => ((a && a.id) < (b && b.id) ? -1 : (a && a.id) > (b && b.id) ? 1 : 0));
   db.predictions = predictions;
@@ -38,8 +48,6 @@ function upsertPrediction(db, record) {
 }
 
 // ---- 归档索引 -----------------------------------------------------------
-
-const HORIZON_LABEL = { short: '短期', medium: '中期', long: '长期' };
 
 function yearOf(id) {
   const y = Number(String(id || '').slice(0, 4));
@@ -179,7 +187,7 @@ function usage() {
     '--archive-dir 亦可由环境变量 GOLD_ARCHIVE_DIR 提供;无默认值,不猜知识库路径。',
     'GOLD_RSYNC_BIN 可覆盖 rsync 可执行文件路径(测试与非标准环境用)。',
     '',
-    'Exit: 0=成功 1=参数错 3=入库与归档已成功但备份失败',
+    'Exit: 0=成功 1=参数错 3=入库与归档已成功但备份失败 5=运行期异常',
   ].join('\n');
 }
 
@@ -244,5 +252,15 @@ function main() {
   }
 }
 
-if (require.main === module) main();
+// 运行期异常单独退 5:退 1 会和「参数错」撞在一起。权威库损坏走这条路,
+// 且抛在 atomicWriteJSON 之前 —— 原文件一个字节都不动。
+if (require.main === module) {
+  try {
+    main();
+  } catch (e) {
+    process.stderr.write(`FATAL: 运行期异常: ${(e && e.message) || e}\n`);
+    process.exit(5);
+  }
+}
+
 module.exports = { upsertPrediction, buildIndex, writeIndexes, backupState, indexFileName, reportFileName, yearOf };

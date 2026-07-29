@@ -333,9 +333,20 @@ test('T32: 备份只增不减,不传导权威目录的删除', () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+// 上期已结算一条 + 本期未结算一条,即 push 时 predictions.json 的真实形态
+// (commit 是 Step 6、push 是 Step 7,当天记录此刻已经入库但 short 尚未结算)
+const DB_SETTLED = { schema_version: 2, skipped_dates: [], predictions: [
+  { id: '2026-07-28', base_price: 4010.5, horizons: { short: {
+    final: { prob_up: 0.58, low: 3987, high: 4059 }, settled: true, settled_date: '2026-07-29',
+    settled_kind: 'exact', actual: 4048.6, score: { dir_correct: true, brier: 0.1764 } } } },
+  { id: '2026-07-29', base_price: 4022.2, horizons: { short: {
+    final: { prob_up: 0.55, low: 3990, high: 4060 }, settled: false } } },
+] };
+
 function seedPushInputs(home) {
   fs.copyFileSync(FIXTURE('forecast-good.md'), path.join(home, 'forecast.md'));
   fs.writeFileSync(path.join(home, 'scorecard.json'), JSON.stringify(SC_FULL));
+  fs.writeFileSync(path.join(home, 'predictions.json'), JSON.stringify(DB_SETTLED));
   const stub = path.join(home, 'openclaw-stub');
   // 调用次数与参数分两个文件记:消息正文本身是多行的,拿行数当次数会一次调用记成好几次
   fs.writeFileSync(stub, ['#!/bin/sh', 'echo CALL >> "$HOME/calls.log"',
@@ -345,7 +356,7 @@ function seedPushInputs(home) {
 }
 
 const pushArgs = ['--mode', 'report', '--forecast', 'forecast.md', '--scorecard', 'scorecard.json',
-  '--url', 'https://example.com/r.html', '--date', '2026-07-29'];
+  '--predictions', 'predictions.json', '--url', 'https://example.com/r.html', '--date', '2026-07-29'];
 
 const callCount = (home) => {
   const f = path.join(home, 'calls.log');
@@ -410,4 +421,168 @@ test('T30: push CLI 失败简报走同一去重通道', () => {
   assert.equal(callCount(home), 1);
   assert.ok(/失败|异常/.test(argsLog(home)));
   fs.rmSync(home, { recursive: true, force: true });
+});
+
+// —— 修复轮 1:告警通道不能有单点 / 跨天去重 / 上期结算 / 权威库保护 ——
+
+test('T33: sent.json 损坏时不瘫死,降级为空并 WARN', () => {
+  const tmp = freshTmp();
+  fs.writeFileSync(path.join(tmp, 'sent.json'), '{"hashes":["deadbeef"');   // cron kill / OOM 的半截文件
+  assert.equal(P.alreadySent(tmp, 'deadbeef'), false, '裸 JSON.parse 会让此后每条消息都发不出去');
+  assert.deepEqual(P.readSent(tmp), []);
+  P.markSent(tmp, 'cafe0001');   // 损坏文件必须能被覆盖修好
+  assert.equal(P.alreadySent(tmp, 'cafe0001'), true);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T34: hashes 非数组时不退化成子串匹配', () => {
+  const tmp = freshTmp();
+  fs.writeFileSync(path.join(tmp, 'sent.json'), JSON.stringify({ hashes: 'deadbeefcafe' }));
+  // 字符串也有 .includes():不校验类型会把「已发送」误判成 true,静默漏发
+  assert.equal(P.alreadySent(tmp, 'beef'), false);
+  assert.equal(P.alreadySent(tmp, 'deadbeefcafe'), false);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T35: 损坏的 sent.json 不阻断真实推送,且退出码不与参数错混淆', () => {
+  const home = freshTmp();
+  const stub = seedPushInputs(home);
+  const state = path.join(home, '.local', 'state', 'gold-forecast');
+  fs.mkdirSync(state, { recursive: true });
+  fs.writeFileSync(path.join(state, 'sent.json'), '{"hashes":["deadbeef"');
+  const env = { OPENCLAW_BIN: stub, GOLD_FEISHU_TARGET: 'ou_x', SEND_NOTIFY: '1' };
+  const r = runScript('push.js', pushArgs, { home, env });
+  assert.equal(r.code, 0, '告警通道自己不能有单点:损坏的去重记录不得变成推送总闸');
+  assert.equal(callCount(home), 1);
+  assert.ok(/WARN/.test(r.stderr), '降级必须刺眼,静默会让「去重失效」也无人知晓');
+
+  // 运行期异常(读不到输入文件)必须与 exit 1(参数错)分开
+  const bad = runScript('push.js', ['--mode', 'report', '--forecast', 'nope.md',
+    '--scorecard', 'scorecard.json', '--predictions', 'predictions.json'], { home, env });
+  assert.equal(bad.code, 5);
+  assert.equal(runScript('push.js', ['--mode', 'bogus'], { home, env }).code, 1);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T36: sent.json 用原子写,不留半截文件', () => {
+  const tmp = freshTmp();
+  P.markSent(tmp, 'aaaa1111');
+  const raw = fs.readFileSync(path.join(tmp, 'sent.json'), 'utf-8');
+  assert.deepEqual(JSON.parse(raw).hashes, ['aaaa1111']);
+  assert.equal(fs.existsSync(path.join(tmp, 'versions')), false, '去重记录不需要版本副本');
+  assert.equal(fs.readdirSync(tmp).filter((f) => f.includes('.tmp.')).length, 0, '临时文件须已 rename');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T37: failure 简报缺 --date 时落挂钟日期', () => {
+  const home = freshTmp();
+  const stub = seedPushInputs(home);
+  const r = runScript('push.js', ['--mode', 'failure', '--step', 'validate', '--code', '5', '--settled', '1'],
+    { home, env: { OPENCLAW_BIN: stub, GOLD_FEISHU_TARGET: 'ou_x', SEND_NOTIFY: '1' } });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(argsLog(home).includes(P.todayLocal()), '正文无随日期变化的成分,跨天告警会被自己的去重吞掉');
+  assert.equal(argsLog(home).includes('未标注日期'), false);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T38: 不同日期的同类失败视为不同消息', () => {
+  const base = { step: 'validate', code: 5, settled: true };
+  const a = P.buildFailureBrief({ ...base, date: '2026-07-29' });
+  const b = P.buildFailureBrief({ ...base, date: '2026-07-30' });
+  assert.notEqual(P.messageHash({ mode: 'failure', date: '2026-07-29', text: a }),
+    P.messageHash({ mode: 'failure', date: '2026-07-30', text: b }),
+    '「连挂三天」必须收到三条,不是一条');
+});
+
+test('T39: 摘要含上期单条结算复盘', () => {
+  const s = P.buildSummary({ doc: DOC_FULL, scorecard: SC_FULL, url: 'https://example.com/r.html',
+    lastSettled: P.pickLastSettled(DB_SETTLED) });
+  const line = s.split('\n').find((l) => l.startsWith('上期('));
+  assert.ok(line, '设计 §8 把「上期结算」与「三方对照」并列枚举,是两件事');
+  assert.ok(line.includes('2026-07-28'));
+  assert.ok(line.includes('58.0%'));
+  assert.ok(line.includes('4048.6'), '「实际收多少」是可问责复盘的核心');
+  assert.ok(/✓/.test(line));
+});
+
+test('T40: 样本不足时上期结算仍呈现', () => {
+  // MIN_SAMPLE=20 意味着 long 要两个月才凑满 —— 若把上期复盘挂在 insufficient_sample 分支里,
+  // 用户盯得最紧的头几周恰好一条反思都收不到
+  const s = P.buildSummary({
+    doc: DOC_FULL,
+    scorecard: { by_horizon: {
+      short: { n: 6, insufficient_sample: true, final: null, baseline: null, naive: null },
+      medium: { n: 2, insufficient_sample: true, final: null, baseline: null, naive: null },
+      long: { n: 0, insufficient_sample: true, final: null, baseline: null, naive: null },
+    } },
+    lastSettled: P.pickLastSettled(DB_SETTLED),
+  });
+  assert.ok(/短期[^\n]*样本不足/.test(s));
+  const line = s.split('\n').find((l) => l.startsWith('上期('));
+  assert.ok(line && line.includes('4048.6'), '聚合胜率撤下时,单条复盘绝不能跟着一起消失');
+});
+
+test('T41: 无已结算记录时明确写暂无,不整段消失', () => {
+  const s = P.buildSummary({ doc: DOC_FULL, scorecard: SC_FULL,
+    lastSettled: P.pickLastSettled({ predictions: [{ id: '2026-07-29', horizons: { short: { settled: false } } }] }) });
+  assert.ok(s.includes('【上期结算】'));
+  assert.ok(/暂无已结算记录/.test(s));
+});
+
+test('T42: 上期取最近结算的那条,不取数组末尾', () => {
+  // 逾期 approx 结算会让写入顺序与结算时序不一致
+  const db = { predictions: [
+    { id: '2026-07-20', horizons: { short: { final: { prob_up: 0.6 }, settled: true,
+      settled_date: '2026-07-30', settled_kind: 'approx', actual: 1, score: { dir_correct: false } } } },
+    { id: '2026-07-28', horizons: { short: { final: { prob_up: 0.58 }, settled: true,
+      settled_date: '2026-07-29', settled_kind: 'exact', actual: 2, score: { dir_correct: true } } } },
+  ] };
+  assert.equal(P.pickLastSettled(db).id, '2026-07-20');
+  assert.equal(P.pickLastSettled(db).settled_kind, 'approx');
+});
+
+test('T43: report 模式缺 --predictions 即报参数错', () => {
+  const home = freshTmp();
+  const stub = seedPushInputs(home);
+  const r = runScript('push.js', ['--mode', 'report', '--forecast', 'forecast.md',
+    '--scorecard', 'scorecard.json'], { home, env: { OPENCLAW_BIN: stub, GOLD_FEISHU_TARGET: 'ou_x' } });
+  assert.equal(r.code, 1);
+  assert.ok(/predictions/.test(r.stderr), '设为可选的话漏传一次那一段就整体消失');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T44: 空串 code / consecutive 不渲染空洞', () => {
+  const f = P.buildFailureBrief({ step: 'validate', code: '', consecutive: '', settled: true });
+  assert.ok(f.includes('退出码 未知'), 'Number("")===0 且 isFinite,会渲染出「退出码 」');
+  assert.equal(/连续失败/.test(f), false);
+});
+
+test('T45: db.predictions 非数组即抛,不静默重置', () => {
+  assert.throws(() => C.upsertPrediction({ schema_version: 2, predictions: { '2026-07-29': {} } },
+    { id: '2026-07-29' }), /数组/, '静默重置会用一条记录覆盖掉整个权威历史库');
+  assert.throws(() => C.upsertPrediction({ predictions: null }, { id: '2026-07-29' }), /数组/);
+  // 未定义(全新库)仍应正常初始化
+  assert.equal(C.upsertPrediction({ schema_version: 2 }, { id: '2026-07-29' }).action, 'inserted');
+});
+
+test('T46: 权威库损坏时 exit 5 且原文件一字不改', () => {
+  const home = freshTmp();
+  seedCommitInputs(home);
+  const dbPath = path.join(home, '.local', 'state', 'gold-forecast', 'predictions.json');
+  const broken = '{"schema_version":2,"predictions":{"oops":"手工编辑坏了"},"skipped_dates":[]}';
+  fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+  fs.writeFileSync(dbPath, broken);
+  const r = runScript('commit.js', ['--record', 'record.json', '--archive-dir', 'arch'], { home });
+  assert.equal(r.code, 5, '退 1 会与参数错撞在一起,run.js 无从区分');
+  assert.equal(fs.readFileSync(dbPath, 'utf-8'), broken, '拒绝写入,原库一字不改');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T47: 落库后改 record 不回头改到权威库', () => {
+  const record = { id: '2026-07-29', base_price: 4022.2, horizons: { short: { n_sessions: 1 } } };
+  const r = C.upsertPrediction({ schema_version: 2, predictions: [], skipped_dates: [] }, record);
+  record.base_price = 9999;
+  record.horizons.short.n_sessions = 99;
+  assert.equal(r.db.predictions[0].base_price, 4022.2);
+  assert.equal(r.db.predictions[0].horizons.short.n_sessions, 1, '嵌套对象也不能共享引用');
 });
