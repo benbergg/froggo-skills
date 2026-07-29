@@ -38,14 +38,14 @@ function solve(M, v) {
     let piv = i;
     for (let r = i + 1; r < n; r++) if (Math.abs(a[r][i]) > Math.abs(a[piv][i])) piv = r;
     [a[i], a[piv]] = [a[piv], a[i]];
-    if (Math.abs(a[i][i]) < 1e-12) continue;
+    if (Math.abs(a[i][i]) < 1e-12) throw new Error('矩阵奇异,无法求解');
     for (let r = 0; r < n; r++) {
       if (r === i) continue;
       const f = a[r][i] / a[i][i];
       for (let c = i; c <= n; c++) a[r][c] -= f * a[i][c];
     }
   }
-  return a.map((row, i) => (Math.abs(row[i]) < 1e-12 ? 0 : row[n] / row[i]));
+  return a.map((row, i) => row[n] / row[i]);
 }
 
 // IRLS。ridge 项防止线性可分时系数发散。
@@ -100,4 +100,4 @@ function dieboldMariano(lossA, lossB, { lag = 0 } = {}) {
   return { stat, p: 2 * (1 - normCdf(Math.abs(stat))) };
 }
 
-module.exports = { normInv, normCdf, fitLogistic, predictLogistic, neweyWestVar, dieboldMariano };
+module.exports = { normInv, normCdf, solve, fitLogistic, predictLogistic, neweyWestVar, dieboldMariano };
