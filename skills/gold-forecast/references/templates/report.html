@@ -1,0 +1,153 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title><!--TITLE--></title>
+<style>
+/* 杂志长读风,沿用 ai-talk-tutorial 的一套 token。
+   --measure 收在 720px:中文行宽超过约 40 字/行时眼睛回扫会丢行。 */
+:root{
+  --bg:#F4F1EC; --panel:#FFFDFA; --panel-2:#EFEBE3;
+  --ink:#1C1A17; --ink-soft:#6B6558; --ink-faint:#948D80;
+  --rule:#DED8CD; --rule-soft:#EAE5DB;
+  --accent:#8C3A2B; --accent-soft:#F3E5E0; --on-accent:#FFFCF7;
+  --brand:#2A4A7B; --brand-soft:#E6EBF3;
+  --gold:#A67C1E; --gold-soft:#F6EDD9;
+  --warn:#B23A20; --warn-soft:#F8E6E0;
+  --serif:"Songti SC","Noto Serif SC","Source Han Serif SC","STSong",Georgia,serif;
+  --sans:system-ui,-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --measure:720px; --wide:1000px;
+  --shadow:0 1px 2px rgba(28,26,23,.06),0 8px 24px rgba(28,26,23,.05);
+}
+/* 深浅两套必须双向覆盖:只写 media query 时,系统深色下用户想切回浅色切不动;
+   只写 data-theme 时,没有切换器的环境永远是浅色。 */
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#16151A; --panel:#1D1C22; --panel-2:#232128;
+    --ink:#EDEAE3; --ink-soft:#9A948A; --ink-faint:#726C64;
+    --rule:#302E36; --rule-soft:#26242B;
+    /* 深色下 accent 转浅橙,压白字对比度不足 —— 反过来用深色字 */
+    --accent:#D98570; --accent-soft:#33221E; --on-accent:#16151A;
+    --brand:#8AB0E0; --brand-soft:#1D2836;
+    --gold:#D6AC5A; --gold-soft:#312713;
+    --warn:#E8836A; --warn-soft:#331D18;
+    --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+  }
+}
+:root[data-theme="dark"]{
+  --bg:#16151A; --panel:#1D1C22; --panel-2:#232128;
+  --ink:#EDEAE3; --ink-soft:#9A948A; --ink-faint:#726C64;
+  --rule:#302E36; --rule-soft:#26242B;
+  --accent:#D98570; --accent-soft:#33221E; --on-accent:#16151A;
+  --brand:#8AB0E0; --brand-soft:#1D2836;
+  --gold:#D6AC5A; --gold-soft:#312713;
+  --warn:#E8836A; --warn-soft:#331D18;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 8px 24px rgba(0,0,0,.25);
+}
+:root[data-theme="light"]{
+  --bg:#F4F1EC; --panel:#FFFDFA; --panel-2:#EFEBE3;
+  --ink:#1C1A17; --ink-soft:#6B6558; --ink-faint:#948D80;
+  --rule:#DED8CD; --rule-soft:#EAE5DB;
+  --accent:#8C3A2B; --accent-soft:#F3E5E0; --on-accent:#FFFCF7;
+  --brand:#2A4A7B; --brand-soft:#E6EBF3;
+  --gold:#A67C1E; --gold-soft:#F6EDD9;
+  --warn:#B23A20; --warn-soft:#F8E6E0;
+  --shadow:0 1px 2px rgba(28,26,23,.06),0 8px 24px rgba(28,26,23,.05);
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
+  font-size:17.5px;line-height:1.9;-webkit-font-smoothing:antialiased}
+.wrap{max-width:var(--measure);margin:0 auto;padding:0 24px}
+
+header.hero{background:var(--panel-2);border-bottom:1px solid var(--rule)}
+header.hero .wrap{padding:64px 24px 48px}
+.kicker{font-family:var(--mono);font-size:12px;letter-spacing:.22em;
+  color:var(--ink-faint);margin-bottom:14px}
+h1{font-family:var(--serif);font-weight:700;
+  font-size:clamp(28px,5vw,44px);line-height:1.28;margin:0 0 16px}
+.meta{color:var(--ink-soft);font-size:14.5px}
+
+section{padding:52px 0 8px}
+section+section{border-top:1px solid var(--rule-soft)}
+h2{font-family:var(--serif);font-weight:700;font-size:clamp(21px,3vw,27px);
+  line-height:1.4;margin:0 0 26px;position:relative;padding-top:34px}
+/* 序号用 01/02 而非「一/二」:中文数字在 12px 衬线下与装饰线分不出 */
+h2::before{content:attr(data-idx);position:absolute;top:0;left:0;
+  font-family:var(--mono);font-size:12px;font-weight:600;letter-spacing:.18em;
+  color:var(--accent);opacity:.9}
+p{margin:0 0 1.15em}
+a{color:var(--brand)}
+strong{font-weight:700}
+ul,ol{padding-left:1.3em;margin:0 0 1.15em}
+li{margin:.5em 0}
+
+/* .tw 负责横向滚动:窄栏正文放不下多列中文表,不给容器会撑破 body */
+.tw{overflow-x:auto;margin:26px 0;-webkit-overflow-scrolling:touch}
+table.dt{width:100%;border-collapse:collapse;font-size:15px;line-height:1.7;
+  background:var(--panel);border:1px solid var(--rule);border-radius:12px;
+  overflow:hidden;min-width:min(100%,460px)}
+table.dt th,table.dt td{padding:11px 15px;text-align:left;vertical-align:top;
+  border-bottom:1px solid var(--rule-soft)}
+table.dt thead th{background:var(--panel-2);font-family:var(--serif);
+  font-weight:700;white-space:nowrap}
+table.dt tbody tr:last-child td{border-bottom:0}
+table.dt td.num{font-family:var(--mono);font-size:14px}
+
+figure.chart{margin:26px 0 30px;padding:18px 20px 12px;background:var(--panel);
+  border:1px solid var(--rule);border-radius:14px;box-shadow:var(--shadow)}
+figure.chart figcaption{font-size:13.5px;line-height:1.7;color:var(--ink-soft);margin-top:10px}
+figure.chart .lg{font-family:var(--mono);font-size:12px;color:var(--ink-faint);margin-top:6px}
+svg.spark{display:block;color:var(--accent);overflow:visible}
+svg.spark .pl{stroke:currentColor}
+/* 区间带是本报告的核心图形:三期共用一个填充,靠不透明度区分远近 */
+svg.spark .band{fill:var(--accent);opacity:.16}
+svg.spark .band[data-h="medium"]{opacity:.11}
+svg.spark .band[data-h="long"]{opacity:.07}
+svg.spark .band-lbl{fill:var(--ink-faint);font-family:var(--mono);font-size:11px;text-anchor:middle}
+svg.spark .axis-lbl{fill:var(--ink-faint);font-family:var(--mono);font-size:11px}
+svg.spark .ref{stroke:var(--ink-faint);stroke-width:1;stroke-dasharray:4 4;opacity:.7}
+svg.spark .ref-base{stroke-dasharray:none;opacity:.45}
+svg.spark .dot{fill:var(--accent)}
+svg.spark .ln{fill:none;stroke-width:1.7}
+svg.spark .ln-final{stroke:var(--accent)}
+svg.spark .ln-baseline{stroke:var(--brand)}
+svg.spark .ln-naive{stroke:var(--ink-faint);stroke-dasharray:4 3}
+
+/* 定向复核:记分卡触发时才出现。健康时不打扰,出问题时推到眼前 */
+.review-alert{margin:0 0 30px;padding:18px 22px;border-radius:0 12px 12px 0;
+  border-left:3px solid var(--warn);background:var(--warn-soft)}
+.review-alert .review-h{font-family:var(--serif);font-weight:700;margin-bottom:8px}
+.review-alert ul{margin:0 0 .6em}
+.review-alert .review-note{margin:0;font-size:14px;color:var(--ink-soft)}
+.withheld{padding:16px 20px;border-radius:12px;background:var(--panel-2);
+  border:1px dashed var(--rule);color:var(--ink-soft);font-size:15.5px}
+
+footer{padding:40px 0 60px;color:var(--ink-faint);font-size:13px;
+  border-top:1px solid var(--rule-soft);margin-top:44px}
+@media (max-width:680px){
+  body{font-size:16.5px}
+  header.hero .wrap{padding:44px 20px 36px}
+  section{padding:38px 0 8px}
+}
+</style>
+</head>
+<body>
+<header class="hero"><div class="wrap">
+  <div class="kicker">GOLD FORECAST</div>
+  <h1><!--TITLE--></h1>
+  <div class="meta"><!--DATE--></div>
+</div></header>
+
+<section id="conclusion"><div class="wrap"><h2 data-idx="01"><!--H2_1--></h2><!--CHART_PRICE--><!--S1--></div></section>
+<section id="facts"><div class="wrap"><h2 data-idx="02"><!--H2_2--></h2><!--S2--></div></section>
+<section id="counterparty"><div class="wrap"><h2 data-idx="03"><!--H2_3--></h2><!--S3--></div></section>
+<section id="reasoning"><div class="wrap"><h2 data-idx="04"><!--H2_4--></h2><!--S4--></div></section>
+<section id="review"><div class="wrap"><h2 data-idx="05"><!--H2_5--></h2><!--REVIEW_BLOCK--><!--SCORECARD--><!--CHART_BRIER--><!--S5--></div></section>
+<section id="howto"><div class="wrap"><h2 data-idx="06"><!--H2_6--></h2><!--S6--></div></section>
+<section id="disclaimer"><div class="wrap"><h2 data-idx="07"><!--H2_7--></h2><!--S7--></div></section>
+
+<footer><div class="wrap"><!--FOOTER--></div></footer>
+</body>
+</html>
