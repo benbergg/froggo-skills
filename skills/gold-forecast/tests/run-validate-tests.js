@@ -148,3 +148,55 @@ test('T20: validate 不删除任何文件', () => {
   assert.equal(/rmSync|unlinkSync/.test(src), false,
     '删除属编排职责;校验器删产物会让 3 轮修复循环无从改起');
 });
+
+test('T21: C10 表格出现正文别处没有的数值被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['五'] += '\n\n| 指标 | 数值 |\n|---|---|\n| 测试值 | 999.9 |\n';
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C10'));
+});
+
+test('T22: C10 表格数值都能在正文找到时不拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['五'] += '\n\n| 指标 | 数值 |\n|---|---|\n| 现货价 | 4022.2 |\n';
+  assert.equal(validate(doc, CTX()).findings.some((f) => f.check === 'C10'), false);
+});
+
+test('T23: C10 表格缺分隔行(语法未闭合)被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['五'] += '\n\n| 指标 | 数值 |\n| 现货价 | 4022.2 |\n';
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C10'));
+});
+
+test('T24: C11 裸引用标记 > 被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['三'] += '\n> 这是一段裸引用\n';
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C11'));
+});
+
+test('T25: C11 占位符残留被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['四'] += '\n本条依据TODO待补充。';
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C11'));
+});
+
+test('T26: C11 正常正文不拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  assert.equal(validate(doc, CTX()).findings.some((f) => f.check === 'C11'), false);
+});
+
+test('T27: C12 免责声明被改写缺必要语句被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['七'] = doc.sections['七'].replace('不构成投资建议', '仅供娱乐参考');
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C12'));
+});
+
+test('T28: C12 免责声明完整不拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  assert.equal(validate(doc, CTX()).findings.some((f) => f.check === 'C12'), false);
+});
+
+test('T29: C12 第七段出现非否定语境的止损字样被拦', () => {
+  const doc = parseForecast(md('forecast-good.md'));
+  doc.sections['七'] += '\n建议设置止损位在3900美元。';
+  assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C12'));
+});
