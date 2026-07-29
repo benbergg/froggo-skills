@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "context_tags": ["pre_cpi", "pre_nfp", "pre_pce", "fomc_week", "high_vol", "crowded_long", "crowded_short", "stale_cot"],
+  "fields": {
+    "lbma.pm_usd":            { "dependency": "settlement_hard", "traceable": true,  "unit": "USD/oz" },
+    "fred.DFII10":            { "dependency": "forecast_hard",   "traceable": true,  "unit": "percent" },
+    "eastmoney.UDI":          { "dependency": "forecast_hard",   "traceable": true,  "unit": "index" },
+    "fred.T10YIE":            { "dependency": "soft", "traceable": true, "unit": "percent", "missing_keywords": ["通胀预期", "盈亏平衡"] },
+    "fred.DFF":               { "dependency": "soft", "traceable": true, "unit": "percent", "missing_keywords": ["联邦基金", "政策利率"] },
+    "eastmoney.SPX":          { "dependency": "soft", "traceable": true, "unit": "index",   "missing_keywords": ["标普", "美股"] },
+    "eastmoney.aum":          { "dependency": "soft", "traceable": true, "unit": "CNY/g",   "missing_keywords": ["沪金", "内外价差"] },
+    "eastmoney.518880":       { "dependency": "soft", "traceable": true, "unit": "CNY",     "missing_keywords": ["黄金ETF", "ETF 份额", "ETF 量能"] },
+    "cftc.net_spec":          { "dependency": "soft", "traceable": true, "unit": "contracts", "missing_keywords": ["投机", "非商业", "持仓", "对手盘", "拥挤"] },
+    "cftc.net_comm":          { "dependency": "soft", "traceable": true, "unit": "contracts", "missing_keywords": ["商业盘", "套保"] },
+    "cftc.spec_pctile":       { "dependency": "soft", "traceable": true, "unit": "ratio",     "missing_keywords": ["分位", "拥挤度"] },
+    "calendar.next_releases": { "dependency": "soft", "traceable": false, "missing_keywords": ["CPI", "非农", "PCE", "议息"] },
+    "news.items":             { "dependency": "soft", "traceable": false, "missing_keywords": ["报道", "消息面"] }
+  }
+}

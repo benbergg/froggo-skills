@@ -1,0 +1,18 @@
+{
+  "id": "gold",
+  "label": "黄金",
+  "lbma_endpoint": "https://prices.lbma.org.uk/json/gold_pm.json",
+  "lbma_usd_index": 0,
+  "cftc_contract_code": "088691",
+  "cftc_market_name": "GOLD - COMMODITY EXCHANGE INC.",
+  "oz_to_gram": 31.1035,
+  "eastmoney_secids": {
+    "eastmoney_GC00Y": "101.GC00Y",
+    "eastmoney_UDI": "100.UDI",
+    "eastmoney_SPX": "100.SPX",
+    "eastmoney_aum": "113.aum",
+    "eastmoney_518880": "1.518880"
+  },
+  "fred_series": ["DFII10", "T10YIE", "DFF", "DTWEXBGS"],
+  "fred_release_ids": { "cpi": 10, "nfp": 50, "pce": 54 }
+}
