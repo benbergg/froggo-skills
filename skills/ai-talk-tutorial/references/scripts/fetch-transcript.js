@@ -11,7 +11,7 @@
 //   2. InnerTube WEB client + cookie + SAPISIDHASH 签名
 //   3. yt-dlp(必须带 --ignore-no-formats-error,2026-07-27 实测)
 //
-// 退出码:0=成功 1=参数错 6=全部候选取字幕失败
+// 退出码:0=成功 1=参数错 6=全部候选取字幕失败 7=环境故障(cookie/PO token/bot 检测)
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -92,6 +92,54 @@ function mergeSegments(cues, { minSec = 30, maxSec = 60 } = {}) {
     startLabel: formatTimestamp(s.start),
     text: s.words.join(' ').replace(/\s+/g, ' ').trim(),
   }));
+}
+
+// 取 stderr 末尾若干行(yt-dlp 把关键 WARNING 排在末尾,截头部会正好丢掉它们)
+function tailLines(text, n) {
+  const lines = String(text || '').trim().split('\n').filter(Boolean);
+  return lines.slice(-n).join(' | ');
+}
+
+// yt-dlp 的 stderr 分类:环境故障 vs 这个视频本身没字幕。
+//
+// 2026-07-29 事故的核心:两者的 stderr **都**以
+// "There are no subtitles for the requested languages" 收尾,只看这一句会把
+// "整个环境取不到字幕"误判成"换一个视频就好",于是逐个候选往下滑,
+// 最后把一个 2 分 12 秒的产品广告片做成了当日教程。
+// 因此环境信号优先级高于无字幕信号 —— 先查环境,查不到才认内容性失败。
+//
+// 三类环境信号均取自当天 VM 实测原文:
+//   bot 检测   "Sign in to confirm you're not a bot"(撇号是 U+2019,故用字符类兼容)
+//   cookie 失效 "The provided YouTube account cookies are no longer valid"
+//   PO token   "a PO token was not provided"(自动字幕整类拿不到,与具体视频无关)
+const ENV_FAILURE_PATTERNS = [
+  /Sign in to confirm you[’']re not a bot/i,
+  /cookies are no longer valid/i,
+  /PO token was not provided/i,
+  /LOGIN_REQUIRED/i,
+];
+
+function classifyYtDlpFailure(stderr) {
+  const s = String(stderr || '');
+  if (ENV_FAILURE_PATTERNS.some((re) => re.test(s))) return 'environment';
+  if (/There are no subtitles for the requested languages/i.test(s)) return 'no_subtitles';
+  return 'unknown';
+}
+
+// 转录体量是否够写一篇七段教程。
+//
+// 绝对下限 3000 挡的是"候选本身太短":当天被选中的 WeP9VUf1OoE 只有 2052 字符
+// (132 秒的产品公告),密度其实正常,单看每分钟字数完全看不出问题。
+// 比例下限 200 字符/分挡的是"长视频只取到残片":实测真实演讲落在
+// 523(22 分钟,有演示停顿)到 1012(41 分钟,纯口播)字符/分,200 留了足够余量,
+// 不会误伤慢节奏演讲,但 55 分钟只回来 2500 字符这种残片必被拦下。
+const MIN_TRANSCRIPT_CHARS = 3000;
+const MIN_CHARS_PER_MINUTE = 200;
+
+function isTranscriptSufficient(fullText, durationSec) {
+  const chars = String(fullText || '').length;
+  const need = Math.max(MIN_TRANSCRIPT_CHARS, (Number(durationSec) || 0) / 60 * MIN_CHARS_PER_MINUTE);
+  return chars >= need;
 }
 
 // Netscape cookie 文件 → "k=v; k=v" 请求头串
@@ -213,15 +261,42 @@ function resolveYtDlpBin() {
   return 'yt-dlp';
 }
 
+// JS runtime 解析:yt-dlp 2026.06+ 需要它解 n-challenge,否则大量 format 与
+// 自动字幕轨拿不到(实测 "n challenge solving failed" + "No supported JavaScript
+// runtime could be found")。deno 默认只从 PATH 找,而 cron 的 PATH 通常不含
+// ~/.deno/bin —— 显式探测并用 --js-runtimes 传绝对路径,不赌 PATH。
+function resolveJsRuntimeArgs() {
+  const explicit = process.env.DENO_PATH;
+  const candidates = [
+    explicit,
+    path.join(os.homedir(), '.deno', 'bin', 'deno'),
+    '/usr/local/bin/deno',
+    '/opt/homebrew/bin/deno',
+  ].filter(Boolean);
+  for (const c of candidates) {
+    if (fs.existsSync(c)) return ['--js-runtimes', `deno:${c}`];
+  }
+  return [];
+}
+
 // 级 3:yt-dlp 兜底。--ignore-no-formats-error 必需:
 // 缺它则 format 选择阶段直接 "Requested format is not available" 中止,字幕不下载。
+//
+// ⚠️ cookie 必须传副本(2026-07-29 事故根因之一):yt-dlp 退出时会把 cookie jar
+// **回写**到 --cookies 指向的文件。YouTube 轮换掉的字段就这样被覆盖进源文件,
+// 实测源文件从 16 字段被啃到 13 字段(1849B → 1610B),不可逆,且每跑一次损耗一次。
+// 用一次性副本后,源文件永远保持导出时的状态。
 function tryYtDlp(videoId, cookiesPath) {
   const bin = resolveYtDlpBin();
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), `at-sub-${videoId}-`));
   try {
+    const cookieCopy = path.join(dir, 'cookies.txt');
+    if (fs.existsSync(cookiesPath)) fs.copyFileSync(cookiesPath, cookieCopy);
+
     const r = spawnSync(bin, [
       '--no-update', '--socket-timeout', '30',
-      '--cookies', cookiesPath,
+      ...resolveJsRuntimeArgs(),
+      '--cookies', cookieCopy,
       '--skip-download', '--ignore-no-formats-error',
       '--write-auto-subs', '--sub-langs', 'en-orig,en', '--sub-format', 'json3',
       '-o', path.join(dir, 'sub'),
@@ -230,7 +305,16 @@ function tryYtDlp(videoId, cookiesPath) {
     if (r.error) throw new Error(r.error.message);
 
     const file = fs.readdirSync(dir).find((f) => f.endsWith('.json3'));
-    if (!file) throw new Error(`no json3 produced (exit ${r.status})`);
+    if (!file) {
+      // yt-dlp 取不到字幕时**照样 exit 0**,所有诊断信息只存在于 stderr。
+      // 旧实现只报 `no json3 produced (exit 0)`,把 bot 检测/cookie 失效/PO token
+      // 三条决定性告警全丢了 —— 事故当天生产日志里一条都查不到。
+      const err = new Error(
+        `no json3 produced (exit ${r.status}); yt-dlp stderr: ${tailLines(r.stderr, 6)}`
+      );
+      err.ytDlpStderr = r.stderr || '';
+      throw err;
+    }
     const j = JSON.parse(fs.readFileSync(path.join(dir, file), 'utf-8'));
     const cues = [];
     for (const ev of j.events || []) {
@@ -244,12 +328,19 @@ function tryYtDlp(videoId, cookiesPath) {
   }
 }
 
-async function fetchCues(videoId, cookiesPath) {
-  const attempts = [
-    ['android', () => tryAndroid(videoId)],
-    ['web+cookies', () => tryWebWithCookies(videoId, cookiesPath)],
-    ['yt-dlp', async () => tryYtDlp(videoId, cookiesPath)],
-  ];
+// 三级全失败时,把失败**性质**一并返回 —— 调用方据此决定"换下一个候选"还是"中止"。
+//
+// 判定放在三级都失败之后:只要还有任何一级能取到字幕,环境就算是可用的,
+// 不应该因为前两级报了 LOGIN_REQUIRED 就中止当天的流水线。
+async function fetchCues(videoId, cookiesPath, tiers) {
+  const all = {
+    android: () => tryAndroid(videoId),
+    'web+cookies': () => tryWebWithCookies(videoId, cookiesPath),
+    'yt-dlp': async () => tryYtDlp(videoId, cookiesPath),
+  };
+  const attempts = tiers.filter((t) => all[t]).map((t) => [t, all[t]]);
+
+  const failures = [];
   for (const [name, fn] of attempts) {
     try {
       const cues = await fn();
@@ -257,12 +348,15 @@ async function fetchCues(videoId, cookiesPath) {
         process.stderr.write(`  ✓ [${videoId}] ${name}: ${cues.length} cues\n`);
         return { cues, via: name };
       }
-      process.stderr.write(`  ⚠ [${videoId}] ${name}: too few cues (${cues ? cues.length : 0})\n`);
+      const msg = `too few cues (${cues ? cues.length : 0})`;
+      failures.push(msg);
+      process.stderr.write(`  ⚠ [${videoId}] ${name}: ${msg}\n`);
     } catch (e) {
+      failures.push(`${e.message}${e.ytDlpStderr ? '\n' + e.ytDlpStderr : ''}`);
       process.stderr.write(`  ⚠ [${videoId}] ${name}: ${e.message}\n`);
     }
   }
-  return null;
+  return { cues: null, failure: classifyYtDlpFailure(failures.join('\n')), detail: failures.join(' ‖ ') };
 }
 
 // ---- CLI ---------------------------------------------------------------
@@ -275,20 +369,24 @@ function usage() {
     '  --out <dir>          输出目录(必填)',
     '  --cookies <path>     cookie 文件(默认 env AI_TALK_COOKIES_PATH 或内置路径)',
     '  --max-try <n>        最多尝试前 n 个候选(默认 5)',
+    '  --tiers <a,b,c>      启用哪几级取字幕(默认 android,web+cookies,yt-dlp)',
     '',
-    'Exit: 0=成功 1=参数错 6=全部候选失败',
+    'Exit: 0=成功 1=参数错 6=全部候选失败 7=环境故障(cookie/PO token/bot 检测)',
   ].join('\n');
 }
 
+const DEFAULT_TIERS = ['android', 'web+cookies', 'yt-dlp'];
+
 async function main() {
   const argv = process.argv.slice(2);
-  const args = { candidates: null, out: null, cookies: null, maxTry: 5 };
+  const args = { candidates: null, out: null, cookies: null, maxTry: 5, tiers: DEFAULT_TIERS };
   for (let i = 0; i < argv.length; i++) {
     switch (argv[i]) {
       case '--candidates': args.candidates = argv[++i]; break;
       case '--out': args.out = argv[++i]; break;
       case '--cookies': args.cookies = argv[++i]; break;
       case '--max-try': args.maxTry = parseInt(argv[++i], 10); break;
+      case '--tiers': args.tiers = argv[++i].split(',').map((s) => s.trim()).filter(Boolean); break;
       case '-h': case '--help': process.stdout.write(usage() + '\n'); process.exit(0);
       default:
         process.stderr.write(`Unknown flag: ${argv[i]}\n${usage()}\n`);
@@ -335,11 +433,30 @@ async function main() {
 
   // 逐个探测,第一个有字幕的胜出 —— IDC IP 上请求越少越安全
   for (const cand of candidates.slice(0, args.maxTry)) {
-    const got = await fetchCues(cand.id, cookiesPath);
-    if (!got) continue;
+    const got = await fetchCues(cand.id, cookiesPath, args.tiers);
+
+    // 环境故障(cookie 失效/PO token 缺失/bot 检测)对每个候选都成立,
+    // 继续往下试只会把流水线推向排名更低的视频 —— 2026-07-29 正是这样把一个
+    // 2 分 12 秒的产品广告片顶成了当日教程。中止并让告警说清真实原因。
+    if (!got.cues && got.failure === 'environment') {
+      process.stderr.write(
+        `FATAL: 字幕层环境故障,中止(不再尝试后续候选)。首个候选 ${cand.id}: ${got.detail}\n`
+      );
+      process.exit(7);
+    }
+    if (!got.cues) continue;
 
     const segments = mergeSegments(got.cues, { minSec: 30, maxSec: 60 });
     const fullText = got.cues.map((c) => c.text).join(' ').replace(/\s+/g, ' ').trim();
+
+    // 取到了但写不成教程 —— 要么候选本身太短(2 分钟公告片),要么只回来残片。
+    // 算这个候选失败,换下一个,不能让残片进 Step 3。
+    if (!isTranscriptSufficient(fullText, cand.durationSec)) {
+      process.stderr.write(
+        `  ⚠ [${cand.id}] 转录体量不足(${fullText.length} 字符 / ${cand.durationSec} 秒),跳过\n`
+      );
+      continue;
+    }
 
     fs.writeFileSync(
       path.join(args.out, 'selected.json'),
@@ -368,7 +485,8 @@ async function main() {
 
 module.exports = {
   parseTimedTextXml, mergeSegments, parseCookieString, formatTimestamp, decodeEntities,
-  resolveYtDlpBin, tryWebWithCookies,
+  resolveYtDlpBin, tryWebWithCookies, tryYtDlp,
+  classifyYtDlpFailure, isTranscriptSufficient, tailLines, resolveJsRuntimeArgs,
 };
 
 if (require.main === module) {

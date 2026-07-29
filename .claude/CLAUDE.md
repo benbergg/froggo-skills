@@ -249,6 +249,56 @@ ai-talk-tutorial(AI 演讲教程日报)
 T31「产品类反超」最初三条历史都写同一频道,拿掉 `topicFactor` 照样通过 —— 翻转其实是
 频道降权干的。改成三个不同频道同一主题后才真正测到主题降权。
 
+### ai-talk-tutorial v2.4 字幕层塌方修复 (2026-07-29)
+
+7-29 当天出了两篇,第二篇是 **2 分 12 秒的 OpenAI 产品公告**(`Introducing gpt-transcribe`)。
+表面看像选题打分坏了,实际是**字幕层塌了之后的静默降级把烂候选顶了上来** ——
+87 个候选里前 3 名(22/55/31 分钟的真演讲)字幕全取不到,`candidates.slice(0, maxTry)`
+一路往下滑,撞到第 4 名那个碰巧有字幕的广告片就停了。
+
+VM 手工复现 yt-dlp 拿到三条决定性 stderr,**生产日志里一条都没有**:
+
+- **cookie 是残缺空壳**。只有 `__Secure-3P*` 系列,整套 1P 登录态(`SAPISID`/`SID`/
+  `APISID`/`HSID`)全缺 —— InnerTube 的 android 与 web+cookies 两级**从 2026-07-27
+  部署起就必然 LOGIN_REQUIRED,从来没工作过**,整条链路一直只靠 yt-dlp 一根独木桥。
+  `fetch-transcript.js:163` 的注释里其实已记下此事,但只加了防御没修根因。
+- **VM 无 JS runtime**。yt-dlp 2026.06+ 靠 deno 解 n-challenge,缺了报
+  `n challenge solving failed` + `a PO token was not provided. Automatic captions
+  for 1 languages are missing` —— **自动字幕整类拿不到**。
+- **yt-dlp 在就地啃 cookie 文件**。`--cookies` 指向唯一源文件,yt-dlp 退出时**回写**
+  cookie jar,把 YouTube 轮换掉的字段覆盖进去。实测 16 字段/1849B 被啃到 13 字段/1610B,
+  不可逆,每跑一次损耗一次 —— 诊断过程本身也在加速破坏(第一次跑还能取到 379 cues,
+  10 分钟后同一视频直接 `Sign in to confirm you're not a bot`)。
+
+四项修复(A1-A4)。**关键判别口径来自当天真实 stderr**:环境故障与"这个视频没字幕"
+两种 stderr **都**以 `There are no subtitles for the requested languages` 收尾,
+只看这一句就会把"整个环境取不到"误判成"换一个视频就好" —— 事故原样重演。
+故环境信号优先级高于无字幕信号。
+
+- **A1 cookie 只传副本**:复制到临时目录再交给 yt-dlp,源文件永不被回写。
+  另存 `youtube-cookies.pristine.txt` 供随时恢复。
+- **A2 保留 stderr**:失败信息带 yt-dlp stderr 末 6 行(关键 WARNING 排在末尾,截头部正好丢掉)。
+- **A3 环境故障 exit 7 中止**:命中 bot 检测/cookie 失效/PO token/LOGIN_REQUIRED
+  → 不再滑向下一个候选;告警文案指向 cookie 而非候选。判定放在三级**都**失败之后 ——
+  只要还有一级能取到,环境就算可用,不该因前两级 LOGIN_REQUIRED 就中止当天流水线。
+- **A4 转录体量下限** `max(3000 字符, 分钟数 × 200)`:绝对下限挡"候选本身太短"
+  (广告片 2052 字符,密度 933 字符/分其实正常,只看每分钟字数完全看不出问题);
+  比例下限挡"长视频只取到残片"。200 的余量取自实测真实演讲的 523(有演示停顿)
+  到 1012(纯口播)字符/分两端。
+- 附带:`--tiers` 可指定启用哪几级;`DENO_PATH` + `--js-runtimes deno:<绝对路径>`
+  显式传给 yt-dlp,**不赌 cron 的 PATH**。
+
+修复后实测:`lyL5QhgIOxc` 379 cues、`jyuyY86GJnA` 1449 cues(原 `no json3 produced`),
+cookie 源文件 sha256 与字节数跑前跑后完全一致。
+
+测试 27 项(fetch-transcript),6 组 revert-and-rerun 逐条验判别力,每组只打掉预期的那几项:
+去掉 cookie 副本→只死 T23,去掉 stderr 保留→只死 T24,去掉环境分流→只死 T25,
+去掉体量校验→只死 T27,分类顺序颠倒→死 T15/T16/T19/T25,绝对下限归零→只死 T20。
+
+**遗留**:`discover.js` 的最低时长仍只有 60 秒硬门槛(`<8min` 只 ×0.3 降权),
+1-2 分钟的产品发布片照样进候选池(当天 87 个候选里 36 个短于 8 分钟)。
+A4 只能挡它进 Step 3,挡不住它占据排名。
+
 ## 版本管理
 
 版本号在 `.claude-plugin/plugin.json` 的 `version` 字段中维护。

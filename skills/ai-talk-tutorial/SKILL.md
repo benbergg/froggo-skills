@@ -29,6 +29,7 @@ description: "AI 演讲教程日报。每日从 YouTube 白名单频道(AI Engin
 | `AI_TALK_THUMB_MAX_KB` | ☐ | 封面 base64 后的体积上限,默认 400(KB)。超限则降级到更低画质;三档都超限就不配封面 |
 | `SEND_NOTIFY` | ☐ | `1/true/yes/on` 才真发飞书;其余走 `--dry-run`。**仅 gate 推送这一步,不跳过其余步骤** |
 | `YT_DLP_PATH` | ☐ | yt-dlp 二进制路径。未设时 `fetch-transcript.js` 依次探测 `/home/ubuntu/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/yt-dlp-venv/bin/yt-dlp`、`$HOME/.local/bin/yt-dlp`、`/usr/local/bin/yt-dlp`、`/opt/homebrew/bin/yt-dlp`,都不存在才回落到 PATH 里的 `yt-dlp` |
+| `DENO_PATH` | ☐ | deno 二进制路径,yt-dlp 解 n-challenge 用。未设时探测 `$HOME/.deno/bin/deno`、`/usr/local/bin/deno`、`/opt/homebrew/bin/deno`;都没有则不传 `--js-runtimes`,yt-dlp 会丢掉大量 format 与自动字幕轨 |
 
 ## 插件根目录解析
 
@@ -120,8 +121,31 @@ VM 上 yt-dlp 已因 cookie 轮换 + 缺 JS runtime 失效,而这几个缩略图
 内嵌而非外链的理由:归档 HTML 要在知识库躺很多年,视频被删/转私有后外链封面会变成碎图标。
 页脚那个 `<iframe>` 原视频本来就依赖 YouTube 在线,坏了不影响读文章;封面是版面的一部分,坏了直接破版。
 
+**字幕层的三条硬约束**(2026-07-29 事故后加。当天 87 个候选里前 3 名字幕全取不到,
+流水线一路静默滑到第 4 名的 2 分 12 秒产品广告片并把它做成了教程):
+
+1. **cookie 只传副本**。`tryYtDlp` 把 cookie 复制到临时目录再传给 yt-dlp ——
+   yt-dlp 退出时会**回写** `--cookies` 指向的文件,把 YouTube 轮换掉的字段覆盖进源文件。
+   实测源文件被啃到只剩 13 个字段(1849B → 1610B)且不可逆,每跑一次损耗一次。
+   源文件另存一份 `youtube-cookies.pristine.txt`,坏了直接覆盖回去。
+2. **环境故障不再往下滑**。yt-dlp 的 stderr 命中 `Sign in to confirm you're not a bot` /
+   `cookies are no longer valid` / `PO token was not provided` / `LOGIN_REQUIRED`
+   → 判为环境故障,**立即 exit 7 中止**,不再尝试后续候选。
+3. **转录体量下限**。`max(3000 字符, 时长分钟数 × 200 字符)`,不够就换下一个候选。
+   挡两类东西:候选本身太短(2 分钟产品公告)、长视频只回来残片。
+
+`--tiers` 可指定启用哪几级(默认 `android,web+cookies,yt-dlp`)。
+当前 VM 的 cookie 缺 `__Secure-3PSID` 等字段,前两级恒 `LOGIN_REQUIRED`,
+需要省掉两次注定失败的请求时可传 `--tiers yt-dlp`。
+
+**yt-dlp 需要 JS runtime**:2026.06+ 靠它解 n-challenge,缺了会报
+`n challenge solving failed` 并丢掉大量 format 与自动字幕轨。VM 上装在
+`~/.deno/bin/deno`,脚本按 `DENO_PATH` env → `~/.deno/bin/deno` → 系统路径探测,
+用 `--js-runtimes deno:<绝对路径>` 传给 yt-dlp(**不赌 cron 的 PATH**)。
+
 - exit 0 → 继续 Step 3
 - **exit 6(全部候选取不到字幕)→ 中止,不产出半成品**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:所有候选视频取字幕均失败(fetch-transcript.js exit 6),已中止,请人工核查候选与 cookie/yt-dlp 状态。"`,紧接着执行「简讯推送(共用块)」(见 Step 6 下方)的完整代码
+- **exit 7(字幕层环境故障)→ 中止,并且告警要指向 cookie 而不是候选**:在同一个 exec 里 `export MSG="⚠️ AI 演讲教程今日生成失败:字幕层环境故障(fetch-transcript.js exit 7),cookie 可能已失效或缺 PO token,已中止且未消耗候选,请重新导出 YouTube cookie 覆盖 youtube-cookies.txt。"`,紧接着执行「简讯推送(共用块)」的完整代码
 
 ### Step 3 · AI 撰写(本步在对话内完成,无脚本)
 
