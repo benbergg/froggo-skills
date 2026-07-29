@@ -8,13 +8,17 @@ const { parseCot, cotAvailableDate } = require('./cftc-cot-current');
 const YEAR_URL = (y) => `https://www.cftc.gov/files/dea/history/deacot${y}.zip`;
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/140.0.0.0 Safari/537.36';
 
-async function fetchYear(year, cacheDir) {
+async function fetchYear(year, cacheDir, { timeoutMs = 30_000 } = {}) {
   fs.mkdirSync(cacheDir, { recursive: true });
   const zip = path.join(cacheDir, `deacot${year}.zip`);
   if (!fs.existsSync(zip)) {
-    const res = await fetch(YEAR_URL(year), { headers: { 'User-Agent': UA } });
-    if (!res.ok) return [];
-    fs.writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
+    const ctrl = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+    try {
+      const res = await fetch(YEAR_URL(year), { headers: { 'User-Agent': UA }, signal: ctrl.signal });
+      if (!res.ok) return [];
+      fs.writeFileSync(zip, Buffer.from(await res.arrayBuffer()));
+    } finally { clearTimeout(timer); }
   }
   const out = fs.mkdtempSync(path.join(os.tmpdir(), 'cot-'));
   spawnSync('unzip', ['-o', '-q', zip, '-d', out]);
@@ -24,19 +28,25 @@ async function fetchYear(year, cacheDir) {
     .split('\n').filter((l) => l.startsWith('"GOLD - COMMODITY'));
   fs.rmSync(out, { recursive: true, force: true });
   return lines.map((l) => {
-    const r = parseCot(l);
+    const r = parseCot(l);                       // 格式漂移在此抛错,由调用方逐年兜底
     return { series: 'cftc_gold', observed_date: r.observed_date,
              available_date: cotAvailableDate(r.observed_date),
              vintage: cotAvailableDate(r.observed_date), value: r };
   });
 }
 
-async function fetchSeries(range, { cacheDir } = {}) {
+// fetchYearImpl 可注入,测试借此模拟单年网络失败/格式漂移,不必发真实请求。
+async function fetchSeries(range, { cacheDir, fetchYearImpl = fetchYear } = {}) {
   const y0 = Number((range.since || range.until).slice(0, 4));
   const y1 = Number(range.until.slice(0, 4));
   const records = [];
-  for (let y = y0; y <= y1; y++) records.push(...await fetchYear(y, cacheDir));
-  return { records, status: records.length ? 'ok' : 'missing',
+  const failedYears = [];
+  for (let y = y0; y <= y1; y++) {
+    // 跳过失败年份是安全的(没数据),吞掉恒等式抛错继续拼装才危险。
+    try { records.push(...await fetchYearImpl(y, cacheDir)); }
+    catch { failedYears.push(y); }
+  }
+  return { records, status: records.length ? 'ok' : 'missing', failed_years: failedYears,
            provenance: { url: YEAR_URL(y1), fetched_at: new Date().toISOString() } };
 }
 
