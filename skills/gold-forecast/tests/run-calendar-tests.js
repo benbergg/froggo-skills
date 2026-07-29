@@ -67,6 +67,17 @@ test('T9: sessionsBetween 计交易日间隔', () => {
   assert.equal(cal.sessionsBetween(C, '2026-07-24', '2026-07-28'), 2);
 });
 
+// n<=0 违反 string|null 契约:after.length >= n 对 n=0 恒真,after[-1] 是 undefined,
+// JSON.stringify 会静默丢掉该字段,比抛错更难排查。
+
+test('T14: nthSession(n=0) 必须返回 null,不得是 undefined', () => {
+  assert.equal(cal.nthSession(C, '2026-07-24', 0), null);
+});
+
+test('T15: nthSession(n=-1) 必须返回 null,不得是 undefined', () => {
+  assert.equal(cal.nthSession(C, '2026-07-24', -1), null);
+});
+
 // —— collect-settlement CLI ——
 
 test('T10: CLI 写出 settlement-price.json 且新鲜度通过', () => {
