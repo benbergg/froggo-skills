@@ -15,7 +15,8 @@ function freshTmp() {
 function runCli({ script, args = [], env = {}, stdin = null, timeout = 30_000 }) {
   const tmp = freshTmp();
   const fullEnv = { PATH: process.env.PATH, HOME: tmp, ...env };
-  const opts = { env: fullEnv, encoding: 'utf-8', timeout };
+  // cwd 定为 tmp,使 CLI 参数里的相对路径(如 --out out.json)落在隔离目录内。
+  const opts = { env: fullEnv, encoding: 'utf-8', timeout, cwd: tmp };
   if (stdin !== null) opts.input = stdin;
   const r = spawnSync('node', [SCRIPT(script), ...args], opts);
   return {
