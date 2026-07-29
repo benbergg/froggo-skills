@@ -177,6 +177,7 @@ function usage() {
     '                 [--predictions <json>] [--state-dir <dir>] [--backup-dir <dir>] [--no-backup]',
     '',
     '--archive-dir 亦可由环境变量 GOLD_ARCHIVE_DIR 提供;无默认值,不猜知识库路径。',
+    'GOLD_RSYNC_BIN 可覆盖 rsync 可执行文件路径(测试与非标准环境用)。',
     '',
     'Exit: 0=成功 1=参数错 3=入库与归档已成功但备份失败',
   ].join('\n');
@@ -230,7 +231,11 @@ function main() {
   process.stderr.write(`入库 ${record.id} (${action}),归档 ${arch},索引 ${indexes.length} 页\n`);
 
   if (args['no-backup']) return;
-  const b = backupState({ stateDir, backupDir: path.resolve(args['backup-dir'] || path.join(home, 'backup', 'gold-forecast')) });
+  const b = backupState({
+    stateDir,
+    backupDir: path.resolve(args['backup-dir'] || path.join(home, 'backup', 'gold-forecast')),
+    bin: process.env.GOLD_RSYNC_BIN || 'rsync',
+  });
   if (!b.ok) {
     // 备份是唯一恢复源,失败必须刺眼:入库已成功,重跑本命令是幂等的
     process.stderr.write(`FATAL: 备份失败(exit ${b.code}${b.error ? ` / ${b.error}` : ''}): ${b.stderr}\n`

@@ -305,6 +305,34 @@ test('T26: commit CLI 不产生 versions 目录', () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('T31: 备份失败即退非零,不静默放过', () => {
+  const home = freshTmp();
+  seedCommitInputs(home);
+  const bad = path.join(home, 'rsync-fail');
+  fs.writeFileSync(bad, '#!/bin/sh\nexit 1\n');
+  fs.chmodSync(bad, 0o755);
+  const r = runScript('commit.js', ['--record', 'record.json', '--archive-dir', 'arch'],
+    { home, env: { GOLD_RSYNC_BIN: bad } });
+  assert.equal(r.code, 3, '备份是唯一恢复源,失败静默 exit 0 等于以为备着其实没备');
+  assert.ok(/备份失败/.test(r.stderr));
+  // 入库先于备份,故此时权威库应已写好 —— 重跑幂等,不需要回滚
+  assert.ok(fs.existsSync(path.join(home, '.local', 'state', 'gold-forecast', 'predictions.json')));
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T32: 备份只增不减,不传导权威目录的删除', () => {
+  const home = freshTmp();
+  seedCommitInputs(home);
+  const backup = path.join(home, 'backup', 'gold-forecast');
+  fs.mkdirSync(backup, { recursive: true });
+  fs.writeFileSync(path.join(backup, 'old-predictions.json'), '{"predictions":[]}');
+  const r = runScript('commit.js', ['--record', 'record.json', '--archive-dir', 'arch'], { home });
+  assert.equal(r.code, 0, r.stderr);
+  assert.ok(fs.existsSync(path.join(backup, 'old-predictions.json')),
+    'rsync 加 --delete 会让权威目录被误删后一次同步抹平恢复源');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
 function seedPushInputs(home) {
   fs.copyFileSync(FIXTURE('forecast-good.md'), path.join(home, 'forecast.md'));
   fs.writeFileSync(path.join(home, 'scorecard.json'), JSON.stringify(SC_FULL));
