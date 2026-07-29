@@ -68,3 +68,16 @@ test('T9: DM 结果与损失顺序反号对称', () => {
   assert.ok(Math.abs(f.stat + r.stat) < 1e-9);
   assert.ok(Math.abs(f.p - r.p) < 1e-12);
 });
+
+test('T10: lag 必须被转发给 neweyWestVar,否则验收判定会翻转', () => {
+  // 每 4 个同号,构造强正自相关。忽略 lag 会低估方差、高估显著性 ——
+  // 而 Task 10 的验收门槛正是按 n_sessions 传 lag 来修正重叠窗口的。
+  const blk = (i) => (Math.floor(i / 4) % 2 === 0 ? 1 : -1);
+  const a = Array.from({ length: 120 }, (_, i) => 0.25 + 0.05 * blk(i));
+  const b = Array.from({ length: 120 }, () => 0.24);
+  const lag0 = S.dieboldMariano(a, b, { lag: 0 });
+  const lag3 = S.dieboldMariano(a, b, { lag: 3 });
+  assert.ok(Math.abs(lag3.stat) < Math.abs(lag0.stat), '计入自相关后统计量应变小');
+  assert.ok(lag0.p < 0.05, `无视自相关会误判为显著,实得 p=${lag0.p}`);
+  assert.ok(lag3.p > 0.05, `计入自相关后不应显著,实得 p=${lag3.p}`);
+});
