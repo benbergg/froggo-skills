@@ -5,7 +5,7 @@ const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { parseForecast } = require('./forecast-parser');
 const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES } = require('./lib/disclaimer');
-const { promptScorecard, promptFacts, promptBaseline } = require('./lib/prompt-payload');
+const { promptScorecard, promptFacts, promptBaseline, findingTargets } = require('./lib/prompt-payload');
 
 const HORIZONS = ['short', 'medium', 'long'];
 const SECTIONS = ['一', '二', '三', '四', '五', '六', '七'];
@@ -195,8 +195,10 @@ function checkC4(doc, ctx) {
     ...deepNumbers(promptBaseline(ctx.baseline)),
     ...deepNumbers(promptScorecard(ctx.scorecard)),
     // findings 的数字藏在字符串里(`区间半宽须落在 [15.00,60.00]`),deepNumbers 看不见,
-    // 必须按模型读到的形态抽 —— 池要装的是"模型能读到什么",不是"对象里有几个 number"
-    ...textNumbers(ctx.prior_findings),
+    // 必须按模型读到的形态抽 —— 池要装的是"模型能读到什么",不是"对象里有几个 number"。
+    // **只取 expected**:actual/locator 带的是上一轮被判定为无出处的那个数字,
+    // 并进池等于给「C4 刚拦下的编造」发一次性放行券(C-1)。切分与 prompt 侧同源。
+    ...textNumbers(findingTargets(ctx.prior_findings)),
     ...deepNumbers(doc.json),
   ];
   const pair = factsPool(ctx.facts, ctx.schema);

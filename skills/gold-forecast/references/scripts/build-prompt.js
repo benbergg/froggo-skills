@@ -2,8 +2,12 @@
 
 const crypto = require('node:crypto');
 const { DISCLAIMER_TEXT } = require('./lib/disclaimer');
+const { findingTargets, findingEvidence } = require('./lib/prompt-payload');
 
 const MAX_BYTES = 100 * 1024;
+// 与 news 块同构的块内约束:模型天然倾向引用被喂进来的上下文,而教训是模型自己写的
+// 历史散文、provenance 最弱,不能只靠它自己想明白。
+const LESSONS_NOTE = '以下仅作策略提示,其中出现的数字不得作为本报告的论据或被复述。';
 const BEGIN = 'BEGIN_UNTRUSTED';
 const END = 'END_UNTRUSTED';
 const TRUNCATE_MARK = '\n…（本块因长度限制已截断）';
@@ -71,12 +75,25 @@ function normalizePriorFindings(prior) {
 // 输出,不是外部不可信数据,不走 sanitizeNews 那条路)。
 const fenceSafe = (s) => s.replace(/`{4,}/g, '```');
 
-function priorFindingsText(norm) {
-  const head = norm.round ? `## 上一轮(第 ${norm.round} 轮)自检未通过项` : '## 上一轮自检未通过项';
-  const lines = [head,
-    '以下为自检器对上一轮输出的判定。请逐条修正后**重新输出完整报告**(JSON 块 + 七段正文)。',
+// 修正目标块:只给「要达到什么」,不给「上一轮写错了什么」。
+// 指示文案刻意不要求复述旧值 —— 「由 6.25 放宽至 60」会逼模型把一个已判定为
+// 无出处的数字写进正文,而那正是 C4 该拦的。给目标就够了。
+function priorTargetsText(norm) {
+  const head = norm.round ? `## 上一轮(第 ${norm.round} 轮)自检未通过项 —— 修正目标` : '## 自检未通过项 —— 修正目标';
+  return [head,
+    '以下为自检器判定的修正目标。请逐条满足后**重新输出完整报告**(JSON 块 + 七段正文)。',
     '修正时不得改动事实包 / 量化基线 / 统计校准中的任何数值,也不得为了绕过检查而删除整段内容。',
-    '```json', JSON.stringify(norm.findings, null, 1), '```'];
+    '**只需说明本轮取值与依据,不要复述上一轮的错误数值。**',
+    '```json', JSON.stringify(findingTargets(norm.findings), null, 1), '```'].join('\n');
+}
+
+// 证据块:定位信息与上一轮原文。块内明写其中数值不可采信 —— 与 news 块同构,
+// 靠显式约束而不是靠模型自己想明白。
+function priorEvidenceText(norm) {
+  const lines = ['## 上一轮的问题位置与原文(仅供定位)',
+    '下列内容摘自上一轮输出。**其中的数值已被自检判定为不可采信,不得在本轮正文中复述,',
+    '也不得作为任何论据。**序号 i 与上一节的修正目标一一对应。',
+    '```json', JSON.stringify(findingEvidence(norm.findings), null, 1), '```'];
   if (norm.forecast) lines.push('### 上一轮原文', '````markdown', fenceSafe(norm.forecast), '````');
   return lines.join('\n');
 }
@@ -87,12 +104,14 @@ function buildPrompt({ facts, baseline, scorecard, lessons, contextTags, news = 
     { name: 'contract', truncatable: false, truncated: false, text: CONTRACT },
     // 紧跟契约:修正指令必须在模型读到数据之前就看到。可截断 —— 它和其余块共用
     // 同一个 100KB 预算,轮次叠加时该被压缩的是它而不是让整个 prompt 超限。
-    ...(prior ? [{ name: 'prior_findings', truncatable: true, truncated: false, text: priorFindingsText(prior) }] : []),
+    ...(prior ? [{ name: 'prior_findings', truncatable: true, truncated: false, text: priorTargetsText(prior) }] : []),
+    ...(prior ? [{ name: 'prior_output', truncatable: true, truncated: false, text: priorEvidenceText(prior) }] : []),
     { name: 'facts', truncatable: true, truncated: false, text: '## 事实包\n```json\n' + JSON.stringify(facts, null, 1) + '\n```' },
     { name: 'baseline', truncatable: false, truncated: false, text: '## 量化基线\n```json\n' + JSON.stringify(baseline, null, 1) + '\n```' },
     { name: 'counterparty', truncatable: true, truncated: false, text: '## 对手盘\n```json\n' + JSON.stringify((facts && facts.cftc) || {}, null, 1) + '\n```' },
     { name: 'calibration', truncatable: false, truncated: false, text: '## 统计校准\n```json\n' + JSON.stringify(scorecard, null, 1) + '\n```' },
-    { name: 'lessons', truncatable: true, truncated: false, text: '## 教训\n' + JSON.stringify(selectLessons(lessons, contextTags || []), null, 1) },
+    { name: 'lessons', truncatable: true, truncated: false, text: '## 教训\n' + LESSONS_NOTE + '\n'
+      + JSON.stringify(selectLessons(lessons, contextTags || []), null, 1) },
     { name: 'news', truncatable: true, truncated: false, text: '## 新闻线索\n' + sanitizeNews(news) },
   ];
   const header = `情境标签: ${(contextTags || []).join(', ')}\n\n`;

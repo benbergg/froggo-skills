@@ -53,6 +53,26 @@ function promptPayload({ facts, baseline, scorecard }) {
   };
 }
 
+// ---- findings 按信任度切分(C-1) ---------------------------------------
+//
+// 一条 finding 里有两类数字,信任度**相反**,决不能当成一类:
+//   expected —— 自检器依据基线/事实自算的修正目标(C3 的 [15.00,60.00]、C13 的 facts 值)。
+//               模型被要求照它修正,必然复述,不可引用就会重演 N-1。
+//   actual / locator —— 上一轮被判定为**无出处**的那个具体数值。
+//               C4 自己产的 finding 形如 {locator:"第二段:「51737」", actual:"51737"},
+//               把它并进池 = 给「C4 刚拦下的编造数字」发一次性放行券,
+//               而修复循环存在的理由恰恰是拦住它。实测:同一份 forecast 只差这一个 flag,
+//               不带 --prior-findings 时 51737 被拦、带上就放行。
+//
+// 故在**块层**切开:targets 进可引用块与 C4 池,evidence(含上一轮原文)进不可引用块。
+function findingTargets(findings) {
+  return (findings || []).map((f, i) => ({ i: i + 1, check: f.check, expected: f.expected }));
+}
+
+function findingEvidence(findings) {
+  return (findings || []).map((f, i) => ({ i: i + 1, check: f.check, locator: f.locator, actual: f.actual }));
+}
+
 // 每个进 prompt 的块都必须**显式表态**是否可引用。新增块时这里没有它的名字 ⇒
 // 结构性测试当场红,而不是等某天生产上模型引用了它、被 C4 拦下、烧掉一轮修复才发现。
 // 上一轮就是按点名的字段清单修的,于是漏了 prior_findings 与 lessons 两块。
@@ -64,8 +84,13 @@ const BLOCK_CITABILITY = {
   calibration: { citable: true, reason: 'scorecard 投影;设计 8.1 要求第五段引用覆盖率与 abandoned 计数' },
   prior_findings: {
     citable: true,
-    reason: 'validate 依据 baseline 自己算出的阈值,不是外部输入;模型被要求照它修正,'
-      + '必然会复述(「已将半宽放宽至 60」),不可引用就会让修复指令自己触发下一条自检',
+    reason: '只含 expected —— 自检器依据基线/事实自算的修正目标。模型被要求照它修正,'
+      + '必然复述,不可引用就会让修复指令自己触发下一条自检(N-1)',
+  },
+  prior_output: {
+    citable: false,
+    reason: '上一轮的错值(actual/locator)与原文全文。这些正是自检刚判定为无出处的东西,'
+      + '进池等于给「C4 已经抓到的编造」发一次性放行券(C-1),而修复循环存在的理由就是拦住它',
   },
   lessons: {
     citable: false,
@@ -82,5 +107,6 @@ const BLOCK_CITABILITY = {
 
 module.exports = {
   promptPayload, promptScorecard, promptFacts, promptBaseline,
+  findingTargets, findingEvidence,
   OPS_ONLY_SCORECARD_KEYS, OPS_ONLY_FACTS_KEYS, BLOCK_CITABILITY,
 };

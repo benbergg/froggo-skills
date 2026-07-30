@@ -1297,9 +1297,14 @@ test('T93: 修复循环的具体场景 —— 模型复述 C3 阈值不会被拦
   // → 模型照做并写「已放宽至 60」→ C4 拦下 60 → 三轮耗尽降级。每轮真付一次 M3 调用。
   const ctx = { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
                 baseline: baselineFixture(), scorecard: RICH_SCORECARD, prior_findings: PRIOR_FINDINGS };
+  // 注意措辞:只讲本轮取值与目标区间,**不复述上一轮的错值 6.25** ——
+  // 那个数正是自检刚判定为无出处的东西,要求模型复述它本身就是错的期望(C-1)。
   const doc = { json: {}, headings: {}, raw: '',
-    sections: { 一: '已按上一轮自检要求将短期区间半宽由 6.25 放宽至 60,落入 [15.00, 60.00] 区间。' } };
+    sections: { 一: '已将短期区间半宽调整为 60,落入 [15.00, 60.00] 区间。' } };
   assert.deepEqual(V.checkC4(doc, ctx), [], '修复指令自己触发下一条自检');
+  // 反向:上一轮的错值不得因为进了 prompt 就变得可引用
+  const echo = { json: {}, headings: {}, raw: '', sections: { 一: '上一轮半宽为 6.25。' } };
+  assert.equal(V.checkC4(echo, ctx).length, 1, '复述上一轮错值应仍被拦');
 });
 
 test('T94: 不可引用块的数字仍然拦得住(排除不是放行)', () => {
@@ -1551,4 +1556,42 @@ test('T103: 模型侧 E2BIG 的文案仍指向内核 128KB,两条路不混为一
   assert.match(step, /128KB/);
   assert.equal(/100KB/.test(step), false);
   h.cleanup();
+});
+
+test('T104: C4 自己产的 finding 不得给被拦数字发放行券(端到端,真 validate CLI)', () => {
+  // 复审的实测:同一份 forecast 只差一个 --prior-findings,51737 从被拦变成放行。
+  // 第 1 轮编造 → C4 block → 第 2 轮 prompt 带着 finding(actual:"51737")+ 上一轮原文全文
+  // → 模型照抄 → 放行 → 入库推送。修复循环反过来给编造背书。
+  const { runCli } = require('./helpers');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-c1-'));
+  const w = (n, v) => { const p = path.join(tmp, n);
+    fs.writeFileSync(p, typeof v === 'string' ? v : JSON.stringify(v)); return p; };
+  const FAKE = 51737;
+  const forecast = [
+    '```json', JSON.stringify({ horizons: AI_HORIZONS }), '```', '',
+    `## 一、今日结论`, `COMEX 库存 ${FAKE} 吨。`, '',
+    '## 二、市场事实', 'x', '', '## 三、对手盘结构', 'x', '', '## 四、判断依据', 'x', '',
+    '## 五、上期结算与反思', 'x', '', '## 六、如何使用本区间', 'x', '', '## 七、免责声明', 'x',
+  ].join('\n');
+  const fp = w('forecast.md', forecast);
+  const factsPath = w('facts.json', { fields: {}, _missing: [], news: { items: [] } });
+  const blPath = w('baseline.json', baselineFixture());
+  const scPath = w('scorecard.json', RICH_SCORECARD);
+  const pfPath = w('findings-r1.json', [{ check: 'C4', severity: 'block',
+    locator: `第一段:「${FAKE}」`, expected: '数字须能在 facts/baseline/scorecard 中找到',
+    actual: String(FAKE) }]);
+
+  const hit = (extra) => {
+    const out = path.join(tmp, `out-${Math.random()}.json`);
+    const r = runCli({ script: 'validate.js',
+      args: ['--forecast', fp, '--facts', factsPath, '--baseline', blPath,
+        '--scorecard', scPath, '--out', out, ...extra] });
+    assert.equal(r.code, 0, r.stderr);
+    return JSON.parse(fs.readFileSync(out, 'utf-8')).findings
+      .some((f) => f.check === 'C4' && Number(f.actual) === FAKE);
+  };
+  assert.equal(hit([]), true, '基准:编造的数字本该被 C4 拦下');
+  assert.equal(hit(['--prior-findings', pfPath]), true,
+    '带上 --prior-findings 后放行 —— C4 给自己刚拦下的数字发了放行券');
+  fs.rmSync(tmp, { recursive: true, force: true });
 });
