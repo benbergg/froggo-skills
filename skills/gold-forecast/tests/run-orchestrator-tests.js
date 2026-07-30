@@ -471,7 +471,8 @@ function harness({ fail = {}, findingsSeq = null, modelSeq = null, ...opts } = {
     const code = Object.prototype.hasOwnProperty.call(fail, name) ? fail[name] : 0;
     if (code === 0 || name === 'commit') {
       if (name === 'collect-settlement') {
-        write(S('settlement-price.json'), { series: 'lbma_pm_usd', latest: { date: '2026-07-28', value: 4022.2 },
+        // 写 --out 指到哪就写哪(dry-run 下那是沙箱副本),桩不许自作主张写真路径
+        write(argOf(args, '--out'), { series: 'lbma_pm_usd', latest: { date: '2026-07-28', value: 4022.2 },
           history: [{ date: '2026-07-27', value: 4010 }, { date: '2026-07-28', value: 4022.2 }], freshness_ok: true });
       }
       if (name === 'scorecard') write(argOf(args, '--out'), { by_horizon: {}, coverage: {}, data_quality: [], review_triggers: [] });
@@ -614,7 +615,7 @@ function harnessOn(tmp, stateDir, opts) {
   const runScriptImpl = (name, args, o) => {
     calls.push({ name, args, opts: o });
     if (name === 'collect-settlement') {
-      write(S('settlement-price.json'), { latest: { date: '2026-07-28', value: 4022.2 },
+      write(argOf(args, '--out'), { latest: { date: '2026-07-28', value: 4022.2 },
         history: [{ date: '2026-07-28', value: 4022.2 }] });
     }
     if (name === 'scorecard') write(argOf(args, '--out'), { by_horizon: {}, data_quality: [] });
@@ -1030,12 +1031,15 @@ test('T78: 设计 8.1 要求第五段写的覆盖率与 abandoned 计数,写得�
 
 const QUIET_ENV = { SEND_NOTIFY: '1' };
 
-test('T79: dry-run 失败时不写 skipped_dates、不累计失败连击', () => {
+test('T79: dry-run 失败时不写 skipped_dates、不累计失败连击、不建权威库', () => {
   for (const step of ['settle', 'collect-facts', 'render']) {
     const h = harness({ dryRun: true, fail: { [step]: 1 }, env: QUIET_ENV });
-    const db = h.readState();
-    assert.deepEqual(db.skipped_dates, [], `${step} 失败时 dry-run 写了 skipped_dates`);
+    // 干净目录上演练一次不该留下权威库 —— 部署清单第 5 步就是先演练
+    assert.equal(fs.existsSync(h.S('predictions.json')), false, `${step} 失败时 dry-run 建了权威库`);
     assert.equal(fs.existsSync(h.S('run-state.json')), false, `${step} 失败时 dry-run 起了失败连击`);
+    // 副本里倒是该有一份,否则等于跳过了这些步骤,演练就白演了
+    assert.ok(fs.existsSync(path.join(h.S('work'), 'dry-run-sandbox', 'predictions.json')),
+      '副本里应有空库,演练才跑得下去');
     assert.equal(h.order.includes('push'), false);
     h.cleanup();
   }
@@ -1360,4 +1364,165 @@ test('T97: 第 2/3 轮把上一轮 findings 同时喂给 prompt 与 C4 池', () 
       `第 ${round} 轮传的必须是上一轮的 findings 文件`);
   }
   h.cleanup();
+});
+
+// ---- dry-run 的不变量:前后逐字节相同,且不改变后续真实运行的产出 ----------
+
+const crypto = require('node:crypto');
+
+// 目录/文件的逐字节指纹。断言"没调用 settle"会退化成清单;这里断言的是结果。
+function treeFingerprint(...targets) {
+  const out = [];
+  const walk = (p, rel) => {
+    if (!fs.existsSync(p)) { out.push(`${rel}:<absent>`); return; }
+    const st = fs.statSync(p);
+    if (st.isDirectory()) {
+      for (const n of fs.readdirSync(p).sort()) walk(path.join(p, n), `${rel}/${n}`);
+    } else {
+      out.push(`${rel}:${crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex')}`);
+    }
+  };
+  for (const t of targets) walk(t.path, t.rel);
+  return out.join('\n');
+}
+
+const SEED_DB = {
+  schema_version: 2,
+  skipped_dates: [],
+  predictions: [{
+    id: '2026-07-24', base_date: '2026-07-23', base_price: 4000, degraded: false,
+    horizons: {
+      short: { n_sessions: 1, target_date: '2026-07-24', settled: false,
+               baseline: { prob_up: 0.5, low: 3950, high: 4050 },
+               final: { prob_up: 0.55, low: 3960, high: 4040 }, naive_p: 0.5 },
+      medium: { n_sessions: 5, target_date: '2026-07-30', settled: false },
+      long: { n_sessions: 20, target_date: '2026-08-21', settled: false },
+    },
+  }],
+};
+
+// settle 桩:真的按 --predictions 改文件(结算一次性,改了就回不去)
+function seededRun({ stateDir, dryRun }) {
+  const calls = [];
+  const write = (p, v) => { fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, typeof v === 'string' ? v : `${JSON.stringify(v, null, 1)}\n`); };
+  const res = R.runPipeline({
+    stateDir, archiveDir: path.join(stateDir, '..', 'archive'), dryRun, log: () => {}, env: QUIET_ENV,
+    callModelImpl: () => ({ ok: true, kind: 'ok', model: 'MiniMax-M3', attempts: [], text: GOOD_FORECAST }),
+    runScriptImpl: (name, args) => {
+      calls.push(name);
+      if (name === 'collect-settlement') {
+        write(argOf(args, '--out'), { latest: { date: '2026-07-28', value: 4022.2 },
+          history: [{ date: '2026-07-28', value: 4022.2 }] });
+        // 采集会往 history/ 追加,这一步同样必须落在副本上
+        write(path.join(argOf(args, '--history'), 'lbma_pm_usd.jsonl'),
+          '{"observed_date":"2026-07-28","available_date":"2026-07-28","value":4022.2}\n');
+      }
+      if (name === 'settle') {
+        const dbPath = argOf(args, '--predictions');
+        const db = JSON.parse(fs.readFileSync(dbPath, 'utf-8'));
+        for (const p of db.predictions) {
+          if (p.horizons.short && !p.horizons.short.settled) {
+            p.horizons.short.settled = true;
+            p.horizons.short.settled_date = '2026-07-28';
+            p.horizons.short.actual = 4022.2;
+          }
+        }
+        write(dbPath, db);
+      }
+      if (name === 'scorecard') write(argOf(args, '--out'), { by_horizon: {}, data_quality: [] });
+      if (name === 'collect-facts') write(argOf(args, '--out'), FACTS);
+      if (name === 'baseline') write(argOf(args, '--out'), baselineFixture());
+      if (name === 'validate') write(argOf(args, '--out'), { passed: true, findings: [] });
+      if (name === 'render') { write(argOf(args, '--out-html'), '<html>'); write(argOf(args, '--out-md'), '# md'); }
+      return { code: 0, stdout: '', stderr: '' };
+    },
+  });
+  return { res, calls };
+}
+
+function seedStateDir() {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-dry-'));
+  const stateDir = path.join(tmp, 'state');
+  fs.mkdirSync(path.join(stateDir, 'history'), { recursive: true });
+  fs.writeFileSync(path.join(stateDir, 'predictions.json'), `${JSON.stringify(SEED_DB, null, 1)}\n`);
+  fs.writeFileSync(path.join(stateDir, 'history', 'lbma_pm_usd.jsonl'),
+    '{"observed_date":"2026-07-27","available_date":"2026-07-27","value":4010}\n');
+  return { tmp, stateDir };
+}
+
+const authoritative = (stateDir) => [
+  { path: path.join(stateDir, 'predictions.json'), rel: 'predictions.json' },
+  { path: path.join(stateDir, 'history'), rel: 'history' },
+];
+
+test('T98: 一次 dry-run 前后,权威库与 history 逐字节相同', () => {
+  const { tmp, stateDir } = seedStateDir();
+  const before = treeFingerprint(...authoritative(stateDir));
+  const { res, calls } = seededRun({ stateDir, dryRun: true });
+  assert.equal(res.outcome, 'success');
+  assert.equal(treeFingerprint(...authoritative(stateDir)), before,
+    'dry-run 改动了权威库或 history —— 结算一次性不可回改,演练一次就永久写死');
+  // 反面:演练不是靠跳过 settle 达成的,副本里必须真被结算过,否则演练毫无价值
+  assert.ok(calls.includes('settle'), 'settle 必须照跑,演练存在的意义就是查当天数据对不对');
+  const sandboxDb = JSON.parse(fs.readFileSync(
+    path.join(stateDir, 'work', 'dry-run-sandbox', 'predictions.json'), 'utf-8'));
+  assert.equal(sandboxDb.predictions[0].horizons.short.settled, true, '副本里应当真被结算了');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(stateDir, 'predictions.json'), 'utf-8'))
+    .predictions[0].horizons.short.settled, false, '真库不得被结算');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T99: 跑过 dry-run 之后的真实运行,与从未跑过 dry-run 完全一致', () => {
+  const a = seedStateDir();
+  const b = seedStateDir();
+  seededRun({ stateDir: a.stateDir, dryRun: true });   // A 先演练一次
+  seededRun({ stateDir: a.stateDir, dryRun: false });
+  seededRun({ stateDir: b.stateDir, dryRun: false });  // B 直接真跑
+  assert.equal(
+    treeFingerprint(...authoritative(a.stateDir)),
+    treeFingerprint(...authoritative(b.stateDir)),
+    '演练污染了后续真实运行的产出:结算被提前写死,真实运行会被 h.settled 短路跳过',
+  );
+  fs.rmSync(a.tmp, { recursive: true, force: true });
+  fs.rmSync(b.tmp, { recursive: true, force: true });
+});
+
+test('T100: 沙箱每次都从当前真库重新复制,不是第一次的残留', () => {
+  // 直接比对两次演练的副本是"看起来在测、其实测不到"的:两次都结算成同一个结果,
+  // 清不清理都相等(实测变异 V4 不红)。要让它有判别力,必须在两次演练之间改动真库。
+  const { tmp, stateDir } = seedStateDir();
+  seededRun({ stateDir, dryRun: true });
+
+  const realDb = JSON.parse(fs.readFileSync(path.join(stateDir, 'predictions.json'), 'utf-8'));
+  realDb.predictions.push({ id: '2026-07-27', base_date: '2026-07-26', base_price: 4011,
+    horizons: { short: { n_sessions: 1, target_date: '2026-07-27', settled: false } } });
+  fs.writeFileSync(path.join(stateDir, 'predictions.json'), `${JSON.stringify(realDb, null, 1)}\n`);
+
+  // 残留探针:真库里没有这个 series,清理生效的话第二次演练后它不该还在。
+  // 只比对 predictions.json 是测不到清理的 —— 它每次都被 copyFileSync 覆盖(变异 V4 不红)。
+  // 真正会残留的是"真库里已经不存在、副本里还留着"的文件,那会让演练读到早已删掉的数据。
+  const stale = path.join(stateDir, 'work', 'dry-run-sandbox', 'history', 'ghost_series.jsonl');
+  fs.writeFileSync(stale, '{"observed_date":"1999-01-01","available_date":"1999-01-01","value":1}\n');
+
+  seededRun({ stateDir, dryRun: true });
+  const sandbox = JSON.parse(fs.readFileSync(
+    path.join(stateDir, 'work', 'dry-run-sandbox', 'predictions.json'), 'utf-8'));
+  assert.equal(sandbox.predictions.length, 2,
+    '副本没跟上真库 —— 第二次演练看不到真库的新数据');
+  assert.equal(fs.existsSync(stale), false,
+    '副本没重建 —— 真库里已不存在的数据仍留在演练环境里,演练结论不可信');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T101: 演练同样识别权威库丢失,不因沙箱而看成首次部署', () => {
+  // dbState 若判在副本上:副本里 run-state.json 与 versions/ 都不存在 ⇒ 恒判 fresh
+  // ⇒ 一台丢了库的机器上演练一路绿灯,而真实运行会退 5。两者结论必须一致。
+  const { tmp, stateDir } = seedStateDir();
+  fs.writeFileSync(path.join(stateDir, 'run-state.json'), '{"last_outcome":"success"}');
+  fs.rmSync(path.join(stateDir, 'predictions.json'));
+  const { res } = seededRun({ stateDir, dryRun: true });
+  assert.equal(res.exitCode, 5, '演练必须和真实运行一样认出权威库丢失');
+  assert.equal(fs.existsSync(path.join(stateDir, 'predictions.json')), false);
+  fs.rmSync(tmp, { recursive: true, force: true });
 });

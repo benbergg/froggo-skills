@@ -431,6 +431,35 @@ function recordSkippedDate(dbPath, date) {
   return true;
 }
 
+// ---- dry-run 沙箱 -------------------------------------------------------
+
+// 演练的价值恰恰在于「查当天的数据对不对」——当天定盘价是错的或陈旧的,正是它要抓的。
+// 所以不能跳过 settle。但 settle 是**一次性**的(`settle.js` 的 `if (h.settled) return false`):
+// 在真库上演练一次,所有到期 horizon 就被永久写上基于错价的分数,之后真实运行被
+// h.settled 短路跳过,错分永久留在度量库里,全程 exit 0。
+// 故把权威库与 history 复制一份,所有**会写**它们的步骤都指向副本:演练照跑、真库不动。
+// 只读输入(lessons.json / params.json)仍指向真文件。
+function withDryRunSandbox(P, { log } = {}) {
+  const dir = path.join(P.work.dir, 'dry-run-sandbox');
+  fs.rmSync(dir, { recursive: true, force: true });   // 每次从干净副本开始,重复演练可复现
+  fs.mkdirSync(dir, { recursive: true });
+  if (fs.existsSync(P.predictions)) fs.copyFileSync(P.predictions, path.join(dir, 'predictions.json'));
+  if (fs.existsSync(P.history)) fs.cpSync(P.history, path.join(dir, 'history'), { recursive: true });
+  if (log) log(`dry-run:权威库与 history 已复制到 ${dir},本次全部写入都落在副本上`);
+  const at = (n) => path.join(dir, n);
+  return {
+    ...P,
+    sandboxDir: dir,
+    predictions: at('predictions.json'),
+    history: at('history'),
+    settlement: at('settlement-price.json'),
+    facts: at('facts.json'),
+    baseline: at('baseline.json'),
+    scorecard: at('scorecard.json'),
+    runState: at('run-state.json'),
+  };
+}
+
 // ---- 流水线 ------------------------------------------------------------
 
 const EMPTY_DB = { schema_version: 2, predictions: [], skipped_dates: [] };
@@ -460,12 +489,14 @@ function runPipeline({
   runScriptImpl = runScript, callModelImpl = callModel, env = process.env,
   log = (m) => process.stderr.write(`${m}\n`),
 } = {}) {
-  const P = resolvePaths({ stateDir, archiveDir });
+  const P0 = resolvePaths({ stateDir, archiveDir });
   const trace = [];
   const st = { settled: false, degraded: false, degradeReason: null, modelId: null,
                rounds: 0, backupFailed: false, pushFailed: false, predictionId: null, detail: null };
 
-  fs.mkdirSync(P.work.dir, { recursive: true });
+  fs.mkdirSync(P0.work.dir, { recursive: true });
+  // dry-run 的全部写入改指向副本;真库与 history 一个字节都不动
+  const P = dryRun ? withDryRunSandbox(P0, { log }) : P0;
 
   // push.js 未设 SEND_NOTIFY 时走 --dry-run 且**退 0**,于是链路全绿、报告永不到达、
   // 失败简报同样永不到达 —— 整条通知层静默关闭而退出码是 0。不 fail(演练场景合法),
@@ -546,7 +577,8 @@ function runPipeline({
   const latestSession = settlement && settlement.latest && settlement.latest.date;
   st.latestSession = latestSession;
 
-  const dbState = predictionsDbState(P);
+  // 判的是**真库**的状态而不是副本的:否则 dry-run 在一台丢了库的机器上会看成 fresh
+  const dbState = predictionsDbState(P0);
   if (dbState === 'missing') {
     log('FATAL: predictions.json 不存在,但本机跑过(run-state.json 或 versions/ 仍在)——'
       + '判为权威库丢失,拒绝新建空库。从 ~/backup/gold-forecast/ 恢复,'
@@ -555,7 +587,8 @@ function runPipeline({
     return finish({ failedStep: 'predictions-db', exitOverride: 5 });
   }
   if (dbState === 'fresh') {
-    log('首次部署:新建空 predictions.json');
+    // dry-run 时 P.predictions 是副本路径 —— 演练不该在干净机器上创建权威库
+    log(dryRun ? '首次部署演练:在副本里建空 predictions.json' : '首次部署:新建空 predictions.json');
     atomicWriteJSON(P.predictions, EMPTY_DB);
   }
   const db = readJsonOr(P.predictions);
@@ -780,6 +813,6 @@ module.exports = {
   addSessions, computeC9Triggered, scorecardForPrompt, promptPayload, naivePOf, buildPredictionRecord,
   normalizeModel, interpretModelResult, callModel, classifyOutcome, resolveToday,
   shouldDeleteArtifacts, runScript, callModelWithRetry, hasNewSession, workPaths, artifactsToDelete,
-  predictionsDbState, STALE_SESSION_ALERT_RUNS,
+  predictionsDbState, STALE_SESSION_ALERT_RUNS, withDryRunSandbox,
   buildDegradedForecast, bumpRunState, recordSkippedDate, resolvePaths, runPipeline,
 };
