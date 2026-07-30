@@ -15,18 +15,72 @@
 // data_quality 是运维诊断(被剔除的非有限值计数),模型本就不该在公开报告里引用
 // 剔除计数,所以它从 payload 里剥掉 —— 剥掉之后它自然也不在池里,两边仍然一致。
 
-const OPS_ONLY_SCORECARD_KEYS = ['data_quality'];
+const { N_BY_HORIZON } = require('../baseline');
 
-function promptScorecard(scorecard) {
-  if (!scorecard || typeof scorecard !== 'object' || Array.isArray(scorecard)) return scorecard;
-  const out = { ...scorecard };
-  for (const k of OPS_ONLY_SCORECARD_KEYS) delete out[k];
+// 运维元数据:模型不该引用,因此也不该看见。
+// generated_at 还有个具体的坑:C4 的 stripDates 只吃 YYYY-MM-DD,ISO 时间戳的时分秒
+// 会被当成独立数字抽出来(实测 "…T12:34:56.789Z" 泄漏出 34 与 56.789)。
+const OPS_ONLY_SCORECARD_KEYS = ['data_quality', 'generated_at'];
+const OPS_ONLY_FACTS_KEYS = ['generated_at'];
+
+const dropKeys = (obj, keys) => {
+  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
+  const out = { ...obj };
+  for (const k of keys) delete out[k];
   return out;
+};
+
+const promptScorecard = (scorecard) => dropKeys(scorecard, OPS_ONLY_SCORECARD_KEYS);
+const promptFacts = (facts) => dropKeys(facts, OPS_ONLY_FACTS_KEYS);
+
+// baseline 补上 n_sessions。原先模型只能从 `p0_1`/`p0_5`/`p0_20` 这几个**键名**里
+// 猜出周期长度,而键名里的 5 与 20 会被抽成数字却不在池里 —— 报告里写「未来 5 个交易日」
+// 就被 C4 拦下。周期长度是报告必须讲清的信息,让它成为正式字段而不是键名的副产品。
+function promptBaseline(baseline) {
+  if (!baseline || typeof baseline !== 'object' || !baseline.horizons) return baseline;
+  const horizons = {};
+  for (const [key, h] of Object.entries(baseline.horizons)) {
+    horizons[key] = N_BY_HORIZON[key] ? { n_sessions: N_BY_HORIZON[key], ...h } : h;
+  }
+  return { ...baseline, horizons };
 }
 
-// facts 与 baseline 整体进 prompt、整体可引用,不做裁剪 —— 它们本就是给模型用的输入。
 function promptPayload({ facts, baseline, scorecard }) {
-  return { facts, baseline, scorecard: promptScorecard(scorecard) };
+  return {
+    facts: promptFacts(facts),
+    baseline: promptBaseline(baseline),
+    scorecard: promptScorecard(scorecard),
+  };
 }
 
-module.exports = { promptPayload, promptScorecard, OPS_ONLY_SCORECARD_KEYS };
+// 每个进 prompt 的块都必须**显式表态**是否可引用。新增块时这里没有它的名字 ⇒
+// 结构性测试当场红,而不是等某天生产上模型引用了它、被 C4 拦下、烧掉一轮修复才发现。
+// 上一轮就是按点名的字段清单修的,于是漏了 prior_findings 与 lessons 两块。
+const BLOCK_CITABILITY = {
+  contract: { citable: false, reason: '固定模板:0.58/3987 之类是格式示例,不是数据' },
+  facts: { citable: true, reason: '当日事实快照,本就是给模型的输入' },
+  baseline: { citable: true, reason: '量化基线,本就是给模型的输入' },
+  counterparty: { citable: true, reason: 'facts.cftc 的子集' },
+  calibration: { citable: true, reason: 'scorecard 投影;设计 8.1 要求第五段引用覆盖率与 abandoned 计数' },
+  prior_findings: {
+    citable: true,
+    reason: 'validate 依据 baseline 自己算出的阈值,不是外部输入;模型被要求照它修正,'
+      + '必然会复述(「已将半宽放宽至 60」),不可引用就会让修复指令自己触发下一条自检',
+  },
+  lessons: {
+    citable: false,
+    reason: '教训文本是模型自己写的历史散文,不是事实源。放进池等于给「把某天的数字洗进'
+      + '教训库、此后永久可引用」开口子。教训是策略提示,报告无须复述其数字,'
+      + '故取保守默认;若日后 lessons.json 有了写入端需重新评估',
+  },
+  news: {
+    citable: false,
+    reason: '外部不可信数据。契约本就要求数字溯源到 facts/baseline/calibration,'
+      + '标题里的数字不得被当作事实引用',
+  },
+};
+
+module.exports = {
+  promptPayload, promptScorecard, promptFacts, promptBaseline,
+  OPS_ONLY_SCORECARD_KEYS, OPS_ONLY_FACTS_KEYS, BLOCK_CITABILITY,
+};

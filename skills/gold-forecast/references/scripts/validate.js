@@ -5,7 +5,7 @@ const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { parseForecast } = require('./forecast-parser');
 const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES } = require('./lib/disclaimer');
-const { promptScorecard } = require('./lib/prompt-payload');
+const { promptScorecard, promptFacts, promptBaseline } = require('./lib/prompt-payload');
 
 const HORIZONS = ['short', 'medium', 'long'];
 const SECTIONS = ['一', '二', '三', '四', '五', '六', '七'];
@@ -184,14 +184,19 @@ function c4Matches(x, direct, pair) {
 // abandoned 计数,它们在 scorecard.coverage 里,旧池不含,等于自检在阻止报告满足设计);
 // 池宽于 prompt 则等于放行编造。两者都只能靠共用同一个投影来杜绝。
 // 注:胜率/Brier/Winkler 另有 C7 强制逐值对齐 scorecard,不因本处放宽而失守。
+const textNumbers = (obj) => (obj ? extractNumbers(JSON.stringify(obj)).map((n) => n.numeric) : []);
+
 function checkC4(doc, ctx) {
   const out = [];
   if (!doc.json) return out;
   const direct = [
     ...factsPool(ctx.facts, ctx.schema),
-    ...deepNumbers(ctx.facts_raw),
-    ...deepNumbers(ctx.baseline),
+    ...deepNumbers(promptFacts(ctx.facts_raw)),
+    ...deepNumbers(promptBaseline(ctx.baseline)),
     ...deepNumbers(promptScorecard(ctx.scorecard)),
+    // findings 的数字藏在字符串里(`区间半宽须落在 [15.00,60.00]`),deepNumbers 看不见,
+    // 必须按模型读到的形态抽 —— 池要装的是"模型能读到什么",不是"对象里有几个 number"
+    ...textNumbers(ctx.prior_findings),
     ...deepNumbers(doc.json),
   ];
   const pair = factsPool(ctx.facts, ctx.schema);
@@ -527,12 +532,16 @@ function main() {
   const scorecard = JSON.parse(fs.readFileSync(args.scorecard, 'utf-8'));
   const predictionsDb = args.predictions && fs.existsSync(args.predictions)
     ? JSON.parse(fs.readFileSync(args.predictions, 'utf-8')) : { predictions: [] };
+  const priorFindings = args['prior-findings'] && fs.existsSync(args['prior-findings'])
+    ? JSON.parse(fs.readFileSync(args['prior-findings'], 'utf-8')) : null;
 
   const ctx = {
     schema,
     facts: flattenFactsForCli(factsJson, schema),
     // 原始 facts.json 整体进了 prompt,故整体可引用;flat 版只覆盖 schema 里的 traceable 字段
     facts_raw: factsJson,
+    // 第 2/3 轮:上一轮 findings 也进了 prompt,同样必须可引用(否则修复指令自触发下一条自检)
+    prior_findings: priorFindings,
     baseline,
     scorecard,
     predictions: predictionsDb.predictions || [],

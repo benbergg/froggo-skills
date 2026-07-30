@@ -630,8 +630,11 @@ function runPipeline({
     atomicWriteText(P.work.forecast(round), m.text, { keepVersions: 0 });
 
     // validate 只出 findings、不删产物;通过与否由本编排器读 findings.passed 判定
-    r = step('validate', ['--forecast', P.work.forecast(round), '--facts', P.facts, '--baseline', P.baseline,
-      '--scorecard', P.scorecard, '--predictions', P.predictions, '--out', P.work.findings(round)]);
+    const vArgs = ['--forecast', P.work.forecast(round), '--facts', P.facts, '--baseline', P.baseline,
+      '--scorecard', P.scorecard, '--predictions', P.predictions, '--out', P.work.findings(round)];
+    // 上一轮 findings 进了本轮 prompt ⇒ 必须同时进 C4 允许池,否则模型复述阈值就被拦
+    if (round > 1) vArgs.push('--prior-findings', P.work.findings(round - 1));
+    r = step('validate', vArgs);
     if (r.code !== 0) { st.detail = { code: r.code }; return finish({ failedStep: 'validate' }); }
     const fnd = readJsonOr(P.work.findings(round), { passed: false, findings: [] });
     if (fnd.passed) { passed = true; break; }

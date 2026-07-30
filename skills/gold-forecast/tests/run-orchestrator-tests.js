@@ -1217,3 +1217,147 @@ test('T89: 调用方自己的 NODE_OPTIONS 顶不掉 shim', () => {
   assert.match(merged, /--require .*block-network\.js/, 'shim 必须仍在');
   assert.ok(merged.indexOf('block-network') > merged.indexOf('max-old-space'), 'shim 追加在最后');
 });
+
+// ---- 结构性不变量:buildPrompt 拼进 prompt 的每个块都必须表态 --------------
+
+const BP = require('../references/scripts/build-prompt');
+const PP = require('../references/scripts/lib/prompt-payload');
+
+const PRIOR_FINDINGS = [{
+  check: 'C3', severity: 'block', locator: 'json.horizons.short',
+  expected: '区间半宽须落在 [15.00,60.00](基线半宽 30 × [0.5,2])', actual: '6.25',
+}];
+const RICH_LESSONS = [{ id: 'L001', tag: 'pre_cpi', status: 'active', trials: 7,
+                        created: '2026-01-01', text: '短周期区间应比基线宽 18.7 点' }];
+
+// 按模型读到的形态抽数字:先剥 ISO 日期(与 validate 的 stripDates 同口径),再扫。
+// 独立于 validate 的实现另写一遍,免得被测实现改坏时测试跟着一起瞎。
+function numbersInText(text) {
+  const stripped = String(text).replace(/\d{4}-\d{2}-\d{2}/g, ' ');
+  const hits = stripped.match(/(?<![\d.A-Za-z])-?\d[\d,]*(?:\.\d+)?%?/g) || [];
+  return [...new Set(hits.map((x) => Number(x.replace(/[,%]/g, ''))))].filter(Number.isFinite);
+}
+
+function fullPrompt() {
+  const facts = { ...RICH_FACTS, generated_at: '2026-07-28T12:34:56.789Z' };
+  const scorecard = { ...RICH_SCORECARD };
+  return {
+    facts,
+    scorecard,
+    built: BP.buildPrompt({
+      ...PP.promptPayload({ facts, baseline: baselineFixture(), scorecard }),
+      lessons: RICH_LESSONS, contextTags: ['pre_cpi'],
+      news: [{ title: 'Gold tops 4100 an ounce', url: 'https://x.com/a', source: 'Reuters' }],
+      priorFindings: { round: 1, findings: PRIOR_FINDINGS, forecast: '## 一、今日结论\n半宽 6.25' },
+    }),
+  };
+}
+
+test('T91: 每个 prompt 块都已显式表态可引用性(新增块会红)', () => {
+  const names = fullPrompt().built.blocks.map((b) => b.name);
+  const declared = Object.keys(PP.BLOCK_CITABILITY);
+  const undeclared = names.filter((n) => !declared.includes(n));
+  assert.deepEqual(undeclared, [],
+    `这些块进了 prompt 却没在 BLOCK_CITABILITY 里表态:${undeclared.join(', ')}`);
+  // 反向:声明了却从不出现的条目也要清掉,免得政策表与现实脱节
+  const stale = declared.filter((n) => !names.includes(n));
+  assert.deepEqual(stale, [], `BLOCK_CITABILITY 里有已不存在的块:${stale.join(', ')}`);
+  // 排除必须是显式声明出来的,不是"测试没枚举到"
+  for (const [n, p] of Object.entries(PP.BLOCK_CITABILITY)) {
+    assert.equal(typeof p.citable, 'boolean', `${n} 未表态`);
+    assert.ok(p.reason && p.reason.length > 10, `${n} 的排除/放行理由太短,说不清就是没想清`);
+  }
+});
+
+test('T92: 结构性不变量 —— 可引用块里的每个数字都在 C4 池中', () => {
+  const { built, facts, scorecard } = fullPrompt();
+  const ctx = { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: facts,
+                baseline: baselineFixture(), scorecard, prior_findings: PRIOR_FINDINGS };
+  const failures = [];
+  let checkedBlocks = 0;
+  for (const b of built.blocks) {
+    if (!PP.BLOCK_CITABILITY[b.name].citable) continue;
+    const nums = numbersInText(b.text);
+    if (!nums.length) continue;
+    checkedBlocks++;
+    const doc = { json: {}, sections: { 二: nums.join(' , ') }, headings: {}, raw: '' };
+    for (const f of V.checkC4(doc, ctx)) failures.push(`${b.name}:${f.actual}`);
+  }
+  assert.ok(checkedBlocks >= 5, `只检了 ${checkedBlocks} 个块,夹具没把 prompt 填满`);
+  assert.deepEqual(failures, [],
+    `这些数字模型看得见却引用不了(引用即被 C4 拦下,修复循环会白烧):${failures.join(', ')}`);
+});
+
+test('T93: 修复循环的具体场景 —— 模型复述 C3 阈值不会被拦', () => {
+  // N-1 的原始失败链:第 1 轮 C3 未过 → 第 2 轮 prompt 写「半宽须落在 [15.00,60.00]」
+  // → 模型照做并写「已放宽至 60」→ C4 拦下 60 → 三轮耗尽降级。每轮真付一次 M3 调用。
+  const ctx = { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
+                baseline: baselineFixture(), scorecard: RICH_SCORECARD, prior_findings: PRIOR_FINDINGS };
+  const doc = { json: {}, headings: {}, raw: '',
+    sections: { 一: '已按上一轮自检要求将短期区间半宽由 6.25 放宽至 60,落入 [15.00, 60.00] 区间。' } };
+  assert.deepEqual(V.checkC4(doc, ctx), [], '修复指令自己触发下一条自检');
+});
+
+test('T94: 不可引用块的数字仍然拦得住(排除不是放行)', () => {
+  const ctx = { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
+                baseline: baselineFixture(), scorecard: RICH_SCORECARD, prior_findings: PRIOR_FINDINGS };
+  // 控制值必须逐个验过是「池里够不到」的:随手写的 4100 会撞上 baseline 的 4116
+  // (相对容差 0.5% ⇒ ±20.6),18.7 会被 p0_20=0.6 经 ×31.1035 命中 —— 都测不出东西。
+  const ONLY_IN_NEWS = 5150;
+  const ONLY_IN_LESSON = 7777;
+  const built = BP.buildPrompt({
+    ...PP.promptPayload({ facts: RICH_FACTS, baseline: baselineFixture(), scorecard: RICH_SCORECARD }),
+    lessons: [{ id: 'L9', tag: 'pre_cpi', status: 'active', trials: 1, created: '2026-01-01',
+                text: `区间应比基线宽 ${ONLY_IN_LESSON} 点` }],
+    contextTags: ['pre_cpi'],
+    news: [{ title: `Gold tops ${ONLY_IN_NEWS} an ounce`, url: 'https://x.com/a', source: 'Reuters' }],
+  });
+  assert.ok(built.text.includes(String(ONLY_IN_NEWS)), '控制值确实进了 prompt');
+  assert.ok(built.text.includes(String(ONLY_IN_LESSON)), '控制值确实进了 prompt');
+  const doc = { json: {}, headings: {}, raw: '', sections: { 二: `${ONLY_IN_NEWS} 与 ${ONLY_IN_LESSON}` } };
+  const blocked = V.checkC4(doc, ctx).map((f) => Number(f.actual));
+  assert.ok(blocked.includes(ONLY_IN_NEWS), '新闻标题里的数字不得成为论据来源');
+  assert.ok(blocked.includes(ONLY_IN_LESSON), '教训文本里的数字不得成为论据来源');
+});
+
+test('T95: 周期长度是正式字段而非键名副产品', () => {
+  // 原先模型只能从 `p0_5`/`p0_20` 的**键名**推出周期长度,而键名里抽出的 5/20 不在池里,
+  // 报告写「未来 5 个交易日」就被 C4 拦下。
+  const pb = PP.promptBaseline(baselineFixture());
+  assert.equal(pb.horizons.short.n_sessions, 1);
+  assert.equal(pb.horizons.medium.n_sessions, 5);
+  assert.equal(pb.horizons.long.n_sessions, 20);
+  assert.equal(pb.horizons.short.prob_up, 0.53, '原有字段不得丢');
+  assert.equal(baselineFixture().horizons.short.n_sessions, undefined, '不得就地改动调用方对象');
+  const ctx = { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
+                baseline: baselineFixture(), scorecard: RICH_SCORECARD };
+  const doc = { json: {}, headings: {}, raw: '', sections: { 一: '中期看未来 5 个交易日,长期看 20 个交易日。' } };
+  assert.deepEqual(V.checkC4(doc, ctx), []);
+});
+
+test('T96: 运维时间戳不进 payload(其时分秒会被抽成数字)', () => {
+  const facts = { ...RICH_FACTS, generated_at: '2026-07-28T12:34:56.789Z' };
+  const sc = { ...RICH_SCORECARD, generated_at: '2026-07-28T12:34:56.789Z' };
+  const payload = PP.promptPayload({ facts, baseline: baselineFixture(), scorecard: sc });
+  assert.equal('generated_at' in payload.facts, false);
+  assert.equal('generated_at' in payload.scorecard, false);
+  assert.ok('generated_at' in facts && 'generated_at' in sc, '不得就地改动调用方对象');
+});
+
+test('T97: 第 2/3 轮把上一轮 findings 同时喂给 prompt 与 C4 池', () => {
+  // 池有能力认 findings 数字,不等于编排层真喂了。少了这条,U2 那种"忘了传 --prior-findings"
+  // 的回归在单元层测不出来 —— 单元测试是直接给 ctx 的。
+  const bad = { passed: false, findings: [{ check: 'C3', locator: 'json.horizons.short',
+                                            expected: '区间半宽须落在 [15.00,60.00]', actual: '6.25' }] };
+  const h = harness({ findingsSeq: [bad, bad, { passed: true, findings: [] }], env: QUIET_ENV });
+  const validates = h.calls.filter((c) => c.name === 'validate');
+  assert.equal(validates.length, 3);
+  assert.equal(validates[0].args.includes('--prior-findings'), false, '第 1 轮没有上一轮');
+  for (const round of [2, 3]) {
+    const args = validates[round - 1].args;
+    assert.ok(args.includes('--prior-findings'), `第 ${round} 轮未把 findings 传给 validate`);
+    assert.equal(argOf(args, '--prior-findings'), h.work.findings(round - 1),
+      `第 ${round} 轮传的必须是上一轮的 findings 文件`);
+  }
+  h.cleanup();
+});
