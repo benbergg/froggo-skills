@@ -4,7 +4,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { parseForecast } = require('./forecast-parser');
-const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES, REDLINE_WORDS } = require('./lib/disclaimer');
+const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES, REDLINE_WORDS,
+  REDLINE_SELF_WORDS, REDLINE_FLOW_WORDS, REDLINE_DIRECTIVE_MARKERS,
+  REDLINE_DESCRIPTIVE_SUBJECTS, REDLINE_NEGATION_MARKERS, REDLINE_COMPOUNDS,
+  SECTION6_ALLOWED_CONCEPTS } = require('./lib/disclaimer');
 const { promptScorecard, promptFacts, promptBaseline, findingTargets } = require('./lib/prompt-payload');
 
 const HORIZONS = ['short', 'medium', 'long'];
@@ -19,8 +22,9 @@ const OZ_TO_GRAM = 31.1035;
 const COUNTERPARTY_GROUPS = ['commercial', 'noncommercial', 'nonreportable'];
 const LESSON_METRICS = ['range', 'brier', 'dir'];
 const C12_FORBIDDEN_WORDS = REDLINE_WORDS;
-// 第六段按设计 8.1 只讲方法、不给具体数值,故整段禁阿拉伯数字(需要计数用中文数字)
-const REDLINE_SECTIONS = ['一', '二', '三', '四', '五'];
+// 第六段按设计 8.1 只讲方法、不给具体数值,故整段禁具体数量(阿拉伯数字 ∪ 中文数量);
+// 指令性构造的判定覆盖一–六段,第六段只放过设计要求它讲的那三个概念。
+const REDLINE_SECTIONS = ['一', '二', '三', '四', '五', '六'];
 const C5_NEGATION_WORDS = ['无', '缺失', '暂无', '未获取', '不足', '缺少', '缺'];
 const C7_INDICATORS = ['胜率', 'Brier', 'Winkler'];
 const PLACEHOLDER_TOKENS = ['TODO', 'TBD', 'FIXME', '占位', '待补充', 'XXX', 'N/A', '{{', '}}'];
@@ -37,7 +41,27 @@ const NUM_RE = /(?<![\d.A-Za-z])-?\d[\d,]*(?:\.\d+)?%?/g;
 const SUFFIX_SKIP_RE = /^[年月日时分秒]/;
 const PCTILE_SUFFIX_RE = /^分位/;
 const SENTENCE_SPLIT_RE = /[。!!??\n]/;
+// 子句必须切中文逗号:「本报告不提供仓位建议，模型仅输出 80% 概率区间」在句级只是一句,
+// 按句判定会把每天都要写的免责句拦下。不切「、」—— 顿号连接的枚举项共享同一个主语。
+const CLAUSE_SPLIT_RE = /[。!!??；;，,\n]/;
 const RANGE_RE = /(\d[\d,]*(?:\.\d+)?)\s*[-~至到]\s*(\d[\d,]*(?:\.\d+)?)/g;
+// 全角数字对 `\d` 完全不可见:实测同一个编造值,`51737` 被 C4 拦下、`５１７３７` 零 findings,
+// 一处编码问题同时关掉 C4 整个溯源层与产品红线。故在抽取数字的入口统一归一化,
+// 各 check 里各写一遍就又是一份清单。`０-９．％` 与半角差恒为 0xFEE0 且长度 1:1,
+// 不动全角逗号 —— 「58，3987」并成 `58,3987` 会被读成 583987。
+const FULLWIDTH_RE = /[０-９．％]/g;
+const CN_NUM_RE = /[零一二三四五六七八九十百千万两]+/g;
+const CN_SCALE_CHARS = '十百千万';
+// 量词跟在中文数字后面才构成数量。刻意不含「分」「步」「个」:十分/三步/九个月不是价位或仓位。
+const CN_UNIT_RE = /^(?:成|倍|美元|元|点|手|吨|档|块|折)/;
+// 价位构造:数字紧跟方位词、或「在/于/至 + 数字」⇒ 说的是价格点位,
+// 即便一个指令性词都没有(「4022.2以下买入」「在4022买入」都是省略主语的祈使句)
+const PRICE_LEVEL_RE = /(?:\d[\d,.]*|[零一二三四五六七八九十百千万两]{2,})\s*(?:美元|元|点)?\s*(?:以下|以上|附近|上方|下方|之上|之下|一带|关口)|(?:在|于|至|到)\s*(?:\d[\d,.]*|[零一二三四五六七八九十百千万两]{2,})/;
+// 反事实警示句(「若当时按下沿止损将全部被扫」)与免责句同属绝不能自拦的一类
+const COUNTERFACTUAL_RE = /(?:若|如果|假如|倘若|假设)[\s\S]*?(?:将|则|就|会|反而)/;
+// 报告自述「本报告/本模型不…」是免责而非指令。只认这一种主语,不认裸「不」——
+// 「不妨在3978买入」也带「不」,按裸字判会把祈使句一并放过。
+const SELF_NEGATION_RE = /(?:本报告|本模型|本段|本区间|本次)[^，,。;；]*[不未无]/;
 
 function findingOf(check, locator, expected, actual) {
   return { check, severity: 'block', locator, expected, actual };
@@ -53,9 +77,31 @@ function stripDates(text) {
   return text.replace(DATE_RE, (m) => ' '.repeat(m.length));
 }
 
+// 全角数字归一化。放在数字提取的唯一入口,C4/C3/C5/C11 与红线一并受益。
+function normalizeDigits(text) {
+  return text.replace(FULLWIDTH_RE, (c) => String.fromCharCode(c.charCodeAt(0) - 0xFEE0));
+}
+
+// 中文数量。第六段唯一的防线是「不给具体数值」,而上一版契约恰好把「需要计数」指向中文数字 ——
+// 防线看不见的那一种,实测「仓位控制在三成以内，可用两倍杠杆」零 findings。
+// 判据:带量词的(三成/两倍),或两字以上且第二字是位数的写法(三千九百八十七)。
+// 「万一」「一两」「三五」这类非数量连用词、「数十」「几十」的约数、「第三方」由此排除。
+function chineseQuantities(text) {
+  const out = [];
+  let m;
+  CN_NUM_RE.lastIndex = 0;
+  while ((m = CN_NUM_RE.exec(text))) {
+    const run = m[0];
+    if ('数几第'.includes(text[m.index - 1])) continue;
+    const scaled = run.length >= 2 && CN_SCALE_CHARS.includes(run[1]);
+    if (scaled || CN_UNIT_RE.test(text.slice(m.index + run.length))) out.push(run);
+  }
+  return out;
+}
+
 // 从正文抽取候选数字;百分比/分位后缀不在此处折算,由各检查按自身字段语义决定。
 function extractNumbers(text) {
-  const stripped = stripDates(text);
+  const stripped = stripDates(normalizeDigits(text));
   const out = [];
   let m;
   NUM_RE.lastIndex = 0;
@@ -402,23 +448,58 @@ function checkC11(doc) {
 // 「止损位设在3987」「4022.2以下买入,4059以上卖出」——零 findings。因为区间端点与基准价
 // 本就在 C4 池里,拿它们当止损价/买卖点位是这套自检结构上永远抓不到的。
 //
-// 故两条都写成不变量而非「禁止说什么」的词表:
-//   第六段禁阿拉伯数字 = 取消把价格/点位/倍数/仓位大小说出口的能力(设计 8.1 本就要求不给具体数值);
-//   一–五段红线词与数字同句即拦。
+// 故两段各按自己的不变量写,而不是「禁止说什么」的词表:
+//   第六段禁具体数值(阿拉伯数字 ∪ 中文数量 ∪ 仓位档位词)= 取消把价格/点位/倍数/仓位大小
+//   说出口的能力(设计 8.1 本就要求不给具体数值);该段合法地要讲「怎么自行推算止损距离」,
+//   所以拦的是数值而不是「止损」这个词。
+//   一–五段按指令性构造:指令性标记(或价位构造)与红线概念落在同一子句才算越界 ——
+//   否则央行购金吨数/ETF 流向/COT 多空持仓这些设计要求必写的内容天天被拦。
+// 长复合词先挖空,否则「净买入」留下的「买入」照样咬。
+function maskCompounds(text) {
+  let out = text;
+  for (const w of REDLINE_COMPOUNDS) out = out.split(w).join(' '.repeat(w.length));
+  return out;
+}
+
+function splitClauses(text) {
+  return text.split(CLAUSE_SPLIT_RE).map((s) => s.trim()).filter((s) => s.length > 0);
+}
+
 function checkRedline(doc) {
   const out = [];
   for (const line of (doc.sections['六'] || '').split('\n')) {
-    if (!/\d/.test(line)) continue;
+    const norm = normalizeDigits(line);
+    const digit = norm.match(/\d[\d,.]*/);
+    const cn = chineseQuantities(norm);
+    if (!digit && !cn.length) continue;
     out.push(findingOf('C12', `第六段:「${line.trim().slice(0, 40)}」`,
-      '第六段只讲方法不给具体数值,不得出现阿拉伯数字(需要计数请用中文数字)', line.trim().match(/\d[\d,.]*/)[0]));
+      '第六段只讲方法不给具体数值,不得出现阿拉伯数字或中文数量(三成、两倍、四千零二十二)',
+      digit ? digit[0] : cn[0]));
   }
   for (const s of REDLINE_SECTIONS) {
+    const selfWords = s === '六'
+      ? REDLINE_SELF_WORDS.filter((w) => !SECTION6_ALLOWED_CONCEPTS.includes(w))
+      : REDLINE_SELF_WORDS;
     for (const sent of splitSentences(doc.sections[s] || '')) {
-      if (!/\d/.test(sent)) continue;
-      const hit = C12_FORBIDDEN_WORDS.find((w) => sent.includes(w));
-      if (hit) {
-        out.push(findingOf('C12', `第${s}段:「${sent.trim().slice(0, 40)}」`,
-          `不得给出具体「${hit}」数值;要提及请与数字分句且只作免责表述`, hit));
+      // 描述性主语按整句判:「各国央行持续购金，仓位创历史新高」的主语在前一子句
+      const descriptive = REDLINE_DESCRIPTIVE_SUBJECTS.some((w) => sent.includes(w));
+      for (const clause of splitClauses(sent)) {
+        const c = maskCompounds(normalizeDigits(clause));
+        const self = selfWords.find((w) => c.includes(w));
+        const flow = REDLINE_FLOW_WORDS.find((w) => c.includes(w));
+        if (!self && !flow) continue;
+        if (REDLINE_NEGATION_MARKERS.some((w) => c.includes(w))
+          || COUNTERFACTUAL_RE.test(c) || SELF_NEGATION_RE.test(c)) continue;
+        // 显式指令标记优先于描述性主语:「央行增持，建议半仓跟随」仍要拦。
+        // 反之价位构造不足以压过第三方主语 —— 「央行在4000附近增持」与「在4000附近买入」
+        // 的区别只在主语,前者是设计要求第二段必写的内容。
+        const marker = REDLINE_DIRECTIVE_MARKERS.some((w) => c.includes(w));
+        if (!marker && descriptive) continue;
+        // B 类词单独出现是描述第三方流向的写法;A 类词或价位构造才指向读者自己的操作
+        if (!marker && !self && !PRICE_LEVEL_RE.test(c)) continue;
+        out.push(findingOf('C12', `第${s}段:「${clause.slice(0, 40)}」`,
+          `不得向读者给出「${self || flow}」这类操作指令;第三方持仓/流向请写成描述性表述,免责表述请与操作指令分开`,
+          self || flow));
       }
     }
   }
@@ -591,4 +672,6 @@ module.exports = {
   checkC1, checkC2, checkC3, checkC4, checkC5, checkC6, checkC7,
   checkC8, checkC9, checkC10, checkC11, checkC12, checkC13, checkC14,
   C3_K_LO, C3_K_HI, C9_PROB_THRESHOLD, C9_CENTER_FACTOR, DISCLAIMER_TEXT,
+  // 仅供测试:归一化是「数字提取入口」这一层的性质,从各 check 外面测不到它只有一处
+  extractNumbers, normalizeDigits, chineseQuantities,
 };

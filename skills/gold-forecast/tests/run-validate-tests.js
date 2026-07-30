@@ -254,14 +254,14 @@ test('T34: 第六段禁的是阿拉伯数字这个不变量,不是词表', () =>
   assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '中文数字表述不该被拦');
 });
 
-test('T35: 一–五段红线词与数字同句被拦,不同句则放行', () => {
+test('T35: 一–五段按指令性构造判定,免责表述放行', () => {
   for (const s of ['建议仓位控制在2成以内。', '在3978附近买入较为合适。', '止损设在3978。']) {
     const f = validate(parseForecast(inject('四', s)), CTX()).findings;
     assert.ok(f.some((x) => x.check === 'C12'), `未被 C12 拦下: ${s} -> ${JSON.stringify(f)}`);
   }
-  // 免责表述本身不带数字,必须放行 —— 否则每天都会因为一句免责话触发修复轮
+  // 免责表述本身必须放行 —— 否则每天都会因为一句免责话触发修复轮
   const ok = validate(parseForecast(inject('四', '本报告不提供仓位与杠杆建议。')), CTX()).findings;
-  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '不含数字的免责表述不该被拦');
+  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '免责表述不该被拦');
 });
 
 test('T36: 现有全部夹具与降级模板的 C12 误报为 0', () => {
@@ -285,14 +285,21 @@ test('T36: 现有全部夹具与降级模板的 C12 误报为 0', () => {
 });
 
 test('T37: 红线词表单点持有于 lib/disclaimer', () => {
-  // 两处检查(第七段扫描、一–五段同句判定)共用一份;各写一份必然漂移
-  const { REDLINE_WORDS } = require('../references/scripts/lib/disclaimer');
+  // 三处判定(第七段扫描、一–五段指令性构造、第六段档位词)共用一份;各写一份必然漂移
+  const D = require('../references/scripts/lib/disclaimer');
   for (const w of ['仓位', '杠杆', '止损', '买卖点位', '买入', '卖出', '加仓', '减仓']) {
-    assert.ok(REDLINE_WORDS.includes(w), `红线词表缺 ${w}`);
+    assert.ok(D.REDLINE_WORDS.includes(w), `红线词表缺 ${w}`);
   }
+  // REDLINE_WORDS 必须由 A/B 两类拼出,而不是第三份手写清单
+  assert.deepEqual(D.REDLINE_WORDS, [...D.REDLINE_SELF_WORDS, ...D.REDLINE_FLOW_WORDS]);
   const src = fs.readFileSync(
     path.join(__dirname, '..', 'references', 'scripts', 'validate.js'), 'utf-8');
   assert.equal(/C12_FORBIDDEN_WORDS = \[/.test(src), false, 'validate.js 不得再自己维护一份词表');
+  for (const name of ['REDLINE_DIRECTIVE_MARKERS', 'REDLINE_DESCRIPTIVE_SUBJECTS',
+    'REDLINE_NEGATION_MARKERS', 'REDLINE_COMPOUNDS', 'SECTION6_ALLOWED_CONCEPTS']) {
+    assert.ok(Array.isArray(D[name]) && D[name].length > 0, `${name} 应在 lib/disclaimer 单点持有`);
+    assert.equal(new RegExp(`${name} = \\[`).test(src), false, `validate.js 不得再写一份 ${name}`);
+  }
 });
 
 test('T38: 提示词已把两条红线约束写进契约(自检拦得住但模型不知道会每天烧修复轮)', () => {
@@ -300,5 +307,130 @@ test('T38: 提示词已把两条红线约束写进契约(自检拦得住但模�
     lessons: [], contextTags: [] });
   const contract = r.blocks.find((b) => b.name === 'contract').text;
   assert.match(contract, /第六段[^\n]*阿拉伯数字/);
-  assert.match(contract, /一至五段[^\n]*数字/);
+  // 第六段的中文数量通道:上一版契约恰好把「需要计数」指向中文数字 —— 防线看不见的那一种
+  assert.match(contract, /第六段[\s\S]{0,80}中文数量/);
+  assert.match(contract, /一至五段[\s\S]{0,120}操作指令/);
+  // 契约块 citable:false,新增文案不得带阿拉伯数字(模型看得见却不可引用 = 每天烧一轮修复)
+  const lines = contract.split('\n').filter((l) => /第六段|一至五段|价位构造/.test(l));
+  assert.equal(/\d/.test(lines.join('')), false, `红线约束文案不得含阿拉伯数字: ${lines.join(' / ')}`);
+});
+
+// —— F-2:数字提取入口的全角归一化 ——
+// 全角数字对 `\d` 完全不可见,而上一轮把第六段红线也架在同一个 `\d` 上,
+// 于是一处编码问题同时关掉 C4 整个溯源层与产品红线。实测同一个编造值:
+// `51737` 被 C4 拦下、`５１７３７` 零 findings。
+
+test('T39: 全角数字必须同时对 C4 与红线可见,且不是「见全角就拦」', () => {
+  const { checkC4, extractNumbers } = require('../references/scripts/validate');
+  const base = checkC4(parseForecast(md('forecast-good.md')), CTX()).length;
+  const cite = (v) => checkC4(parseForecast(
+    md('forecast-good.md').replace(/(## 四、[^\n]*\n\n)/, `$1本段引用一个值 ${v}。\n\n`)), CTX()).length - base;
+  // 正向:池里够不到的编造值,半角与全角都必须被 C4 拦下
+  assert.ok(cite('51737') > 0, '半角编造值本就该被 C4 拦下');
+  assert.ok(cite('５１７３７') > 0, '全角编造值绕过 C4 = 整个溯源层可被一次编码替换关掉');
+  // 反向:池里真有的 lbma.pm_usd=4022.2,全角写法必须照旧放行 —— 否则「见全角就拦」也能过正向
+  assert.equal(cite('４０２２．２'), 0, '全角写法的真值不得被误拦');
+  assert.equal(cite('4022.2'), 0);
+  // 归一化落在数字提取的入口,不是各 check 里各写一遍
+  assert.deepEqual(extractNumbers('全角 ４０２２．２ 与半角 51737').map((n) => n.numeric), [4022.2, 51737]);
+  // 红线两侧同样受益:第六段与一–五段的全角越界句都要拦
+  for (const [sec, s] of [['六', '止损位设在３９８７。'], ['六', '４０２２以下买入，４０５９以上卖出。'],
+    ['一', '止损设在３９７８。'], ['四', '建议仓位控制在２成以内。']]) {
+    const f = validate(parseForecast(inject(sec, s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `全角越界句未被拦: ${sec} ${s}`);
+  }
+});
+
+// —— F-3:一–五段改判「指令性构造」——
+// 上一版规则在该拦的地方靠数字形式(改编码就穿透)、在不该拦的地方靠红线词,而央行购金吨数、
+// ETF 流向、COT 多空持仓正是设计 8.1 要求第二段必写的内容。实测 8 条描述性市场表述里 7 条
+// 被误拦(连免责句自己都被拦)⇒ 正常报告每天触发修复轮 ⇒ 每天降级发布。
+
+test('T40: 描述第三方持仓与流向的市场表述不得误拦', () => {
+  const cases = [
+    ['二', '各国央行连续9个月净买入黄金，二季度合计买入183吨。'],
+    ['二', '全球黄金ETF上周净卖出12.4吨，为近6周首次流出。'],
+    ['二', '海外市场去杠杆压力缓解，杠杆资金规模回落约4%。'],
+    ['三', 'COMEX投机多头减仓8%，空头同步减仓5%。'],
+    ['三', '投机盘仓位处于近三年高位，拥挤度指标为0.43分位。'],
+    ['二', '各国央行在4000美元附近继续增持，未见减持迹象。'],
+    ['四', '本报告不提供仓位建议，模型仅输出80%概率区间。'],
+    ['五', '过去20期中有3期跌破下沿，若当时按下沿止损将全部被扫，故不建议如此使用。'],
+    ['四', '若实际利率继续下行，区间中枢将上移，但本模型不据此调整仓位假设。'],
+  ];
+  for (const [sec, s] of cases) {
+    const f = validate(parseForecast(inject(sec, s)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `设计要求第二段必写的内容被误拦: ${sec} ${s}`);
+  }
+});
+
+test('T41: 指令性构造必须被拦,含省略主语的祈使句与不带任何数字的纯语义越界', () => {
+  const cases = [
+    ['二', '目标价4120，跌破3925止损。'],
+    ['四', '在3978附近买入较为合适。'],
+    ['四', '在4022买入。'],
+    ['五', '建议在4022附近分批建仓，止损3978。'],
+    ['一', '读者不妨在3978买入。'],
+    ['四', '可考虑在4059上方减仓。'],
+    ['二', '建议在四千零二十二附近买入，仓位不超过三成。'],
+    ['三', '止损距离建议取一倍日波动率。'],
+    ['四', '仓位不宜超过三成。'],
+    ['四', '建议投资者逢低买入并设置止损。'],
+    ['一', '读者可在下沿附近入场，上沿附近离场。'],
+    ['五', '应清仓观望，待波动率回落后再建仓。'],
+    ['一', '空仓观望为宜。'],
+    ['三', '建议满仓持有至月底。'],
+  ];
+  for (const [sec, s] of cases) {
+    const f = validate(parseForecast(inject(sec, s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `越界句未被 C12 拦下: ${sec} ${s} -> ${JSON.stringify(f)}`);
+  }
+});
+
+test('T42: 免责声明本身绝不能被自己的红线检查拦下', () => {
+  // 硬判据。上一版实测「本报告不提供仓位建议，模型仅输出 80% 概率区间」被自己拦下,
+  // 而免责句每天都要写 ⇒ 三轮修复耗尽 ⇒ 每天降级发布。
+  const { DISCLAIMER_TEXT } = require('../references/scripts/lib/disclaimer');
+  for (const sec of ['一', '二', '三', '四', '五', '六']) {
+    const f = validate(parseForecast(inject(sec, DISCLAIMER_TEXT)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `免责声明注入第${sec}段后被自己的红线拦下`);
+  }
+});
+
+test('T43: 第六段禁的是「具体数量」,中文数量与档位词同等对待;非数量的中文连用词放行', () => {
+  const { chineseQuantities } = require('../references/scripts/validate');
+  for (const s of ['建议在三千九百八十七设置止损。', '仓位控制在三成以内，可用两倍杠杆。',
+    '目标价可看至四千一百二十。', '每次入场只用两成资金。', '建议半仓参与，跌破下沿离场。',
+    '建议将资金分成三份，每份对应一个价位挂单。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `第六段越界句未被拦: ${s}`);
+  }
+  // 反向:非数量的中文连用词与约数必须放行,否则第六段每天都在报警
+  for (const s of ['区间半宽约为数十点，具体取值随波动率变化，不宜一概而论。',
+    '万一价格跌破下沿，应先复核波动率估计是否失真，而非立刻反向操作。',
+    '使用方法可分三步：先看方向，再看区间，最后结合自身情况判断。',
+    '该方法与第三方研究结论一致，但仍以本报告披露的口径为准。',
+    '本区间基于短期波动率分布估算，置信水平与基线模型一致。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `第六段合法方法说明被误拦: ${s}`);
+  }
+  // 判据层:量词与位数写法各自独立生效
+  assert.deepEqual(chineseQuantities('三成两倍'), ['三', '两']);
+  assert.deepEqual(chineseQuantities('三千九百八十七'), ['三千九百八十七']);
+  assert.deepEqual(chineseQuantities('数十 几百 第三方 万一 一致 十分 三步'), []);
+});
+
+test('T44: 第六段放过的只有设计要求它讲的那三个概念,其余操作指令照拦', () => {
+  const { SECTION6_ALLOWED_CONCEPTS, REDLINE_SELF_WORDS } = require('../references/scripts/lib/disclaimer');
+  // 派生而非另写一份清单:允许集必须是红线概念的子集,否则放过的是它自己造出来的词
+  for (const w of SECTION6_ALLOWED_CONCEPTS) assert.ok(REDLINE_SELF_WORDS.includes(w), `${w} 不在红线概念里`);
+  // 正向:第六段合法地要讲这三个概念(夹具与降级模板都在用),不带数量时必须放行
+  const ok = validate(parseForecast(inject('六',
+    '如需自行换算止损距离，可参考区间半宽，并结合自身仓位规模与杠杆偏好独立决定。')), CTX()).findings;
+  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '第六段的方法说明被误拦');
+  // 反向:不在允许集里的概念,即便一个数字都不带也要拦
+  for (const s of ['建议半仓参与，跌破下沿离场。', '每份资金对应一个价位挂单。', '请在下沿入场。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `第六段的无数字操作指令未被拦: ${s}`);
+  }
 });
