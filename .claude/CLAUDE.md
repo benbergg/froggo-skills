@@ -106,6 +106,13 @@ ai-talk-tutorial(AI 演讲教程日报)
 ├── 强依赖 Node.js 18+(原生 fetch)
 ├── 软依赖 yt-dlp ≥2026.06(三级降级兜底;7-28 实测 tier2 web+cookies 可用)
 └── 字幕层移植自 VM llm-video-log/subtitle.ts,两处需同步维护
+
+gold-forecast(黄金交易预测日报)
+├── 强依赖 openclaw CLI(infer model run 调 MiniMax-M3 + message send 推飞书)
+├── 强依赖 FRED_API_KEY(~/.config/gold-forecast/env)
+├── 强依赖 GOLD_FEISHU_TARGET(push.js 无默认收件人,缺了直接 exit 1)
+├── 强依赖 Node.js 18+、系统 unzip、flock(history-store upsert 无锁,靠编排层串行)
+└── 零 npm 依赖,统计计算全自写并对拍验证
 ```
 
 ### exp-compass-daily 设计文档
@@ -342,6 +349,56 @@ exit 1(静默 filter 掉会让每个候选零级可跑→直落 exit 6,把排查
 测试 33 项,11 组 revert-and-rerun。**遗留的真实单点**:整条链路只剩 yt-dlp 一级,
 且它与已停用的两级共用同一份 cookie —— 提高存活率要靠告警(exit 7 已做)
 与 cookie 轮换流程,不是靠这两级。
+
+### gold-forecast V1 (2026-07-30)
+
+详见知识库 [[20260729-黄金交易预测skill-v1-设计文档]]。四层结构:确定性采集 /
+量化基线 / LLM 调整 / 自检物理断路,并新增前三个 skill 都没有的**结算层** ——
+反思能否成立全在于此。入口只有 `run.js`,编排顺序即正确性约束。
+
+- **结算与预测按依赖面切开**。`collect-settlement`(仅 LBMA)→ `settle` → `scorecard`
+  三步只依赖一个序列,东财或 FRED 全挂也照常完成;`collect-facts`(其余 7 源)失败
+  只丢当天的预测,不丢当天的结算。原设计把采集合成一步,于是东财故障那天连结算也停了。
+- **建模的训练与预测走同一条数据路径**。`collect-facts` 把当日数据追加进 `history/`,
+  `baseline.js` **只读 history、完全不认识 facts.json**。两条路径只要在单位/缺失填充/
+  日期对齐/修订处理上有任何差异,就是在一个分布上训练、在另一个分布上预测 ——
+  不报错、回测漂亮、实盘失效。
+- **模型 pin 到 M3,不符即降级为只发基线**。openclaw 的 fallback 链在一般应用里是
+  可用性优点,在测量系统里是污染源(本仓库有 failover 混入视觉模型 VL-01 的前科)。
+  对一个要回答「M3 的调整是否加分」的系统,「今天没有 LLM 预测」优于「今天的预测来自
+  另一个模型」——前者只少一个样本,后者是往数据里掺沙子。
+- **E2BIG 与网关超时的返回值只差 signal/error**。`infer model run` 只有 `--prompt`,
+  受 `MAX_ARG_STRLEN` 限制,超限签名是 `exit=null` + stdout 空 + 约 3ms 返回。
+  它与超时被 kill 在 `status`/`stdout` 上完全一致,只有 `signal`(null vs SIGTERM)与
+  `error.code`(E2BIG vs ETIMEDOUT)能分。只看前两个字段就会把网关变慢判成「prompt
+  太大」⇒ 不重试也不算 infra,真故障静默吞掉。故环境信号优先级高于超长信号。
+- **naive 基准必须取 `features.p0_N`,不能取 `horizons.*.baseline.prob_up`**。后者在
+  该周期 logistic 通过验收后就不再等于 p0。缺写入端时生产上每条结算都回退 0.5,
+  `p0_20=0.60` 时基准被抬高 0.0100 —— **正好是回测验收门槛 `minGain=0.005` 的两倍**,
+  这个 bug 送的虚假增益比它要跨过的门槛还大一倍。
+- **c9_triggered 必须独立复算,不能从自检 findings 反推**。`checkC9` 只在模型没能给出
+  合格理由时才产 finding;一个每天大幅偏离基线却每次都写了工整理由的模型 findings 里
+  干干净净 ⇒ 20 天全记 false ⇒ 那条复查线永远触发不了,而这恰是设计最想抓的情形。
+- **进 prompt 的每个数字都必须可引用**。`build-prompt` 把整个 scorecard 塞进不可截断的
+  calibration 块,而 C4 的允许池只取 `by_horizon` ⇒ 顶层 `data_quality`(剔除计数)
+  模型看得见却不在池里,一引用就触发 C4 → 三轮修复全废。序列化前剥掉。
+- **target_date 外推不能用 `lib/trading-calendar.js` 的 `nthSession`**。生产上
+  `calendar_tail` 全是过去的定盘日、末元素就是 today,`filter(d > anchor)` 恒空、
+  每次返回 null。它当初是对着一个「fromDate 后面还有余量」的夹具验的。改用工作日
+  递增,未知假日的偏差由 `settle.js` 的 approx 分支在结算时自我纠正。
+- **回填窗口 7 个完整日历年不能改短**。卡样本量的不是价格 spine(不按日期过滤、
+  全量历史),而是三特征的联合覆盖窗口:`可评估条数 = 覆盖窗口 − 95 − 250 − 2n`。
+  实测 6.0 年 long 只剩 1115 条 < 1200 下限。调短会让验收门槛**静默失效**。
+- **`history-store` 的 upsert 是无锁读-改-写**:两进程并发实测应留 300 条只落
+  103-154 条,无异常无非 0 退出码。库层刻意不加锁(那是把编排层的问题伪装成已加固),
+  串行由 cron 的 `flock` 保证。
+- **退出码分层**:`commit`/`push` 的运行期异常退 5、参数错退 1、备份失败退 3。
+  `run.js` 把 3 判成**成功**(入库归档已完成、重跑幂等)—— 判成失败会为了修一个
+  rsync 问题重跑整条流水线再付一次模型费用;退出码仍透传 3 保持刺眼。
+- 测试 404 项。判别力全部经 revert-and-rerun,两处暴露假绿灯:①「naive_p 取 p0_N」
+  在 `model:'p0_N'` 的夹具下与取 `baseline.prob_up` 完全同值,必须造一个 logistic
+  已生效的夹具才测得到;②「删产物只在最终放弃时」换成 `!passed` 照样全绿 ——
+  两者只在 pin 不符中途 break 时才分叉。
 
 ## 版本管理
 
