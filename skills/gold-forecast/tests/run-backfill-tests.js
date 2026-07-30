@@ -2,16 +2,21 @@
 const fs = require('node:fs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { freshTmp, runCli } = require('./helpers');
-const { buildUrl } = require('../references/scripts/sources/fred-series');
+const { freshTmp, runCli, FIXTURE } = require('./helpers');
+const fredSrc = require('../references/scripts/sources/fred-series');
+const { buildUrl } = fredSrc;
 const B = require('../references/scripts/backfill');
 const { HistoryStore } = require('../references/scripts/lib/history-store');
 
-test('T1: FRED 回填必须走 vintages 模式', () => {
+test('T1: FRED 回填走 realtime 区间 + output_type=1,不得用宽表的 output_type=2/3', () => {
   const url = buildUrl('DFII10', { mode: 'vintages', since: '2021-07-01', until: '2026-07-28' }, 'K');
-  assert.ok(url.includes('output_type=2'), '缺 output_type=2 会退化成每日逐次查询,约 5000 次请求必触限');
+  // realtime 区间是「一次取回全部版本」的关键;缺了它会退化成每日逐次查询,约 5000 次请求必触限
   assert.ok(url.includes('realtime_start=2021-07-01'));
   assert.ok(url.includes('realtime_end=2026-07-28'));
+  // output_type=2/3 返回宽表(列名 SERIESID_YYYYMMDD、无 value 键),解析层一行都读不到
+  assert.ok(url.includes('output_type=1'), `vintages 必须用 output_type=1: ${url}`);
+  assert.equal(/output_type=[23]/.test(url), false, '宽表输出会让整个 FRED 历史落盘成 null');
+  assert.ok(url.includes('limit=100000'), '一次性回填须显式给满 limit,避免默认分页静默截断');
 });
 
 test('T2: 非 vintages 模式不带 output_type', () => {
@@ -158,4 +163,56 @@ test('T12: --only 指定不存在的序列名时报错退出,不静默产出 0/0
   assert.ok(r.stderr.includes('not_a_series'));
   assert.ok(r.stderr.includes('lbma_pm_usd'), '应列出合法序列名帮助定位拼写错误');
   r.cleanup();
+});
+
+// —— MF-1:FRED 回填的响应形态断层 ——
+// 原先只断言 URL 拼对了(output_type=2),没有任何测试把回来的东西喂进解析层。
+// 「参数拼对了」与「回来的东西解析对了」之间的断层让整库落成 null 而全程 exit 0。
+
+test('T13: 宽表响应(output_type=2 形态)必须让该序列进 failed 且不写 meta', async () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const plan = B.buildPlan({ since: '2021-07-01', until: '2026-07-28' })
+    .filter((p) => p.series === 'fred_DFII10');
+  const wide = JSON.parse(fs.readFileSync(FIXTURE('fred-DFII10.widetable.raw.json'), 'utf-8'));
+  const fetchers = {
+    fred: async (item) => fredSrc.fetchSeries(item.range, {
+      seriesId: item.seriesId, series: item.series, apiKey: 'k',
+      fetchImpl: async () => ({ ok: true, json: async () => wide }),
+    }),
+  };
+  const { ok, failed } = await B.runBackfill({ store, plan, fetchers });
+  assert.equal(ok.length, 0, '形态不符时不得报成功');
+  assert.equal(failed.length, 1);
+  assert.equal((store.meta().series || {}).fred_DFII10, undefined,
+    '不写 meta 才能保证缺口下次续跑仍被列为待办,而不是被标成「已回填完整」');
+  assert.equal(store.readAll('fred_DFII10').length, 0, '一条 value:null 都不许落盘');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T14: 逐 (date, vintage) 行响应落盘出有限值,且 available_date 不全相等', async () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const plan = B.buildPlan({ since: '2021-07-01', until: '2026-07-28' })
+    .filter((p) => p.series === 'fred_DFII10');
+  const raw = JSON.parse(fs.readFileSync(FIXTURE('fred-DFII10.vintages.raw.json'), 'utf-8'));
+  const fetchers = {
+    fred: async (item) => fredSrc.fetchSeries(item.range, {
+      seriesId: item.seriesId, series: item.series, apiKey: 'k',
+      fetchImpl: async () => ({ ok: true, json: async () => raw }),
+    }),
+  };
+  const { ok, failed } = await B.runBackfill({ store, plan, fetchers });
+  assert.deepEqual(failed, []);
+  assert.equal(ok.length, 1);
+  const rows = store.readAll('fred_DFII10');
+  assert.ok(rows.length >= 3, `落盘行数不足: ${rows.length}`);
+  for (const r of rows) assert.ok(Number.isFinite(r.value), `value 必须是有限数: ${JSON.stringify(r)}`);
+  // vintage 信息整体丢失的签名就是「available_date 全部等于 --until」——回测期间 FRED
+  // 行因此全程不可见,evaluated=0、logistic 永远拿不到系数
+  assert.ok(new Set(rows.map((r) => r.available_date)).size > 1,
+    `available_date 全相等说明 vintage 信息丢了: ${JSON.stringify(rows.map((r) => r.available_date))}`);
+  assert.equal(rows.some((r) => r.available_date === '2026-07-28'), false,
+    'available_date 不该退回 --until');
+  fs.rmSync(tmp, { recursive: true, force: true });
 });

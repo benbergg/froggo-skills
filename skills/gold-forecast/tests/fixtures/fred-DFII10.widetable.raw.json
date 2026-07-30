@@ -1,0 +1,19 @@
+{
+  "realtime_start": "2019-07-01",
+  "realtime_end": "2026-07-28",
+  "observation_start": "1600-01-01",
+  "observation_end": "9999-12-31",
+  "units": "lin",
+  "output_type": 2,
+  "file_type": "json",
+  "order_by": "observation_date",
+  "sort_order": "asc",
+  "count": 3,
+  "offset": 0,
+  "limit": 100000,
+  "observations": [
+    { "date": "2026-06-16", "DFII10_20260617": "2.14", "DFII10_20260728": "2.14" },
+    { "date": "2026-06-17", "DFII10_20260618": "2.23", "DFII10_20260728": "2.23" },
+    { "date": "2026-06-18", "DFII10_20260619": "2.21", "DFII10_20260728": "2.21" }
+  ]
+}

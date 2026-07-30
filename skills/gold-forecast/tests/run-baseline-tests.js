@@ -2,7 +2,8 @@
 const fs = require('node:fs');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { freshTmp } = require('./helpers');
+const path = require('node:path');
+const { freshTmp, runCli } = require('./helpers');
 const { HistoryStore } = require('../references/scripts/lib/history-store');
 const B = require('../references/scripts/baseline');
 
@@ -225,5 +226,157 @@ test('T16: 特征降级时不得跑 logistic,须退回 p0 并说明原因', () =
     assert.ok(out.horizons[k].prob_up < 0.9, `实得 ${out.horizons[k].prob_up},高置信度不能来自插补值`);
   }
   assert.equal(out.features.real_yield_chg, null, '取不到就是 null,0 会被当成「今天利率没变」');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// —— MF-1 止血的下游一半:落盘过 null 的 FRED 行不得被当成「利率没变」——
+
+test('T17: FRED 行 value 为 null 时 real_yield_chg 必须为 null 并记入 degraded_features', () => {
+  // null - null === 0 且 Number.isFinite(0) 为真 ⇒ 特征降级这道防线判它健康,
+  // 常数 0 被当成「今日实际利率没变」服务出去,而这正是回填形态出错时的表现。
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const recs = seedPrices(store, 400);
+  const asOf = recs[recs.length - 1].observed_date;
+  store.upsert('fred_DFII10', [
+    { observed_date: '2025-06-02', available_date: '2025-06-03', vintage: 'v1', value: null },
+    { observed_date: '2025-06-03', available_date: '2025-06-04', vintage: 'v1', value: null },
+  ]);
+  const out = B.computeBaseline({ store, asOf, params: null });
+  assert.equal(out.features.real_yield_chg, null, '两端非有限时必须是 null,不能算成 0');
+  assert.ok(out.degraded_features.includes('real_yield_chg'), 'null 必须进 degraded_features');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T18: 只有一端非有限时同样为 null', () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const recs = seedPrices(store, 400);
+  const asOf = recs[recs.length - 1].observed_date;
+  store.upsert('fred_DFII10', [
+    { observed_date: '2025-06-02', available_date: '2025-06-03', vintage: 'v1', value: 2.4 },
+    { observed_date: '2025-06-03', available_date: '2025-06-04', vintage: 'v1', value: null },
+  ]);
+  const out = B.computeBaseline({ store, asOf, params: null });
+  assert.equal(out.features.real_yield_chg, null);
+
+  // 对照组:另一份库、同样两行、只把 null 换成有限数,必须照常算出差值 ——
+  // 否则「一律返回 null」也能过上面的断言
+  const tmp2 = freshTmp();
+  const store2 = new HistoryStore(tmp2);
+  seedPrices(store2, 400);
+  store2.upsert('fred_DFII10', [
+    { observed_date: '2025-06-02', available_date: '2025-06-03', vintage: 'v1', value: 2.4 },
+    { observed_date: '2025-06-03', available_date: '2025-06-04', vintage: 'v1', value: 2.5 },
+  ]);
+  const ok = B.computeBaseline({ store: store2, asOf, params: null });
+  assert.ok(Math.abs(ok.features.real_yield_chg - 0.1) < 1e-9, `实得 ${ok.features.real_yield_chg}`);
+  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(tmp2, { recursive: true, force: true });
+});
+
+// —— 延后项提级:coef 为真、特征齐全的分支此前零测试覆盖 ——
+// 所有既有夹具都传 params:null 或必然降级,MF-1 修好后 logistic 会「第一次上线即零测试」。
+
+function seedFullFeatures(store, n = 400) {
+  const recs = seedPrices(store, n);
+  const asOf = recs[recs.length - 1].observed_date;
+  seedCot(store, 40, '2024-06-01');
+  store.upsert('fred_DFII10', [
+    { observed_date: '2025-02-03', available_date: '2025-02-04', vintage: 'v1', value: 2.40 },
+    { observed_date: '2025-02-04', available_date: '2025-02-05', vintage: 'v1', value: 2.55 },
+  ]);
+  return asOf;
+}
+
+test('T19: 特征齐全且有系数时跑 logistic,prob_up 等于 sigmoid(β·x)', () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const asOf = seedFullFeatures(store);
+  const coef = [0.2, 0.5, -1.0, 0.8];
+  const params = { params_id: 'p-live', sample_period: ['2000-01-01', asOf],
+    coefficients: { short: coef, medium: coef, long: coef } };
+  const out = B.computeBaseline({ store, asOf, params });
+  assert.deepEqual(out.degraded_features, [], `特征应齐全: ${JSON.stringify(out.features)}`);
+  assert.equal(out.params_id, 'p-live');
+  // 期望值在测试内独立按 logistic 定义算出,不调用被测的 predictLogistic
+  const x = B.MODEL_FEATURES.map((f) => out.features[f]);
+  const eta = coef[0] + coef[1] * x[0] + coef[2] * x[1] + coef[3] * x[2];
+  const expected = Number((1 / (1 + Math.exp(-eta))).toFixed(4));
+  for (const k of ['short', 'medium', 'long']) {
+    assert.equal(out.horizons[k].model, 'logistic', `${k} 特征齐全且有系数时必须跑 logistic`);
+    assert.equal(out.horizons[k].degraded_reason, undefined);
+    assert.equal(out.horizons[k].prob_up, expected, `${k} prob_up 须等于 sigmoid(β·x)`);
+  }
+  // 必须与 p0_N 分支可区分,否则「照旧退回 p0」也能过上面的等值断言
+  assert.ok(Math.abs(expected - out.features.p0_1) > 0.02,
+    `夹具选得不好:logistic 输出 ${expected} 与 p0_1 ${out.features.p0_1} 太近,分辨不出走了哪条分支`);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T20: 特征顺序即 coefficients 下标顺序,打乱系数必然改变输出', () => {
+  // 钉住 MODEL_FEATURES 与系数的对齐:两端漂移不会报错,只会安静地服务错模型
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const asOf = seedFullFeatures(store);
+  const mk = (c) => ({ params_id: 'p', sample_period: ['2000-01-01', asOf],
+    coefficients: { short: c, medium: c, long: c } });
+  const a = B.computeBaseline({ store, asOf, params: mk([0, 1, 0, 0]) });
+  const b = B.computeBaseline({ store, asOf, params: mk([0, 0, 1, 0]) });
+  assert.notEqual(a.horizons.short.prob_up, b.horizons.short.prob_up,
+    'momentum_z 与 real_yield_chg 换位后输出应不同');
+  assert.deepEqual(B.MODEL_FEATURES, ['momentum_z', 'real_yield_chg', 'cot_pctile']);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// —— MF-4:「量化基线整个没上线」不得与「完全正常」外观一致 ——
+
+const baselineCli = (extra = []) => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const asOf = seedFullFeatures(store);
+  const r = runCli({ script: 'baseline.js',
+    args: ['--history', tmp, '--as-of', asOf, '--out', 'baseline.json', ...extra] });
+  const out = JSON.parse(fs.readFileSync(path.join(r.tmp, 'baseline.json'), 'utf-8'));
+  return { r, out, asOf, tmp, cleanup: () => { r.cleanup(); fs.rmSync(tmp, { recursive: true, force: true }); } };
+};
+
+test('T21: params.json 缺失时必须 WARN,不能与健康运行 stderr 逐字相同', () => {
+  const c = baselineCli(['--params', '/nonexistent/params.json']);
+  assert.equal(c.r.code, 0, '无参数不是失败,照常出基线');
+  assert.equal(c.out.horizons.short.model, 'p0_N');
+  assert.match(c.r.stderr, /WARN/, 'params.json 缺失 = 量化基线整个没上线,必须有可观察量');
+  assert.match(c.r.stderr, /short/);
+  c.cleanup();
+});
+
+test('T22: coefficients 为空对象时同样 WARN', () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const asOf = seedFullFeatures(store);
+  const pf = path.join(tmp, 'params.json');
+  fs.writeFileSync(pf, JSON.stringify({ params_id: 'p-empty', sample_period: ['2000-01-01', asOf], coefficients: {} }));
+  const r = runCli({ script: 'baseline.js',
+    args: ['--history', tmp, '--as-of', asOf, '--out', 'baseline.json', '--params', pf] });
+  assert.equal(r.code, 0);
+  assert.match(r.stderr, /WARN/, '空系数与健康运行外观一致就没人会发现回测从未通过验收');
+  assert.match(r.stderr, /p-empty/, 'WARN 须带 params_id,才能区分「没有参数集」与「参数集是空的」');
+  r.cleanup();
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T23: 三期全跑 logistic 时不得出现该 WARN(否则告警自我噪声化)', () => {
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const asOf = seedFullFeatures(store);
+  const pf = path.join(tmp, 'params.json');
+  const coef = [0.2, 0.5, -1.0, 0.8];
+  fs.writeFileSync(pf, JSON.stringify({ params_id: 'p-live', sample_period: ['2000-01-01', asOf],
+    coefficients: { short: coef, medium: coef, long: coef } }));
+  const r = runCli({ script: 'baseline.js',
+    args: ['--history', tmp, '--as-of', asOf, '--out', 'baseline.json', '--params', pf] });
+  assert.equal(r.code, 0);
+  assert.equal(/WARN/.test(r.stderr), false, `健康运行不该有 WARN: ${r.stderr}`);
+  r.cleanup();
   fs.rmSync(tmp, { recursive: true, force: true });
 });

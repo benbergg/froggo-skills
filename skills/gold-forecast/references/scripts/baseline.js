@@ -60,6 +60,16 @@ function cotPctile(cotRows, minSamples = COT_PCTILE_MIN_SAMPLES) {
   return series.filter((v) => v <= current).length / series.length;
 }
 
+// 两端都必须是有限数才相减:落盘过 null 的行相减得 0(`null - null === 0`),
+// Number.isFinite(0) 为真 ⇒ degraded_features 判它健康、常数 0 被当成「今日实际利率没变」
+// 服务出去,而这正是 FRED 回填形态出错时的表现。
+function realYieldChg(rows) {
+  if (rows.length < 2) return null;
+  const prev = rows[rows.length - 2].value;
+  const last = rows[rows.length - 1].value;
+  return Number.isFinite(prev) && Number.isFinite(last) ? last - prev : null;
+}
+
 // --params 是绕开 asOf 的第二条数据通路:样本期跨到 asOf 之后就意味着系数见过未来。
 // 宁可整包丢弃退回 p0,也不静默服务;拒绝理由必须落进产物,否则输出上毫无痕迹。
 function validateParams(params, asOf) {
@@ -93,7 +103,7 @@ function computeBaseline({ store, asOf, params: rawParams }) {
     p0_1: p0N(prices, 1), p0_5: p0N(prices, 5), p0_20: p0N(prices, 20),
     momentum_z: (basePrice / ma20 - 1) / sigma,
     // 取不到就是 null,不再用 0 冒充「今天实际利率没变」
-    real_yield_chg: dfii.length >= 2 ? dfii[dfii.length - 1].value - dfii[dfii.length - 2].value : null,
+    real_yield_chg: realYieldChg(dfii),
     cot_pctile: cotPctile(cot),
   };
   // 降级清单直接由模型特征派生,不再手写一份判据 —— 判据与清单分家就会漂移
@@ -140,6 +150,13 @@ function main() {
   atomicWriteJSON(args.out, out);
   if (out.params_rejected) console.error(`WARN 参数集被拒: ${out.params_rejected.reason},本次退回 p0_N`);
   if (out.degraded_features.length) console.error(`WARN 特征降级: ${out.degraded_features.join(',')},本次退回 p0_N`);
+  // 按不变量报而非按原因枚举:params.json 缺失、系数为空、被拒、特征降级四种情形
+  // 此前只有后两种会 WARN,前两种与健康运行在 stderr 与退出码上逐字相同 ——
+  // 「量化基线整个没上线」与「完全正常」外观一致,是让 FRED 回填故障不可观察的放大器。
+  const fellBack = Object.keys(out.horizons).filter((k) => out.horizons[k].model === 'p0_N');
+  if (fellBack.length) {
+    console.error(`WARN 未跑 logistic 的周期: ${fellBack.join(',')}(params_id=${out.params_id || '无'})`);
+  }
   console.error(`基线 ${out.base_date} base=${out.base_price} σ=${out.sigma_d}`);
 }
 

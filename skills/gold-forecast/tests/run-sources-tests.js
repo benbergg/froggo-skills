@@ -296,3 +296,52 @@ test('T31: fred-release-dates errors 字段记录逐 release 失败原因', asyn
   assert.equal(r.errors.nfp, 'HTTP 403', 'nfp:[] 必须能在 errors 里查到失败原因,不能与"这周确实没有发布"同形');
   assert.equal(r.errors.cpi, undefined, '成功的 release 不应出现在 errors 里');
 });
+
+// —— MF-1:FRED 响应形态不符必须响亮失败,而不是产出 NaN ——
+
+test('T32: 宽表响应(output_type=2/3 形态)喂进 parseObservations 必须抛错', () => {
+  const wide = JSON.parse(fs.readFileSync(FIXTURE('fred-DFII10.widetable.raw.json'), 'utf-8'));
+  // 宽表的列名是动态拼出的 DFII10_YYYYMMDD,没有 value 键 ⇒ Number(undefined)=NaN。
+  // 产出 NaN 会落盘成 value:null 而 status 仍是 'ok',整库被静默毁掉且全程 exit 0。
+  assert.throws(() => fred.parseObservations(wide, 'fred_DFII10', { availableAt: '2026-07-28' }),
+    /形态异常/, '宽表必须抛错而不是产出 NaN');
+});
+
+test('T33: 单条观测值无法解析成有限数即抛错(不区分缺键与垃圾值)', () => {
+  for (const bad of [{ date: '2026-07-02' }, { date: '2026-07-02', value: 'N/A' },
+    { date: '2026-07-02', value: '' }, { value: '2.44' }]) {
+    assert.throws(() => fred.parseObservations({ observations: [bad] }, 'fred_X', { availableAt: '2026-07-29' }),
+      /形态异常/, `应抛错: ${JSON.stringify(bad)}`);
+  }
+});
+
+test('T34: 逐 (date, vintage) 行响应解析出多个不同 available_date', () => {
+  const raw = JSON.parse(fs.readFileSync(FIXTURE('fred-DFII10.vintages.raw.json'), 'utf-8'));
+  const rows = fred.parseObservations(raw, 'fred_DFII10', { availableAt: '2026-07-28' });
+  assert.equal(rows.length, 4, '"." 行被丢弃,其余 4 行须全部解析出来');
+  for (const r of rows) assert.ok(Number.isFinite(r.value), JSON.stringify(r));
+  assert.ok(new Set(rows.map((r) => r.available_date)).size > 1,
+    'available_date 全相等 = vintage 信息丢失,回测期间 FRED 行会全程不可见');
+  // 同一观测日的两个版本必须都留下来,否则修订历史被压平
+  const jun17 = rows.filter((r) => r.observed_date === '2026-06-17');
+  assert.equal(jun17.length, 2);
+  assert.deepEqual(jun17.map((r) => r.value).sort(), [2.23, 2.25]);
+});
+
+test('T35: vintages 回填被分页截断时不得报 ok', async () => {
+  const raw = JSON.parse(fs.readFileSync(FIXTURE('fred-DFII10.vintages.raw.json'), 'utf-8'));
+  const truncated = { ...raw, count: 9000, observations: raw.observations.slice(0, 3) };
+  const fetchImpl = async () => ({ ok: true, json: async () => truncated });
+  const r = await fred.fetchSeries({ mode: 'vintages', since: '2021-07-01', until: '2026-07-28' },
+    { seriesId: 'DFII10', series: 'fred_DFII10', apiKey: 'secret-key', fetchImpl });
+  assert.equal(r.status, 'missing');
+  assert.match(r.error, /截断/);
+  assert.ok(!r.error.includes('secret-key'));
+});
+
+test('T36: 完整响应里的 "." 缺失值不得被误判成分页截断', () => {
+  // count 计的是 observations 行数,records 已剔除 "." ——拿 records 去比会把每个假期都判成丢页
+  const raw = JSON.parse(fs.readFileSync(FIXTURE('fred-DFII10.vintages.raw.json'), 'utf-8'));
+  assert.ok(raw.observations.some((o) => o.value === '.'), '夹具须含 "." 行,否则这条测不到');
+  assert.equal(raw.count, raw.observations.length);
+});
