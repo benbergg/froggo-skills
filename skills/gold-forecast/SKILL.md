@@ -107,10 +107,14 @@ ssh <host> 'cd ~/.openclaw/skills/gold-forecast && node --test tests/run-*-tests
 ssh <host> '. ~/.config/gold-forecast/env; node ~/.openclaw/skills/gold-forecast/references/scripts/backfill.js \
   --history ~/.local/state/gold-forecast/history --since 2019-01-01 --until $(date -d yesterday +%F)'
 
-# 3b. 【强制核对,不通过不得进入第 4 步】抽查 FRED 落盘形态
-ssh <host> 'head -1 ~/.local/state/gold-forecast/history/fred_DFII10.jsonl;
-  awk -F"\"available_date\":\"" "{print substr(\$2,1,10)}" \
-    ~/.local/state/gold-forecast/history/fred_DFII10.jsonl | sort -u | head -5'
+# 3b. 【强制核对,不通过不得进入第 4 步】抽查 FRED 落盘形态。
+#     写成会 exit 1 的形式:只打印的版本夹在一串可粘贴命令中间,从上往下连着贴会直接冲过去
+#     (本项目的教义是物理断路 > 提示)。两条判据的含义见下方小节。
+ssh <host> 'H=~/.local/state/gold-forecast/history/fred_DFII10.jsonl;
+  grep -q "\"value\":null" $H && { echo "3b FAIL: 有 value:null"; exit 1; };
+  n=$(awk -F"\"available_date\":\"" "{print substr(\$2,1,10)}" $H | sort -u | wc -l | tr -d " ");
+  [ "$n" -gt 1 ] || { echo "3b FAIL: available_date 只有一个取值"; exit 1; };
+  echo "3b OK: available_date 取值数=$n"; head -1 $H'
 
 # 4. 基线参数标定(walk-forward 回测)
 ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/backtest.js \
@@ -126,7 +130,8 @@ ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dr
 1. 第一行的 `value` 是**有限数**,不是 `null`
 2. `available_date` 有**多个不同取值**,且不是全部等于 `--until`
 
-不满足就**停在这里**,别跑第 4 步。两条都不成立的典型签名是 FRED 返回了宽表
+命令本身会在任一条不成立时 `exit 1`(只打印的版本夹在可粘贴命令块中间会被连着贴过去)。
+判据不成立就**停在这里**,别跑第 4 步。两条都不成立的典型签名是 FRED 返回了宽表
 (`output_type=2/3`:列名 `SERIESID_YYYYMMDD`、没有 `value` 键)。这个故障曾经
 全程 `exit 0`:回填打 `✓ inserted=N`、`回填完成: 成功 5, 失败 0`,而整库落成
 `value:null`;生产端 `null - null === 0` 被「特征降级」判为健康,回测端因
@@ -196,8 +201,11 @@ logistic 永远拿不到系数。现在形态不符会让该序列进 `failed` �
 - 标 `missing` 的字段,正文不得出现相关论据
 - 胜率 / Brier / Winkler 必须直接引用统计校准的数值,不得自算
 - 新闻必须带链接,链接须来自新闻线索块
-- **不给仓位、杠杆、买卖点位、止损价**——产品红线。机器执行者是 C12,两条不变量:
-  第六段禁阿拉伯数字(该段只讲方法);一–五段红线词与数字同句即拦
+- **不给仓位、杠杆、买卖点位、止损价**——产品红线。机器执行者是 C12:
+  第六段禁具体数量(阿拉伯数字 ∪ 中文数量,该段只讲方法);一–六段按**指令性构造**判 ——
+  指令性标记(或「某价位以下买入」这类价位构造)与红线概念落在**同一子句**才算越界,
+  描述第三方持仓/流向(央行购金吨数、ETF 流向、COT 多空)与免责/反事实语境不触发。
+  数字一律先做全角归一化:`５１７３７` 曾同时穿过 C12 与整个 C4 溯源层
 - 偏离基线超阈值必须给出 `adjustment_reason` 并引用具体 facts 字段
 - 第七段原样复制免责声明全文
 
@@ -297,6 +305,34 @@ openclaw 的 fallback 链在本系统里是污染源,别的模型跑出的预测
    `new_lessons` 落盘。文件不存在时全链路照常工作(选出空数组),所以这件事**不会
    以任何方式报错**。待独立 task。
 5. **`C3_K_LO` / `C3_K_HI` 仍是占位值**(0.5 / 2.0),待回测枚举宽度倍数后标定。
+6. **`validateParams` 不校验 `params.features` 与系数长度。** `backtest.buildParams`
+   专门把 `features: MODEL_FEATURES` 写进 `params.json` —— 那就是 train/serve 契约本身 ——
+   而 `validateParams` 只看 `sample_period`。实测(改 params.json 而不动代码):
+   特征顺序颠倒 + 4 系数 ⇒ `rejected=null`、`model=logistic`、`prob_up=0.9085`,
+   **静默服务错模型**;系数只给 2 个 ⇒ `prob_up: NaN` 序列化成 `null`,且因为
+   `model` 仍是 `logistic`,**绕过 MF-4 那条「未跑 logistic 的周期」WARN** ——
+   下游只会以 C9 误触发、报告里「上涨概率 null」这类症状出现,指不到根因。
+   当前生产者(`buildParams`)恒发 4 个系数且顺序取自同一个 `MODEL_FEATURES`,
+   所以**今天不可达**,是「改了 `MODEL_FEATURES` 而生产上留着旧 params.json」的漂移风险。
+   修法与既有拒绝路径同构(约 3 行):`features` 须 `deepEqual(MODEL_FEATURES)`、
+   `coefficients[k].length === MODEL_FEATURES.length + 1`,否则 `reject(...)`。延后。
+7. **MF-1 的第二个症状(`available_date` 全塌成 `--until`)没有代码级判据。**
+   `parseObservations` 只对「值解析不出有限数」响亮失败;而「值全有限、但每行
+   `available_date` 都等于 `--until`」这一形态照常入库,签名是回测期间 FRED 行
+   全程不可见 ⇒ `evaluated=0` ⇒ logistic 永远拿不到系数。部署第 3b 步现在会为此
+   `exit 1`,但那是一次性的部署闸门,**日常重跑/续跑不覆盖**。可加(约 3 行):
+   `mode === 'vintages'` 且解析出的 `available_date` 去重后只有一个取值 ⇒ 抛错
+   (非 vintages 模式不适用 —— 日频不带 realtime 区间时 `realtime_start` 本就等于今天)。
+   不阻塞的理由:MF-4 的 WARN 修好后这个状态每天都会喊,加上回测 `n=0` 与
+   `samples_short_by`,它已不是静默故障,只是没在正确的层被诊断。
+8. **正文红线的残留漏拦:指令与宾语被中文逗号拆到同一句的两个子句、且不含价位构造。**
+   例:「建议分批操作，买入价位自行决定。」—— 判定按子句做(必须如此:句级判定会把
+   「建议读者结合自身情况判断，多头仓位数据于下周公布」这类正常句子误拦,而误拦的代价是
+   每天触发修复轮 ⇒ 每天降级发布)。把指令性标记扩到句级会重开一批误拦
+   (「建议读者关注实际利率，黄金买入需求同比上升」),故取漏拦这一侧。
+   这条需要语义理解才能判,不打算用词表补。另:第六段放行 `止损/仓位/杠杆` 三个概念
+   (设计 8.1 要求该段讲「怎么自行推算止损距离」),所以该段的防线是「不给具体数量」
+   而不是「不提这三个词」。
 
 ## 依赖
 
