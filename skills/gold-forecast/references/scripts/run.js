@@ -176,7 +176,9 @@ function interpretModelResult(r, pinnedModel) {
   // 于是 OPENCLAW_BIN 配错会被报成"prompt 太大",把运维引向查 prompt 体积,
   // 而 SKILL.md 自己把 openclaw 路径列为第一条排查项。
   if (errCode === 'E2BIG') return { ok: false, kind: 'oversize' };
-  if (errCode || res.signal != null) {
+  // 键在 error **存在**而非 error.code 有值:带 error 但无 code 的返回同样是
+  // 「进程没能正常跑完」,漏判会掉进下面的 oversize 兜底。白名单只放行 E2BIG 一种。
+  if (res.error || res.signal != null) {
     return { ok: false, kind: 'infra', stderr: `模型调用未能完成(signal=${res.signal ?? '-'} error=${errCode ?? '-'})` };
   }
   if (res.status === null && !res.stdout) return { ok: false, kind: 'oversize' };

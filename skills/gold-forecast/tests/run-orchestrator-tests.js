@@ -125,6 +125,17 @@ test('T71: callModel 打不存在的二进制时判 infra(端到端,不起真 op
   assert.equal(r.kind, 'infra', '进程根本没起来,与 prompt 体积无关');
 });
 
+test('T90: error 存在但没有 code 时仍判 infra', () => {
+  // 白名单键在 error **是否存在**,不是 error.code 是否有值。键在 code 上时,
+  // 一个没有 .code 的 error 会掉进 status===null 的 oversize 兜底 —— 同一类误判换个入口。
+  for (const err of [{}, { message: 'spawn failed' }, { errno: -8 }]) {
+    const r = R.interpretModelResult({ status: null, signal: null, stdout: '', error: err }, 'MiniMax-M3');
+    assert.equal(r.kind, 'infra', `error=${JSON.stringify(err)} 应判 infra`);
+  }
+  // 对照:完全没有 error 才是 E2BIG 的实测签名
+  assert.equal(R.interpretModelResult({ status: null, signal: null, stdout: '' }, 'M').kind, 'oversize');
+});
+
 test('T72: 白名单只放行 E2BIG —— 未知 errno 一律归环境故障', () => {
   assert.equal(R.interpretModelResult({ status: null, stdout: '', error: { code: 'E2BIG' } }, 'M').kind, 'oversize');
   assert.equal(R.interpretModelResult({ status: null, stdout: '', error: { code: 'E2BIG_LOOKALIKE' } }, 'M').kind, 'infra');
@@ -868,14 +879,14 @@ test('T68: 进模型的 prompt 里没有 data_quality', () => {
 
 test('T69: CLI 参数错退 1,不退 5 —— 5 的语义是运行期异常/权威库损坏', () => {
   const { spawnSync } = require('node:child_process');
-  const { BLOCK_NETWORK } = require('./helpers');
+  const { withBlockNetwork } = require('./helpers');
   const script = path.join(__dirname, '..', 'references', 'scripts', 'run.js');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-cli-'));
   // 子进程不继承 runner 的 NODE_OPTIONS(这里给的是白名单 env),必须自己注入断网 shim。
   // 不注入的话下面那条 --dry-run 会跑完整 runPipeline,Step 1a 真打 LBMA 端点。
   const run = (args) => spawnSync(process.execPath, [script, ...args],
     { encoding: 'utf-8', timeout: 20_000,
-      env: { PATH: process.env.PATH, HOME: tmp, NODE_OPTIONS: `--require ${BLOCK_NETWORK}` } });
+      env: { PATH: process.env.PATH, HOME: tmp, NODE_OPTIONS: withBlockNetwork() } });
   assert.equal(run(['--help']).status, 0);
   assert.equal(run(['--nope']).status, 1, '未知参数');
   assert.equal(run([]).status, 1, '缺 archive-dir');
@@ -889,12 +900,12 @@ test('T69: CLI 参数错退 1,不退 5 —— 5 的语义是运行期异常/权�
 
 test('T87: --dry-run 无需 archive-dir,能越过参数层进到流水线(且全程离线)', () => {
   const { spawnSync } = require('node:child_process');
-  const { BLOCK_NETWORK } = require('./helpers');
+  const { withBlockNetwork } = require('./helpers');
   const script = path.join(__dirname, '..', 'references', 'scripts', 'run.js');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-cli-'));
   const r = spawnSync(process.execPath, [script, '--dry-run', '--state-dir', tmp],
     { encoding: 'utf-8', timeout: 30_000,
-      env: { PATH: process.env.PATH, HOME: tmp, NODE_OPTIONS: `--require ${BLOCK_NETWORK}` } });
+      env: { PATH: process.env.PATH, HOME: tmp, NODE_OPTIONS: withBlockNetwork() } });
   // 原断言是 `status !== 5`,通网断网都成立 —— 近乎空断言,还掩盖了真实出网。
   // 现在钉死两件事:①越过了参数层(不是 1)②确实进到了 Step 1a 并因断网而失败(6)。
   assert.equal(r.status, 6, `--dry-run 应越过参数层进流水线,实得 ${r.status}: ${r.stderr.slice(0, 300)}`);
@@ -1178,4 +1189,31 @@ test('T86: 连续无新定盘达阈值即告警(LBMA 源冻结的兜底)', () =>
   assert.ok(alert, '源冻结会让系统无限期静默,必须有兜底告警');
   assert.match(argOf(alert.args, '--step'), /stale-lbma/);
   assert.equal(argOf(alert.args, '--mode'), 'failure');
+});
+
+test('T88: 每个 spawn 站点都注入了断网 shim(未来新站点会红)', () => {
+  // 靠人工记得注入守不住:这条把它变成结构性约束。新增 spawn 站点要么注入,
+  // 要么在 EXEMPT 里显式写明理由 —— 沉默不再是一个选项。
+  const EXEMPT = {
+    'run-history-store-tests.js': '并发写同一 jsonl 的压测,spawn 的是本仓库内的写入脚本,不出网',
+  };
+  const dir = __dirname;
+  const offenders = [];
+  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.js'))) {
+    const src = fs.readFileSync(path.join(dir, f), 'utf-8');
+    if (!/\bspawn(Sync)?\s*\(/.test(src)) continue;
+    if (EXEMPT[f]) continue;
+    if (!/BLOCK_NETWORK|withBlockNetwork/.test(src)) offenders.push(f);
+  }
+  assert.deepEqual(offenders, [], `这些文件有 spawn 站点却没注入断网 shim:${offenders.join(', ')}`);
+});
+
+test('T89: 调用方自己的 NODE_OPTIONS 顶不掉 shim', () => {
+  const { withBlockNetwork } = require('./helpers');
+  // 曾经的写法是 { NODE_OPTIONS: shim, ...env },调用方传一个同名键就静默关掉了拦截
+  assert.match(withBlockNetwork(), /--require .*block-network\.js/);
+  const merged = withBlockNetwork('--max-old-space-size=256');
+  assert.match(merged, /--max-old-space-size=256/, '调用方的选项要保留');
+  assert.match(merged, /--require .*block-network\.js/, 'shim 必须仍在');
+  assert.ok(merged.indexOf('block-network') > merged.indexOf('max-old-space'), 'shim 追加在最后');
 });
