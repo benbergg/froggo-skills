@@ -1231,8 +1231,14 @@ const PRIOR_FINDINGS = [{
   check: 'C3', severity: 'block', locator: 'json.horizons.short',
   expected: '区间半宽须落在 [15.00,60.00](基线半宽 30 × [0.5,2])', actual: '6.25',
 }];
+// 不可引用块各埋一个**逐个验过池里够不到**的哨兵值。这样把任一块的 citable 翻成 true
+// (政策表说谎)T92 会立刻红 —— 上一轮 lessons 翻 true 却全绿,正是因为夹具里的
+// 18.7 恰好能被 C4 放行(p0_20=0.60 × 31.1035 = 18.6621,相对差 0.2%)。
+const SENTINEL = { news: 5150, lessons: 7777, prior_output: 6.25 };
 const RICH_LESSONS = [{ id: 'L001', tag: 'pre_cpi', status: 'active', trials: 7,
                         created: '2026-01-01', text: '短周期区间应比基线宽 18.7 点' }];
+const SENTINEL_LESSONS = [{ id: 'L001', tag: 'pre_cpi', status: 'active', trials: 7,
+                            created: '2026-01-01', text: `短周期区间应比基线宽 ${SENTINEL.lessons} 点` }];
 
 // 按模型读到的形态抽数字:先剥 ISO 日期(与 validate 的 stripDates 同口径),再扫。
 // 独立于 validate 的实现另写一遍,免得被测实现改坏时测试跟着一起瞎。
@@ -1250,8 +1256,8 @@ function fullPrompt() {
     scorecard,
     built: BP.buildPrompt({
       ...PP.promptPayload({ facts, baseline: baselineFixture(), scorecard }),
-      lessons: RICH_LESSONS, contextTags: ['pre_cpi'],
-      news: [{ title: 'Gold tops 4100 an ounce', url: 'https://x.com/a', source: 'Reuters' }],
+      lessons: SENTINEL_LESSONS, contextTags: ['pre_cpi'],
+      news: [{ title: `Gold tops ${SENTINEL.news} an ounce`, url: 'https://x.com/a', source: 'Reuters' }],
       priorFindings: { round: 1, findings: PRIOR_FINDINGS, forecast: '## 一、今日结论\n半宽 6.25' },
     }),
   };
@@ -1594,4 +1600,76 @@ test('T104: C4 自己产的 finding 不得给被拦数字发放行券(端到端,
   assert.equal(hit(['--prior-findings', pfPath]), true,
     '带上 --prior-findings 后放行 —— C4 给自己刚拦下的数字发了放行券');
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+// ---- 不变量的另一半:池不得宽于 prompt ----------------------------------
+
+test('T105: 被剥掉的运维字段既不进 payload,也不进 C4 池(表驱动)', () => {
+  // 上一轮只有 scorecard 侧有守护(T76/T77 的 data_quality),facts 侧裸奔:
+  // 把 validate 改成 deepNumbers(ctx.facts_raw) 绕过投影 ⇒ 439/439 全绿。
+  // 这里按 OPS_ONLY_* 表逐键验,新增运维字段自动被覆盖。
+  const cases = [
+    { label: 'facts', keys: PP.OPS_ONLY_FACTS_KEYS,
+      build: (k, v) => ({ facts: { ...RICH_FACTS, [k]: v }, scorecard: RICH_SCORECARD }) },
+    { label: 'scorecard', keys: PP.OPS_ONLY_SCORECARD_KEYS,
+      build: (k, v) => ({ facts: RICH_FACTS, scorecard: { ...RICH_SCORECARD, [k]: v } }) },
+  ];
+  let checked = 0;
+  for (const c of cases) {
+    assert.ok(c.keys.length > 0, `${c.label} 的运维字段表为空,这条会变成空跑`);
+    for (const key of c.keys) {
+      // 用数值哨兵:今天 generated_at 是字符串、deepNumbers 看不见它,所以这条守的是
+      // **机制**——任何落在运维键下的数字都既不该被看见也不该可引用。
+      const SENT = 8631;
+      const { facts, scorecard } = c.build(key, SENT);
+      const payload = PP.promptPayload({ facts, baseline: baselineFixture(), scorecard });
+      assert.equal(numericLeaves(payload).includes(SENT), false,
+        `${c.label}.${key} 的数字进了 payload`);
+      const doc = { json: {}, headings: {}, raw: '', sections: { 二: String(SENT) } };
+      const blocked = V.checkC4(doc, { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: facts,
+        baseline: baselineFixture(), scorecard }).length;
+      assert.equal(blocked, 1, `${c.label}.${key} 的数字可引用 —— 池宽于 prompt,等于放行编造`);
+      checked++;
+    }
+  }
+  assert.ok(checked >= 3, `只验了 ${checked} 个运维字段`);
+});
+
+test('T106: citable:false 的一侧也由机器校验(政策不能说谎)', () => {
+  // 上一轮把 lessons 翻成 true 全绿 —— citable 字段没有被任何断言消费。
+  // 现在夹具里每个不可引用块都埋了验过的哨兵,翻 true 会被 T92 抓到;
+  // 这条再从反方向钉一次:哨兵必须确实被拦。
+  const INJECTABLE = { news: SENTINEL.news, lessons: SENTINEL.lessons, prior_output: SENTINEL.prior_output };
+  // contract 是固定模板,没有注入点;且其示例数字在 C4 容差下都能命中真实池值
+  // (0.58/3987/4059 经盎司换算、0.5 来自 C3 目标的 × [0.5,2]),无法用哨兵法校验。
+  const UNINJECTABLE = { contract: '固定模板,无注入点,示例数字在 C4 容差下均可命中池值' };
+
+  const declaredFalse = Object.entries(PP.BLOCK_CITABILITY)
+    .filter(([, v]) => !v.citable).map(([k]) => k).sort();
+  const covered = [...Object.keys(INJECTABLE), ...Object.keys(UNINJECTABLE)].sort();
+  assert.deepEqual(declaredFalse, covered,
+    '新增不可引用块必须要么埋哨兵、要么在 UNINJECTABLE 里写明为什么不能');
+
+  const ctx = { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
+                baseline: baselineFixture(), scorecard: RICH_SCORECARD, prior_findings: PRIOR_FINDINGS };
+  const built = fullPrompt().built;
+  for (const [name, value] of Object.entries(INJECTABLE)) {
+    const block = built.blocks.find((b) => b.name === name);
+    assert.ok(block, `${name} 块未出现在夹具里,哨兵是摆设`);
+    assert.ok(block.text.includes(String(value)), `${name} 的哨兵 ${value} 没进块`);
+    const doc = { json: {}, headings: {}, raw: '', sections: { 二: String(value) } };
+    assert.equal(V.checkC4(doc, ctx).length, 1, `${name} 声明不可引用,但其数字 ${value} 在池里`);
+  }
+});
+
+test('T107: 已声明的块名与 build-prompt 的发射点静态对齐(条件块也算)', () => {
+  // T91 只枚举夹具**实际触发**的块 —— 把新块写成条件触发且夹具不触发就能绕过,
+  // 而 prior_findings 自己就是条件块,上一轮漏网正是这个形态。这里改为静态扫源码。
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'references', 'scripts', 'build-prompt.js'), 'utf-8');
+  const emitted = [...src.matchAll(/\{\s*name:\s*'([a-z_]+)'/g)].map((m) => m[1]).sort();
+  assert.ok(emitted.length >= 8, `只扫到 ${emitted.length} 个发射点,正则可能失配`);
+  const declared = Object.keys(PP.BLOCK_CITABILITY).sort();
+  assert.deepEqual([...new Set(emitted)], declared,
+    'build-prompt 的发射点与 BLOCK_CITABILITY 不一致 —— 条件块不会因夹具没触发而豁免');
 });
