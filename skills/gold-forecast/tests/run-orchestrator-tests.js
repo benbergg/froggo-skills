@@ -1195,21 +1195,44 @@ test('T86: 连续无新定盘达阈值即告警(LBMA 源冻结的兜底)', () =>
   assert.equal(argOf(alert.args, '--mode'), 'failure');
 });
 
-test('T88: 每个 spawn 站点都注入了断网 shim(未来新站点会红)', () => {
-  // 靠人工记得注入守不住:这条把它变成结构性约束。新增 spawn 站点要么注入,
-  // 要么在 EXEMPT 里显式写明理由 —— 沉默不再是一个选项。
+test('T88: 每个 spawn **站点**都注入了断网 shim(未来新站点会红)', () => {
+  // 按文件扫是不够的:在已经用过 shim 的文件里新增一个未注入的 spawn 站点,
+  // 整文件仍然命中 withBlockNetwork ⇒ 440/440 全绿(复审 M14 实测)。改为按站点扫:
+  // 每个 spawn 调用点附近都必须出现 NODE_OPTIONS。窗口取调用点前后各若干字符,
+  // 因为 opts 常常是先构造好的变量(helpers.runCli 就是)。
   const EXEMPT = {
     'run-history-store-tests.js': '并发写同一 jsonl 的压测,spawn 的是本仓库内的写入脚本,不出网',
   };
-  const dir = __dirname;
+  const BEFORE = 900;
+  const AFTER = 500;
   const offenders = [];
-  for (const f of fs.readdirSync(dir).filter((n) => n.endsWith('.js'))) {
-    const src = fs.readFileSync(path.join(dir, f), 'utf-8');
-    if (!/\bspawn(Sync)?\s*\(/.test(src)) continue;
+  let sites = 0;
+  for (const f of fs.readdirSync(__dirname).filter((n) => n.endsWith('.js'))) {
     if (EXEMPT[f]) continue;
-    if (!/BLOCK_NETWORK|withBlockNetwork/.test(src)) offenders.push(f);
+    const src = fs.readFileSync(path.join(__dirname, f), 'utf-8');
+    for (const m of src.matchAll(/\bspawn(?:Sync)?\s*\(/g)) {
+      sites++;
+      const window = src.slice(Math.max(0, m.index - BEFORE), m.index + AFTER);
+      if (!/NODE_OPTIONS/.test(window)) offenders.push(`${f}@${m.index}`);
+    }
   }
-  assert.deepEqual(offenders, [], `这些文件有 spawn 站点却没注入断网 shim:${offenders.join(', ')}`);
+  assert.ok(sites >= 3, `只扫到 ${sites} 个 spawn 站点,正则可能失配`);
+  assert.deepEqual(offenders, [], `这些 spawn 站点附近没有注入断网 shim:${offenders.join(', ')}`);
+});
+
+test('T89b: 调用方传自己的 NODE_OPTIONS 时,子进程仍然被断网(端到端)', () => {
+  // T89 测的是 withBlockNetwork 这个纯函数,不是调用点。把 helpers.runCli 改回
+  // { NODE_OPTIONS: …, ...env } ⇒ 439/439 全绿(复审 M6 实测)。这条打真链路验调用点:
+  // collect-settlement 不传 --fixture 就会去打 LBMA,shim 生效则报 NET-BLOCKED。
+  const { runCli } = require('./helpers');
+  const r = runCli({
+    script: 'collect-settlement.js',
+    args: ['--history', 'h', '--out', 'settlement.json'],
+    env: { NODE_OPTIONS: '--max-old-space-size=256' },
+  });
+  assert.match(r.stderr, /NET-BLOCKED/,
+    '调用方自己的 NODE_OPTIONS 顶掉了 shim —— 子进程真打了外部端点');
+  r.cleanup();
 });
 
 test('T89: 调用方自己的 NODE_OPTIONS 顶不掉 shim', () => {
