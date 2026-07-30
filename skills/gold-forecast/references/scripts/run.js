@@ -232,9 +232,14 @@ function classifyOutcome({ isTradingDay, settled, degraded, failedStep, failureK
 
 // 失败简报里给人看的签名文案。运维拿到的是这几个字,不是 kind 的英文枚举。
 const FAILURE_SIGNATURE_LABEL = {
-  oversize: '参数超长(prompt 超过 128KB 上限,查各块字节数)',
+  oversize: '参数超长(单参数超出内核 128KB 上限)',
   infra: '模型 API 或运行环境异常(先查 openclaw 路径与网关)',
 };
+
+// 两种 oversize 的处置口径不同,文案必须分开:内核 128KB 是运行时撞上的,
+// build-prompt 的 100KB 是自己先 fail-fast 的。写混了运维会照 128KB 去量,
+// 发现 prompt 才 101KB,转而怀疑消息本身。
+const OVERSIZE_NOTE_BUILD_PROMPT = '参数超长(超出 build-prompt 的 100KB 预算,错误信息里附各块字节数)';
 
 // run.js 自身的退出码。3 单独留给"入库归档已成功但备份失败"(commit.js 透传),
 // 与 6/7 分开 —— 那不是流水线失败,不该让 cron 的重试逻辑当成需要重跑。
@@ -547,7 +552,7 @@ function runPipeline({
     if (failedStep && cls.push && !dryRun) {
       // 签名必须进到人手上的那条消息里。push.js 没有 --signature 形参(加形参属 Task 14
       // 的接口),故并进 --step —— 简报正文是「失败步骤 X · 退出码 N」,这样 X 自带原因。
-      const label = FAILURE_SIGNATURE_LABEL[cls.signature];
+      const label = (st.detail && st.detail.signatureNote) || FAILURE_SIGNATURE_LABEL[cls.signature];
       const brief = ['--mode', 'failure', '--step', label ? `${failedStep} · ${label}` : failedStep,
         '--settled', st.settled ? '1' : '0', '--state-dir', stateDir,
         '--consecutive', String(runState.consecutive_failures ?? 1)];
@@ -645,7 +650,8 @@ function runPipeline({
     } catch (e) {
       // build-prompt 的 100KB fail-fast:是参数超长而非模型故障,不进重试
       log(`build-prompt 超限:${e.message}`);
-      st.detail = { code: 1 };
+      // 不合成退出码:这里根本没有子进程,编一个 1 会和 push.js 码表的「1=参数错」撞车
+      st.detail = { code: null, signatureNote: OVERSIZE_NOTE_BUILD_PROMPT };
       return finish({ failedStep: 'build-prompt', failureKind: 'oversize' });
     }
     atomicWriteText(P.work.prompt(round), prompt.text, { keepVersions: 0 });

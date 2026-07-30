@@ -451,7 +451,7 @@ const GOOD_FORECAST = ['```json',
 const argOf = (args, flag) => args[args.indexOf(flag) + 1];
 
 // 桩:每个步骤只做「本该产出的文件」,退出码由 fail 表指定。
-function harness({ fail = {}, findingsSeq = null, modelSeq = null, ...opts } = {}) {
+function harness({ fail = {}, findingsSeq = null, modelSeq = null, baseline = null, ...opts } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-run-'));
   const stateDir = path.join(tmp, 'state');
   const archiveDir = path.join(tmp, 'archive');
@@ -477,7 +477,7 @@ function harness({ fail = {}, findingsSeq = null, modelSeq = null, ...opts } = {
       }
       if (name === 'scorecard') write(argOf(args, '--out'), { by_horizon: {}, coverage: {}, data_quality: [], review_triggers: [] });
       if (name === 'collect-facts') write(argOf(args, '--out'), FACTS);
-      if (name === 'baseline') write(argOf(args, '--out'), baselineFixture());
+      if (name === 'baseline') write(argOf(args, '--out'), baseline || baselineFixture());
       if (name === 'validate') write(argOf(args, '--out'), (findings && findings.shift()) || { passed: true, findings: [] });
       if (name === 'render') { write(argOf(args, '--out-html'), '<html></html>'); write(argOf(args, '--out-md'), '# md'); }
     }
@@ -1525,4 +1525,30 @@ test('T101: 演练同样识别权威库丢失,不因沙箱而看成首次部署'
   assert.equal(res.exitCode, 5, '演练必须和真实运行一样认出权威库丢失');
   assert.equal(fs.existsSync(path.join(stateDir, 'predictions.json')), false);
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T102: build-prompt 超限不合成撞车退出码,且文案指向 100KB 预算而非 128KB', () => {
+  // baseline 是不可截断块,塞爆它就能让 buildPrompt fail-fast(与内核 E2BIG 是两回事)
+  const huge = { ...baselineFixture(), blob: 'B'.repeat(200_000) };
+  const h = harness({ baseline: huge, env: QUIET_ENV });
+  assert.equal(h.res.outcome, 'infra_failure');
+  assert.equal(h.res.failureKind, 'oversize');
+  assert.equal(h.res.failedStep, 'build-prompt');
+  const brief = h.calls.find((c) => c.name === 'push');
+  const step = argOf(brief.args, '--step');
+  assert.match(step, /^build-prompt/);
+  assert.match(step, /100KB/, '照 128KB 去量会发现 prompt 才 101KB,转而怀疑消息本身');
+  assert.equal(/128KB/.test(step), false, '这条路撞的不是内核上限');
+  assert.equal(brief.args.includes('--code'), false,
+    '合成的 1 会与 push.js 码表的「1=参数错」撞车,同一个数字两处含义不同');
+  h.cleanup();
+});
+
+test('T103: 模型侧 E2BIG 的文案仍指向内核 128KB,两条路不混为一谈', () => {
+  const h = harness({ modelSeq: [{ ok: false, kind: 'oversize' }], env: QUIET_ENV });
+  const step = argOf(h.calls.find((c) => c.name === 'push').args, '--step');
+  assert.match(step, /^model/);
+  assert.match(step, /128KB/);
+  assert.equal(/100KB/.test(step), false);
+  h.cleanup();
 });
