@@ -3,6 +3,194 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const R = require('../references/scripts/run');
 
+const okStdout = (over = {}) => JSON.stringify({
+  ok: true, provider: 'minimax', model: 'MiniMax-M3', attempts: [],
+  outputs: [{ text: 'hello', mediaUrl: null }], ...over,
+});
+
+// ---- 模型调用契约(设计 3.6) ------------------------------------------
+
+test('T1: pin 校验 —— 返回模型不符即判失败', () => {
+  const r = R.interpretModelResult({ status: 0, stdout: JSON.stringify({ ok: true, model: 'glm-5.1', attempts: [], outputs: [{ text: 'x' }] }) }, 'MiniMax-M3');
+  assert.equal(r.kind, 'pin_mismatch', '静默换模型会污染 final 曲线');
+});
+
+test('T2: attempts 非空说明发生过 failover,同样判失败', () => {
+  const r = R.interpretModelResult({ status: 0, stdout: JSON.stringify({ ok: true, model: 'MiniMax-M3', attempts: [{ provider: 'x' }], outputs: [{ text: 'y' }] }) }, 'MiniMax-M3');
+  assert.equal(r.kind, 'pin_mismatch');
+});
+
+test('T3: 正常返回被接受', () => {
+  const r = R.interpretModelResult({ status: 0, stdout: JSON.stringify({ ok: true, model: 'MiniMax-M3', attempts: [], outputs: [{ text: 'hello' }] }) }, 'MiniMax-M3');
+  assert.equal(r.kind, 'ok');
+  assert.equal(r.ok, true);
+  assert.equal(r.text, 'hello');
+});
+
+test('T4: 参数超长的失败签名被单独识别', () => {
+  // exit=null + stdout 空 + 极快返回,长得像模型故障,实为 E2BIG。
+  const r = R.interpretModelResult({ status: null, stdout: '', stderr: '' }, 'MiniMax-M3');
+  assert.equal(r.kind, 'oversize', '误判成 infra 会白白重试三轮,每轮还要付 13 秒冷启动');
+});
+
+test('T5: 其他非零退出判为基础设施失败', () => {
+  const r = R.interpretModelResult({ status: 1, stdout: '', stderr: 'boom' }, 'MiniMax-M3');
+  assert.equal(r.kind, 'infra');
+});
+
+test('T6: 非交易日为首个分支且不记入 skipped_dates', () => {
+  const o = R.classifyOutcome({ isTradingDay: false });
+  assert.equal(o.outcome, 'non_trading_day');
+  assert.equal(o.recordSkipped, false, '周末不是故障,记入会污染覆盖率');
+  assert.equal(o.push, false);
+});
+
+test('T7: 结算前失败与结算后失败区分', () => {
+  const a = R.classifyOutcome({ isTradingDay: true, settled: false, failedStep: 'collect-settlement' });
+  assert.equal(a.outcome, 'failed_before_settle');
+  const b = R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: 'validate' });
+  assert.equal(b.outcome, 'failed_after_settle');
+  assert.equal(b.recordSkipped, true);
+});
+
+test('T8: 降级成功仍推正常报告', () => {
+  const o = R.classifyOutcome({ isTradingDay: true, settled: true, degraded: true, failedStep: null });
+  assert.equal(o.outcome, 'degraded_success');
+  assert.equal(o.push, true);
+});
+
+test('T9: 全通过为 success', () => {
+  const o = R.classifyOutcome({ isTradingDay: true, settled: true, degraded: false, failedStep: null });
+  assert.equal(o.outcome, 'success');
+});
+
+test('T10: 目标日由最新定盘日推导,不用系统时钟', () => {
+  const d = R.resolveToday({ latestSession: '2026-07-28' });
+  assert.equal(d, '2026-07-28', '时钟漂移不应导致写错日期的预测');
+  // 缺失时必须抛错:静默返回 undefined 会产出 id 为 "undefined" 的记录
+  assert.throws(() => R.resolveToday({}), /latestSession/);
+  assert.throws(() => R.resolveToday({ latestSession: '28/07/2026' }), /latestSession/);
+});
+
+test('T11: 修复循环上限 3 轮', () => {
+  assert.equal(R.MAX_FIX_ROUNDS, 3);
+});
+
+test('T12: 删产物只在最终放弃时', () => {
+  assert.equal(R.shouldDeleteArtifacts({ round: 1, passed: false }), false, '第 2 轮要拿它来改');
+  assert.equal(R.shouldDeleteArtifacts({ round: 3, passed: false }), true);
+  assert.equal(R.shouldDeleteArtifacts({ round: 3, passed: true }), false);
+});
+
+test('T13: 模型阶段超时预算 120s,采集 300s', () => {
+  assert.equal(R.BUDGET.model_ms, 120_000);
+  assert.equal(R.BUDGET.collect_ms, 300_000);
+});
+
+// ---- P15-1:oversize 判据不能与 spawnSync 超时撞车 ----------------------
+
+test('T33: 超时被 kill 判 infra,不判 oversize', () => {
+  // 现场实测:超时 kill 与 E2BIG 在 status/stdout 上完全一致,差别只在 signal/error。
+  // 判成 oversize 就等于既不重试也不算 infra,真故障被静默吞掉。
+  const r = R.interpretModelResult(
+    { status: null, signal: 'SIGTERM', stdout: '', stderr: '', error: { code: 'ETIMEDOUT' } }, 'MiniMax-M3');
+  assert.equal(r.kind, 'infra', '网关变慢被误判成 prompt 太大,永远不会重试');
+});
+
+test('T34: signal 与 error 只有其一时同样判 infra', () => {
+  assert.equal(R.interpretModelResult({ status: null, signal: 'SIGKILL', stdout: '' }, 'M').kind, 'infra');
+  assert.equal(R.interpretModelResult({ status: null, stdout: '', error: { code: 'ETIMEDOUT' } }, 'M').kind, 'infra');
+});
+
+test('T35: error.code=E2BIG 直接判 oversize,优先级高于其他分支', () => {
+  const r = R.interpretModelResult({ status: null, signal: null, stdout: '', error: { code: 'E2BIG' } }, 'MiniMax-M3');
+  assert.equal(r.kind, 'oversize');
+});
+
+// ---- P5:pin 比对两侧归一化 --------------------------------------------
+
+test('T36: 完整 slug 与裸名互认,两种写法都不误判 pin_mismatch', () => {
+  const bare = R.interpretModelResult({ status: 0, stdout: okStdout({ model: 'MiniMax-M3' }) }, 'minimax/MiniMax-M3');
+  assert.equal(bare.kind, 'ok', 'openclaw 回裸名而 pin 写全 slug,恒判失败会天天降级');
+  const slug = R.interpretModelResult({ status: 0, stdout: okStdout({ model: 'minimax/MiniMax-M3' }) }, 'MiniMax-M3');
+  assert.equal(slug.kind, 'ok');
+  const cased = R.interpretModelResult({ status: 0, stdout: okStdout({ model: 'minimax/minimax-m3' }) }, 'minimax/MiniMax-M3');
+  assert.equal(cased.kind, 'ok');
+});
+
+test('T37: 归一化不得放过真正的换模型', () => {
+  // 归一化只吃掉 provider 前缀与大小写,模型名本体不同必须仍判失败
+  for (const other of ['glm-5.1', 'minimax/MiniMax-M2', 'anthropic/MiniMax-M3-lite']) {
+    const r = R.interpretModelResult({ status: 0, stdout: okStdout({ model: other }) }, 'minimax/MiniMax-M3');
+    assert.equal(r.kind, 'pin_mismatch', `${other} 应判 pin_mismatch`);
+  }
+});
+
+// ---- P15-2:第六种结局 -------------------------------------------------
+
+test('T38: 模型/参数故障单独产出 infra_failure,并带具体签名', () => {
+  for (const kind of ['oversize', 'infra']) {
+    const o = R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: 'model', failureKind: kind });
+    assert.equal(o.outcome, 'infra_failure', `${kind} 应归 infra_failure,而非折进 failed_after_settle`);
+    assert.equal(o.signature, kind, '失败简报要能指向真正的原因');
+    assert.equal(o.recordSkipped, true);
+    assert.equal(o.push, true);
+  }
+});
+
+test('T39: pin_mismatch 不是 infra_failure —— 它走降级发基线的路', () => {
+  // 设计 3.7:pin 校验失败 → degraded_success(照发基线预测、照结算,统计不断档)
+  const o = R.classifyOutcome({ isTradingDay: true, settled: true, degraded: true, failedStep: null, failureKind: 'pin_mismatch' });
+  assert.equal(o.outcome, 'degraded_success');
+  assert.equal(o.push, true);
+  assert.equal(o.recordSkipped, false);
+  // 上面那条走的是 failedStep=null 分支,压根到不了 INFRA_KINDS,对"pin_mismatch 是否
+  // 被误列入 infra 集合"零判别力(把它加进集合照样绿)。故必须再钉一次集合成员:
+  // 万一日后有人给 pin_mismatch 配上 failedStep,结局不能悄悄从降级变成 infra_failure。
+  const withStep = R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: 'model', failureKind: 'pin_mismatch' });
+  assert.equal(withStep.outcome, 'failed_after_settle', 'pin_mismatch 不属于 infra 签名集合');
+});
+
+test('T40: 六种结局齐全,且退出码把成功/失败分开', () => {
+  const seen = new Set([
+    R.classifyOutcome({ isTradingDay: false }).outcome,
+    R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: null, degraded: false }).outcome,
+    R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: null, degraded: true }).outcome,
+    R.classifyOutcome({ isTradingDay: true, settled: false, failedStep: 'x' }).outcome,
+    R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: 'x' }).outcome,
+    R.classifyOutcome({ isTradingDay: true, settled: true, failedStep: 'x', failureKind: 'oversize' }).outcome,
+  ]);
+  assert.equal(seen.size, 6, `应产出六种结局,实得 ${[...seen].join(',')}`);
+  for (const o of seen) assert.ok(o in R.EXIT_BY_OUTCOME, `${o} 缺退出码映射`);
+  assert.equal(R.EXIT_BY_OUTCOME.non_trading_day, 0);
+  assert.equal(R.EXIT_BY_OUTCOME.degraded_success, 0);
+  assert.ok(R.EXIT_BY_OUTCOME.failed_after_settle !== 0);
+  assert.notEqual(R.EXIT_BY_OUTCOME.infra_failure, R.EXIT_BY_OUTCOME.failed_after_settle,
+    'infra_failure 与普通失败退同一码就等于没有第六种');
+});
+
+// ---- callModel 的注入点(绝不真调计费模型) -----------------------------
+
+test('T41: callModel 不经 shell、pin 到 M3、超时用 BUDGET.model_ms', () => {
+  const calls = [];
+  const spawnImpl = (bin, argv, opts) => { calls.push({ bin, argv, opts }); return { status: 0, stdout: okStdout() }; };
+  const r = R.callModel('prompt 含 $(whoami) 与 `反引号`', { bin: '/fake/openclaw', spawnImpl });
+  assert.equal(r.kind, 'ok');
+  assert.equal(calls.length, 1);
+  const c = calls[0];
+  assert.equal(c.bin, '/fake/openclaw');
+  assert.deepEqual(c.argv.slice(0, 6), ['infer', 'model', 'run', '--model', R.PINNED_MODEL, '--json']);
+  assert.equal(c.argv[6], '--prompt');
+  assert.equal(c.argv[7], 'prompt 含 $(whoami) 与 `反引号`', 'prompt 须原样直传,不做任何转义');
+  assert.equal(c.opts.timeout, R.BUDGET.model_ms);
+  assert.equal(c.opts.shell, undefined, '经 shell 会把新闻标题里的 $ 与反引号变成注入面');
+  assert.equal(c.opts.maxBuffer, 64 << 20);
+});
+
+test('T42: PINNED_MODEL 就是 minimax/MiniMax-M3', () => {
+  assert.equal(R.PINNED_MODEL, 'minimax/MiniMax-M3');
+});
+
 // ---- 夹具:形状取自 baseline.js 的真实产出(features + horizons 含 half_width) ----
 
 function baselineFixture(overrides = {}) {

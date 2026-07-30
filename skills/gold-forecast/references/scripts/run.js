@@ -6,6 +6,7 @@
 // 本文件只做编排:各步的业务逻辑一律在各自脚本里,run.js 不重复实现任何判定。
 
 const crypto = require('node:crypto');
+const { spawnSync } = require('node:child_process');
 const { N_BY_HORIZON } = require('./baseline');
 const { C9_PROB_THRESHOLD, C9_CENTER_FACTOR } = require('./validate');
 
@@ -14,6 +15,12 @@ const MAX_FIX_ROUNDS = 3;
 const BUDGET = { collect_ms: 300_000, model_ms: 120_000 };
 const HORIZON_KEYS = ['short', 'medium', 'long'];
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
+
+const PINNED_MODEL = 'minimax/MiniMax-M3';
+// openclaw 不在非交互 shell 的 PATH 中(实测 ssh vm 'which openclaw' 失败),必须用绝对路径
+const OPENCLAW = process.env.OPENCLAW_BIN || `${process.env.HOME}/.npm-global/bin/openclaw`;
+// 只对 infra 类失败重试;oversize 与 pin_mismatch 重试一万次也是同一个结果
+const MODEL_MAX_ATTEMPTS = 3;
 
 // ---- 日期外推(缺口 3) --------------------------------------------------
 
@@ -147,7 +154,96 @@ function buildPredictionRecord({ doc, baseline, facts, modelId, degraded = false
   };
 }
 
+// ---- 模型调用(设计 3.6) ------------------------------------------------
+
+// openclaw 返回的 model 是裸名(MiniMax-M3),pin 值写全 slug(minimax/MiniMax-M3)。
+// 两侧同做归一化:只对一侧处理会恒判 pin_mismatch ⇒ 每天降级成只发基线,
+// 而这条降级路径本身是"正常"行为,不会有人来查为什么。
+const normalizeModel = (m) => String(m == null ? '' : m).split('/').pop().trim().toLowerCase();
+
+function interpretModelResult(r, pinnedModel) {
+  const res = r || {};
+  const errCode = res.error && res.error.code;
+
+  // E2BIG:单参数超 128KB(实测 3ms 返回)。它与"超时被 kill"的返回值在
+  // status/stdout 上完全一致 —— 都是 status=null + stdout 空,差别只在 signal/error:
+  //   E2BIG    : { status: null, signal: null,      error.code: 'E2BIG' }
+  //   超时 kill: { status: null, signal: 'SIGTERM', error.code: 'ETIMEDOUT' }
+  // 只看 status/stdout 会把网关变慢误判成"prompt 太大",于是既不重试也不算 infra,
+  // 真正的基础设施故障被静默吞掉。故环境信号优先级高于超长信号。
+  if (errCode === 'E2BIG') return { ok: false, kind: 'oversize' };
+  if (res.signal != null || errCode === 'ETIMEDOUT') {
+    return { ok: false, kind: 'infra', stderr: `模型调用被中止(signal=${res.signal ?? '-'} error=${errCode ?? '-'})` };
+  }
+  if (res.status === null && !res.stdout) return { ok: false, kind: 'oversize' };
+  if (res.status !== 0) return { ok: false, kind: 'infra', stderr: res.stderr || `exit ${res.status}` };
+
+  let j;
+  try { j = JSON.parse(res.stdout); } catch { return { ok: false, kind: 'infra', stderr: 'stdout 非 JSON' }; }
+  if (!j || !j.ok) return { ok: false, kind: 'infra', stderr: 'ok=false' };
+
+  // 静默换模型会把别的模型的表现记进同一条 final 曲线,"M3 是否加分"的结论即废。
+  // 对测量系统,"今天没有 LLM 预测"优于"今天的预测来自另一个模型"。
+  if (normalizeModel(j.model) !== normalizeModel(pinnedModel) || (j.attempts && j.attempts.length > 0)) {
+    return { ok: false, kind: 'pin_mismatch', model: j.model, attempts: j.attempts };
+  }
+  return {
+    ok: true, kind: 'ok', model: j.model, attempts: j.attempts || [],
+    text: (j.outputs && j.outputs[0] && j.outputs[0].text) || '',
+  };
+}
+
+function callModel(promptText, { model = PINNED_MODEL, bin = OPENCLAW, spawnImpl = spawnSync } = {}) {
+  // 不经 shell:prompt 含新闻标题,双引号/$/反引号/换行直传无转义风险(已实测)
+  const r = spawnImpl(bin, ['infer', 'model', 'run', '--model', model, '--json', '--prompt', promptText],
+    { encoding: 'utf-8', maxBuffer: 64 << 20, timeout: BUDGET.model_ms });
+  return interpretModelResult(r, model);
+}
+
+// ---- 结局分类(设计 3.7) ------------------------------------------------
+
+// pin_mismatch 刻意不在此集合内:设计 3.7 把"模型 pin 校验失败"归 degraded_success
+// (照发基线预测、照结算,统计不断档),只有 API 故障/参数超长/环境异常才是 infra_failure。
+const INFRA_KINDS = new Set(['oversize', 'infra']);
+
+function classifyOutcome({ isTradingDay, settled, degraded, failedStep, failureKind } = {}) {
+  // 首个分支:周末与伦敦金假日不是故障,记入 skipped_dates 会污染覆盖率
+  if (!isTradingDay) return { outcome: 'non_trading_day', recordSkipped: false, push: false };
+  if (failedStep) {
+    // 第六种结局。缺了它,Step 4 的模型/参数故障会一律折进 failed_after_settle
+    // (那时 settled 恒真),失败简报只会说"结算后失败",指不到真正的原因。
+    if (INFRA_KINDS.has(failureKind)) {
+      return { outcome: 'infra_failure', recordSkipped: true, push: true, signature: failureKind };
+    }
+    return settled
+      ? { outcome: 'failed_after_settle', recordSkipped: true, push: true }
+      : { outcome: 'failed_before_settle', recordSkipped: true, push: true };
+  }
+  return degraded
+    ? { outcome: 'degraded_success', recordSkipped: false, push: true }
+    : { outcome: 'success', recordSkipped: false, push: true };
+}
+
+// run.js 自身的退出码。3 单独留给"入库归档已成功但备份失败"(commit.js 透传),
+// 与 6/7 分开 —— 那不是流水线失败,不该让 cron 的重试逻辑当成需要重跑。
+const EXIT_BY_OUTCOME = {
+  non_trading_day: 0, success: 0, degraded_success: 0,
+  failed_before_settle: 6, failed_after_settle: 6, infra_failure: 7,
+};
+
+// 目标日由最新可得定盘日推导,不用 new Date():时钟漂移或 cron 异常触发
+// 不应导致写入错误日期的预测(设计 3.7 E-7)。
+function resolveToday({ latestSession } = {}) {
+  assertIsoDate(latestSession, 'latestSession');
+  return latestSession;
+}
+
+// 删除属编排职责(设计 3.5):校验器删产物会让第 2 轮无从改起。
+const shouldDeleteArtifacts = ({ round, passed }) => !passed && round >= MAX_FIX_ROUNDS;
+
 module.exports = {
-  MAX_FIX_ROUNDS, BUDGET, HORIZON_KEYS,
+  MAX_FIX_ROUNDS, BUDGET, HORIZON_KEYS, PINNED_MODEL, MODEL_MAX_ATTEMPTS, EXIT_BY_OUTCOME,
   addSessions, computeC9Triggered, scorecardForPrompt, naivePOf, buildPredictionRecord,
+  normalizeModel, interpretModelResult, callModel, classifyOutcome, resolveToday,
+  shouldDeleteArtifacts,
 };
