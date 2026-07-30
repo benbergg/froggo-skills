@@ -661,7 +661,9 @@ function parseArgs(argv) {
 
 function main() {
   const args = parseArgs(process.argv.slice(2));
-  if (args.today) assertIsoDate(args.today, '--today');
+  // 参数错必须退 1:让 assertIsoDate 的异常冒到外层 catch 就退成 5,而 5 的语义是
+  // 「运行期异常/权威库损坏」—— 恰好是本文件竭力要和参数错区分开的那一类
+  if (args.today && !ISO_DATE_RE.test(args.today)) die(`--today 必须是 YYYY-MM-DD,实得 ${args.today}`);
   const home = process.env.HOME || '';
   const stateDir = path.resolve(args['state-dir'] || path.join(home, '.local', 'state', 'gold-forecast'));
   const archiveDir = args['archive-dir'] || process.env.GOLD_ARCHIVE_DIR;

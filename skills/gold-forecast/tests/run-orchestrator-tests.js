@@ -843,3 +843,21 @@ test('T68: 进模型的 prompt 里没有 data_quality', () => {
   assert.equal(seenPrompt.includes('"dropped"'), false);
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+test('T69: CLI 参数错退 1,不退 5 —— 5 的语义是运行期异常/权威库损坏', () => {
+  const { spawnSync } = require('node:child_process');
+  const script = path.join(__dirname, '..', 'references', 'scripts', 'run.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-cli-'));
+  const run = (args) => spawnSync(process.execPath, [script, ...args],
+    { encoding: 'utf-8', timeout: 20_000, env: { PATH: process.env.PATH, HOME: tmp } });
+  assert.equal(run(['--help']).status, 0);
+  assert.equal(run(['--nope']).status, 1, '未知参数');
+  assert.equal(run([]).status, 1, '缺 archive-dir');
+  assert.equal(run(['--today', '2026/7/29', '--dry-run']).status, 1, '非法日期是参数错,不是运行期异常');
+  assert.equal(run(['--dry-run', '--state-dir', tmp]).status !== 5, true);
+  // 缺收件人必须在开跑前就拦住:跑完整条流水线(含模型费用)才发现配错了太晚
+  const noTarget = run(['--archive-dir', tmp, '--state-dir', tmp]);
+  assert.equal(noTarget.status, 1);
+  assert.match(noTarget.stderr, /GOLD_FEISHU_TARGET/);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
