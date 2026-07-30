@@ -15,6 +15,7 @@ const { parseForecast } = require('./forecast-parser');
 const { buildPrompt } = require('./build-prompt');
 const { DISCLAIMER_TEXT } = require('./lib/disclaimer');
 const { atomicWriteText, atomicWriteJSON } = require('./lib/atomic-write');
+const { promptPayload, promptScorecard } = require('./lib/prompt-payload');
 
 const MAX_FIX_ROUNDS = 3;
 // 模型阶段 120s(单次约 15s,其中 CLI 冷启动 13s);采集阶段 300s,两者分列(设计 3.6/4.5)
@@ -82,18 +83,11 @@ function computeC9Triggered(finalHorizons, baselineHorizons) {
   return false;
 }
 
-// ---- 进 prompt 的 scorecard(缺口 4) ------------------------------------
+// ---- 进 prompt 的 payload(缺口 4) --------------------------------------
 
-// 不变量:进 prompt 的每个数字都必须可引用。
-// validate 的 C4 允许池只取 scorecard.by_horizon,而 build-prompt 把整个 scorecard
-// 塞进不可截断的 calibration 块 ⇒ 顶层 data_quality(被剔除的非有限值计数)模型看得见、
-// 却不在允许池里,一引用就触发 C4 → 三轮修复全废。它是运维诊断,不是预测输入。
-function scorecardForPrompt(scorecard) {
-  if (!scorecard || typeof scorecard !== 'object' || Array.isArray(scorecard)) return scorecard;
-  const clone = { ...scorecard };
-  delete clone.data_quality;
-  return clone;
-}
+// 投影与 C4 允许池共用 lib/prompt-payload 的同一个函数 —— 两处各写一份必然漂移,
+// 详见该文件顶部的不变量说明。此处保留旧名做别名,调用方无需感知。
+const scorecardForPrompt = promptScorecard;
 
 // ---- 预测记录装配(P14-1) ----------------------------------------------
 
@@ -542,7 +536,7 @@ function runPipeline({
     let prompt;
     try {
       prompt = buildPrompt({
-        facts, baseline, scorecard: scorecardForPrompt(scorecard), lessons,
+        ...promptPayload({ facts, baseline, scorecard }), lessons,
         contextTags: (facts && facts.context_tags) || [],
         news: (facts && facts.news && facts.news.items) || [],
         priorFindings: prior,
@@ -712,7 +706,7 @@ if (require.main === module) {
 
 module.exports = {
   MAX_FIX_ROUNDS, BUDGET, HORIZON_KEYS, PINNED_MODEL, MODEL_MAX_ATTEMPTS, EXIT_BY_OUTCOME, SCRIPTS,
-  addSessions, computeC9Triggered, scorecardForPrompt, naivePOf, buildPredictionRecord,
+  addSessions, computeC9Triggered, scorecardForPrompt, promptPayload, naivePOf, buildPredictionRecord,
   normalizeModel, interpretModelResult, callModel, classifyOutcome, resolveToday,
   shouldDeleteArtifacts, runScript, callModelWithRetry, hasNewSession, workPaths, artifactsToDelete,
   buildDegradedForecast, bumpRunState, recordSkippedDate, resolvePaths, runPipeline,

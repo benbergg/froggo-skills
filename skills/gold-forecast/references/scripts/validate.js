@@ -5,6 +5,7 @@ const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { parseForecast } = require('./forecast-parser');
 const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES } = require('./lib/disclaimer');
+const { promptScorecard } = require('./lib/prompt-payload');
 
 const HORIZONS = ['short', 'medium', 'long'];
 const SECTIONS = ['一', '二', '三', '四', '五', '六', '七'];
@@ -178,13 +179,19 @@ function c4Matches(x, direct, pair) {
   return false;
 }
 
+// 允许池必须等于「送进 prompt 的那份 payload」,由 lib/prompt-payload 单点投影 ——
+// 池窄于 prompt 会让模型因引用自己看到的数字而被 block(设计 8.1 要求第五段写覆盖率与
+// abandoned 计数,它们在 scorecard.coverage 里,旧池不含,等于自检在阻止报告满足设计);
+// 池宽于 prompt 则等于放行编造。两者都只能靠共用同一个投影来杜绝。
+// 注:胜率/Brier/Winkler 另有 C7 强制逐值对齐 scorecard,不因本处放宽而失守。
 function checkC4(doc, ctx) {
   const out = [];
   if (!doc.json) return out;
   const direct = [
     ...factsPool(ctx.facts, ctx.schema),
-    ...deepNumbers(ctx.baseline && ctx.baseline.horizons),
-    ...deepNumbers(ctx.scorecard && ctx.scorecard.by_horizon),
+    ...deepNumbers(ctx.facts_raw),
+    ...deepNumbers(ctx.baseline),
+    ...deepNumbers(promptScorecard(ctx.scorecard)),
     ...deepNumbers(doc.json),
   ];
   const pair = factsPool(ctx.facts, ctx.schema);
@@ -524,6 +531,8 @@ function main() {
   const ctx = {
     schema,
     facts: flattenFactsForCli(factsJson, schema),
+    // 原始 facts.json 整体进了 prompt,故整体可引用;flat 版只覆盖 schema 里的 traceable 字段
+    facts_raw: factsJson,
     baseline,
     scorecard,
     predictions: predictionsDb.predictions || [],

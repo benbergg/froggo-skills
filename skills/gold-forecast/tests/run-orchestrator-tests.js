@@ -905,3 +905,92 @@ test('T74: 有真子进程退出码时照常透传,不被签名逻辑吃掉', ()
   assert.equal(argOf(brief.args, '--code'), '3');
   h.cleanup();
 });
+
+// ---- 不变量:进 prompt 的每个数字都必须能被 C4 引用 ----------------------
+
+const V = require('../references/scripts/validate');
+const SCHEMA = JSON.parse(fs.readFileSync(
+  path.join(__dirname, '..', 'references', 'schemas', 'facts.schema.json'), 'utf-8'));
+
+// 独立于 validate.deepNumbers 另写一遍:测试要能在被测实现改坏时仍照自己的口径遍历
+function numericLeaves(obj, out = []) {
+  if (obj === null || obj === undefined) return out;
+  if (typeof obj === 'number') { if (Number.isFinite(obj)) out.push(obj); return out; }
+  if (Array.isArray(obj)) { obj.forEach((v) => numericLeaves(v, out)); return out; }
+  if (typeof obj === 'object') { Object.values(obj).forEach((v) => numericLeaves(v, out)); return out; }
+  return out;
+}
+
+// 真实形态:scorecard 顶层各段齐全,baseline 带 features/sigma_d,facts 带派生字段
+const RICH_FACTS = {
+  schema_version: 1, target_date: '2026-07-28', prev_session: '2026-07-27',
+  context_tags: ['pre_cpi'], sigma_pctile: 0.83,
+  fields: {
+    'lbma.pm_usd': { status: 'ok', value: 4022.2, observed_date: '2026-07-28', available_date: '2026-07-28' },
+    'fred.DFII10': { status: 'ok', value: 2.44, observed_date: '2026-07-27', available_date: '2026-07-28' },
+    'eastmoney.UDI': { status: 'ok', value: 101.29, observed_date: '2026-07-28', available_date: '2026-07-28' },
+  },
+  cftc: { net_spec: 183910, net_comm: -213199, spec_pctile: 0.71,
+          available_date: '2026-07-22', history_failed_years: [] },
+  calendar: { next_releases: [], failed_releases: [] },
+  news: { items: [{ title: 'Gold steady', url: 'https://x.com/a', source: 'Reuters' }], status: 'ok' },
+  _missing: [],
+};
+const RICH_SCORECARD = {
+  generated_at: '2026-07-28T00:00:00.000Z',
+  coverage: { expected: 384, settled: 371, skipped: 2, abandoned: 1, approx: 3 },
+  by_horizon: { short: { n: 25, insufficient_sample: false,
+    final: { n: 25, dir_rate: 0.571, brier: 0.2377, winkler: 79.1 },
+    baseline: { n: 25, dir_rate: 0.558, brier: 0.2431, winkler: 86.4 },
+    naive: { n: 25, dir_rate: 0.525, brier: 0.2494, winkler: null } } },
+  by_model: { 'MiniMax-M3': { n: 375 } },
+  excluded: { degraded: 9 },
+  review_triggers: [{ kind: 'c9_high_rate', rate: 0.65, ids: ['2026-07-20'] }],
+  lessons: { L001: { trials: 7, hits: 2, metric: 'dir', horizon: 'short', status: 'active' } },
+  // 运维诊断:刻意用一个不会与其他数字撞车的值,便于断言它确实没进 payload
+  data_quality: [{ horizon: 'short', group: 'naive', field: 'brier', dropped: 9973 }],
+};
+const FLAT_FACTS = { 'lbma.pm_usd': 4022.2, 'fred.DFII10': 2.44, 'eastmoney.UDI': 101.29,
+                     'cftc.net_spec': 183910, 'cftc.net_comm': -213199, 'cftc.spec_pctile': 0.71,
+                     _missing: [], news: [] };
+
+const c4On = (numbers) => V.checkC4(
+  { json: {}, sections: { 二: numbers.map(String).join(' , ') }, headings: {}, raw: '' },
+  { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
+    baseline: baselineFixture(), scorecard: RICH_SCORECARD });
+
+test('T75: 不变量 —— payload 里每个数字都能被 C4 引用(遍历,不是逐字段)', () => {
+  const payload = R.promptPayload({ facts: RICH_FACTS, baseline: baselineFixture(), scorecard: RICH_SCORECARD });
+  const nums = [...new Set(numericLeaves(payload))];
+  assert.ok(nums.length >= 30, `payload 数字太少(${nums.length}),这条断言会变成空跑`);
+  const blocked = c4On(nums).map((f) => f.actual);
+  assert.deepEqual(blocked, [], `进 prompt 却引用不了的数字:${blocked.join(', ')}`);
+});
+
+test('T76: 该拦的仍然拦得住 —— payload 里没有的数字照样 block', () => {
+  // 反向控制:T75 若因 C4 被改废(池放到无穷大或 checkC4 恒返回空)而变成空跑,这条会红。
+  // 控制值须逐个挑过:C4 的盎司/克白名单是 ×31.1035 且相对容差 0.5%,在大数量级上
+  // acceptance band 很宽(实测 123456.78 会被 baseline.low=3978 经 ×31.1035 命中),
+  // 随手写一个大数当反例是测不出东西的。
+  const blocked = c4On([47, 9973, 61.5, 7777]).map((f) => Number(f.actual));
+  for (const n of [47, 61.5, 7777]) assert.ok(blocked.includes(n), `编造的 ${n} 必须被拦`);
+  // 9973 只存在于 data_quality,它既不在 payload 也不该在池里 —— 两边一致
+  assert.ok(blocked.includes(9973), 'data_quality 的计数不该可引用');
+});
+
+test('T77: data_quality 既不进 payload,也不进 C4 池(两边同步剥离)', () => {
+  const payload = R.promptPayload({ facts: RICH_FACTS, baseline: baselineFixture(), scorecard: RICH_SCORECARD });
+  assert.equal(numericLeaves(payload).includes(9973), false, '运维诊断不该给模型看见');
+  assert.equal('data_quality' in payload.scorecard, false);
+  assert.ok('data_quality' in RICH_SCORECARD, '不得就地改动调用方对象');
+});
+
+test('T78: 设计 8.1 要求第五段写的覆盖率与 abandoned 计数,写得出来', () => {
+  // 旧池只取 by_horizon,于是「累计 384 期、已结算 371 期、放弃 1 期」全被 C4 拦下,
+  // 等于自检在阻止报告满足设计。
+  const doc = { json: {}, headings: {}, raw: '',
+    sections: { 五: '累计 384 期,已结算 371 期,逾期放弃 1 期,延迟结算 3 期,降级 9 期不计入统计。' } };
+  const findings = V.checkC4(doc, { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS,
+    baseline: baselineFixture(), scorecard: RICH_SCORECARD });
+  assert.deepEqual(findings, [], JSON.stringify(findings));
+});
