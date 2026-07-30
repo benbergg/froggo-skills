@@ -163,5 +163,5 @@ function main() {
 if (require.main === module) main();
 module.exports = {
   MODEL_FEATURES, N_BY_HORIZON, COT_PCTILE_MIN_SAMPLES,
-  sigmaDaily, p0N, intervalFor, readFeature, cotPctile, validateParams, computeBaseline,
+  sigmaDaily, p0N, intervalFor, readFeature, cotPctile, realYieldChg, validateParams, computeBaseline,
 };

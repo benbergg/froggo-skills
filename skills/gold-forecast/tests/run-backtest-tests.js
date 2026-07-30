@@ -341,3 +341,39 @@ test('T18: 训练集边界必须精确到「结算日严格早于今天」', () 
     '系数与「结算日严格早于今天」的训练集算不出同一个值,训练边界被挪动了');
   fs.rmSync(tmp, { recursive: true, force: true });
 });
+
+// —— MF-1 止血:训练端与服务端对「落盘过 null 的 FRED 行」必须给同一个结论 ——
+
+test('T19: value 为 null 的 FRED 行在训练端也算特征缺失,不得被 null-null===0 洗成有效值', () => {
+  // 训练端曾自写一份 real_yield_chg,与 baseline 各一份。两份在这一点上分叉的后果是
+  // 在一个分布上训练、在另一个分布上预测:训练端把常数 0 当有效特征照跑,
+  // 服务端判 degraded 退回 p0_N —— 不报错、回测漂亮、实盘失效。
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const dates = sessionDates(500);
+  store.upsert('lbma_pm_usd', dates.map((d, i) => ({ observed_date: d, available_date: d, vintage: d,
+    value: Number((1800 * (1 + 0.0004 * i + 0.01 * Math.sin(i * 0.4))).toFixed(2)) })));
+  store.upsert('fred_DFII10', dates.map((d) => ({ observed_date: d, available_date: d, vintage: d, value: null })));
+  const view = BT.dailyView(store, dates, 120);
+  const last = view.get(dates.length - 1);
+  assert.ok(last, 'dailyView 应产出末日视图');
+  const idx = B.MODEL_FEATURES.indexOf('real_yield_chg');
+  assert.equal(last.x[idx], null, '训练端也必须判 null,不能是 0');
+  assert.equal(last.ok, false, 'null 特征的日子不得进评估');
+
+  // 对照组:同一批日期换成有限值,训练端必须照常算出差值 —— 否则「一律 null」也能过
+  const tmp2 = freshTmp();
+  const store2 = new HistoryStore(tmp2);
+  store2.upsert('lbma_pm_usd', dates.map((d, i) => ({ observed_date: d, available_date: d, vintage: d,
+    value: Number((1800 * (1 + 0.0004 * i + 0.01 * Math.sin(i * 0.4))).toFixed(2)) })));
+  store2.upsert('fred_DFII10', dates.map((d, i) => ({ observed_date: d, available_date: d, vintage: d,
+    value: Number((2 + 0.01 * i).toFixed(4)) })));
+  const ok = BT.dailyView(store2, dates, 120).get(dates.length - 1);
+  assert.ok(Math.abs(ok.x[idx] - 0.01) < 1e-6, `对照组应算出 0.01,实得 ${ok.x[idx]}`);
+
+  // 训练端与服务端共用同一个实现(各写一份必然漂移)
+  assert.equal(B.realYieldChg([{ value: null }, { value: null }]), null);
+  assert.equal(B.realYieldChg([{ value: 2.4 }, { value: 2.5 }]).toFixed(4), '0.1000');
+  fs.rmSync(tmp, { recursive: true, force: true });
+  fs.rmSync(tmp2, { recursive: true, force: true });
+});

@@ -2,7 +2,8 @@
 const { HistoryStore } = require('./lib/history-store');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { dieboldMariano, fitLogistic, predictLogistic, assertAllFinite } = require('./lib/stats');
-const { p0N, sigmaDaily, readFeature, cotPctile, MODEL_FEATURES, N_BY_HORIZON } = require('./baseline');
+const { p0N, sigmaDaily, readFeature, cotPctile, realYieldChg,
+  MODEL_FEATURES, N_BY_HORIZON } = require('./baseline');
 
 // 指真正进入评估的样本数,非日历天数。卡住样本量的不是 LBMA spine —— 它是全量历史
 // (lbma-gold-pm 不按 since 过滤),WARMUP 由它白白吃掉、不占预算。真正的预算是
@@ -125,8 +126,7 @@ function dailyView(store, spine, warmup) {
     const dfiiRows = dfii.rows;
     const f = {
       momentum_z: sigma > 0 ? (basePrice / ma20 - 1) / sigma : null,
-      real_yield_chg: dfiiRows.length >= 2
-        ? dfiiRows[dfiiRows.length - 1].value - dfiiRows[dfiiRows.length - 2].value : null,
+      real_yield_chg: realYieldChg(dfiiRows),
       cot_pctile: cotPctile(cot.rows),
     };
     const x = MODEL_FEATURES.map((k) => f[k]);
