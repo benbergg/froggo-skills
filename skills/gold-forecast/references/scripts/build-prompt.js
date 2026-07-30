@@ -54,16 +54,27 @@ function selectLessons(lessons, tags, max = 5) {
 //
 // 再回退到最后一个换行:字节切点会落在数字字面量中间 —— 实测同一个块挪一个字节,
 // 模型读到的依次是 `"lbma_pm_usd": 4022` / `402` / `4`,真值 4022.2 变成十分之一,
-// 整篇报告会锚在一个不存在的金价上。JSON.stringify(obj, null, 1) 每个值独占一行,
-// 故行边界即安全边界。只回退不前进,回落到上限内的保证不受影响;
-// 块内无换行时退回纯字节切(总比整块丢掉强)。
+// 整篇报告会锚在一个不存在的金价上。
+//
+// 但**回退必须有上界**:「stringify 后每个值独占一行」对字符串值不成立,一个任意长的
+// 字符串值也只占一行,于是回退距离 = 切点所在行的长度。实测 facts 块 99552 → 62 字节
+// (只剩截断标记)、prompt 停在预算下方 39KB,而 C4 的池仍由**完整**对象算出 ⇒
+// 模型写什么数字都被拦 ⇒ 三轮修复全废、每轮真付一次模型钱 ⇒ 降级发布,全程 exit 0。
+// 故超出上界时改为只砍掉尾部那个可能被腰斩的数字字面量:「无腰斩」与「有上界」两个
+// 性质同时成立。只回退不前进,回落到上限内的保证不受影响。
+const MAX_ROLLBACK = 512;
 function truncateToBytes(str, maxBytes) {
   if (maxBytes <= 0) return '';
   const buf = Buffer.from(str, 'utf8');
   if (buf.length <= maxBytes) return str;
   const cut = buf.slice(0, maxBytes).toString('utf8').replace(new RegExp('\\uFFFD+$'), '');
   const lastNewline = cut.lastIndexOf('\n');
-  return lastNewline > 0 ? cut.slice(0, lastNewline) : cut;
+  // 上界按字节量,与调用方的字节预算同一口径(按字符量会被多字节字符放大到 3 倍)
+  if (lastNewline > 0 && Buffer.byteLength(cut.slice(lastNewline)) <= MAX_ROLLBACK) return cut.slice(0, lastNewline);
+  // 整段吃掉尾部的数字字面量字符,不能只吃数字:`4022.2,` 留下 `4022.` 仍会被读成 4022
+  const m = cut.match(/[-\d,.]+$/);
+  // 匹配段必为 ASCII,长度即字节数;超上界说明尾部是长数字串而非被腰斩的 JSON 数字
+  return m && m[0].length <= MAX_ROLLBACK ? cut.slice(0, cut.length - m[0].length) : cut;
 }
 
 // 修复循环第 2/3 轮把 findings 与上一轮原文喂回模型。必须走 buildPrompt 这条路 ——

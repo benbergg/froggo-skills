@@ -287,3 +287,46 @@ test('T26: 块内无换行时退回纯字节切,不整块丢掉', () => {
   const cut = P.__truncateToBytes(oneLine, 100);
   assert.equal(cut.length, 100, '没有换行可退时不能把整块切没');
 });
+
+// 一条长字符串值也只占一行 ⇒ 行边界回退的距离没有上界。下面三条钉死两个性质:
+// 「回退有上界」(T27/T29)与「回退不动时尾部不留腰斩数字」(T28)。
+const ONE_LONG_LINE = 'head\n{ "note": "' + 'f'.repeat(3000) + '", "lbma_pm_usd": 4022.2, "spx": 5138.77 }';
+
+test('T27: 行边界回退有上界,不会因一条长行退到行首', () => {
+  // 上界写成字面量而不引用实现里的 MAX_ROLLBACK:拿被测常量自己算期望值,
+  // 常量被放大到 100KB 时断言会跟着放大、照样全绿(本 session 已出现过同形假绿灯)。
+  // 600 = 512 上界 + 多字节切口最多 3 字节的余量。
+  for (const k of [1000, 2000, 3000]) {
+    const kept = Buffer.byteLength(P.__truncateToBytes(ONE_LONG_LINE, k));
+    assert.ok(kept >= k - 600, `keepBytes=${k} 只保留了 ${kept} 字节,回退距离无上界`);
+  }
+});
+
+test('T28: 回退超出上界时改砍尾部数字字面量,同样不留腰斩数字', () => {
+  // 落在这段区间的切点距行首远超上界 ⇒ 走的是 fallback 而非行边界回退。
+  // `4022.2` 尾部只砍数字会留下 `4022.` —— 读出来仍是 4022,故整段数字字面量字符一起砍。
+  const before = numTokens(ONE_LONG_LINE);
+  let checked = 0;
+  for (let k = 3020; k < Buffer.byteLength(ONE_LONG_LINE); k++) {
+    const cut = P.__truncateToBytes(ONE_LONG_LINE, k);
+    checked++;
+    for (const n of numTokens(cut)) {
+      assert.ok(before.has(n), `切点 ${k} 切出了原文没有的数字 ${n}(数字被腰斩)`);
+    }
+  }
+  assert.ok(checked > 20, `只扫了 ${checked} 个切点`);
+});
+
+test('T29: 超限压缩后预算基本用满,长字符串行不会把整块抹成一个截断标记', () => {
+  // 实测无上界时:facts 块 99552 → 62 字节(只剩标记)、prompt 停在预算下方 39KB,
+  // 而 C4 的池仍由**完整**对象算出 ⇒ 模型写什么数字都被拦 ⇒ 三轮修复全废后降级,exit 0。
+  const facts = { note: 'f'.repeat(60_000), v: 4022.2 };
+  const r = P.buildPrompt({ facts, baseline: { blob: 'B'.repeat(40_000) },
+                            scorecard: { blob: 'C'.repeat(20_000) }, lessons: [], contextTags: ['t'], news: [] });
+  assert.ok(r.bytes <= P.MAX_BYTES, `总字节 ${r.bytes} 应回落到上限内`);
+  const f = r.blocks.find((b) => b.name === 'facts');
+  assert.equal(f.truncated, true, '本用例应确实触发了截断');
+  const factsBytes = Buffer.byteLength(f.text);
+  assert.ok(factsBytes > 30_000, `facts 块只剩 ${factsBytes} 字节,整块被抹掉了`);
+  assert.ok(r.bytes > 100_000, `prompt 只有 ${r.bytes} 字节,预算 ${P.MAX_BYTES} 大半没用上`);
+});
