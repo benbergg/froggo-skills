@@ -110,6 +110,28 @@ test('T35: error.code=E2BIG 直接判 oversize,优先级高于其他分支', () 
   assert.equal(r.kind, 'oversize');
 });
 
+test('T70: 二进制找不到/没执行位判 infra,不判 oversize', () => {
+  // OPENCLAW_BIN 配错、npm 全局目录被清、丢执行位 —— 判 oversize 会把运维引向查
+  // prompt 体积,而 SKILL.md 自己把 openclaw 路径列为第一条排查项。
+  for (const code of ['ENOENT', 'EACCES', 'EPERM', 'EMFILE', 'ENOMEM']) {
+    const r = R.interpretModelResult({ status: null, signal: null, stdout: '', error: { code } }, 'MiniMax-M3');
+    assert.equal(r.kind, 'infra', `${code} 应判 infra`);
+    assert.match(r.stderr, new RegExp(code), '简报要能指到具体 errno');
+  }
+});
+
+test('T71: callModel 打不存在的二进制时判 infra(端到端,不起真 openclaw)', () => {
+  const r = R.callModel('p', { bin: '/no/such/openclaw/binary' });
+  assert.equal(r.kind, 'infra', '进程根本没起来,与 prompt 体积无关');
+});
+
+test('T72: 白名单只放行 E2BIG —— 未知 errno 一律归环境故障', () => {
+  assert.equal(R.interpretModelResult({ status: null, stdout: '', error: { code: 'E2BIG' } }, 'M').kind, 'oversize');
+  assert.equal(R.interpretModelResult({ status: null, stdout: '', error: { code: 'E2BIG_LOOKALIKE' } }, 'M').kind, 'infra');
+  // 无 error 无 signal 的裸 status=null 仍是 E2BIG 的实测签名,不能一起吞掉
+  assert.equal(R.interpretModelResult({ status: null, stdout: '' }, 'M').kind, 'oversize');
+});
+
 // ---- P5:pin 比对两侧归一化 --------------------------------------------
 
 test('T36: 完整 slug 与裸名互认,两种写法都不误判 pin_mismatch', () => {
@@ -860,4 +882,26 @@ test('T69: CLI 参数错退 1,不退 5 —— 5 的语义是运行期异常/权�
   assert.equal(noTarget.status, 1);
   assert.match(noTarget.stderr, /GOLD_FEISHU_TARGET/);
   fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T73: 失败简报带上具体签名,且不合成与 push 码表撞车的退出码', () => {
+  for (const [kind, re] of [['oversize', /参数超长/], ['infra', /模型 API|运行环境/]]) {
+    const h = harness({ modelSeq: [{ ok: false, kind }, { ok: false, kind }, { ok: false, kind }] });
+    const brief = h.calls.find((c) => c.name === 'push');
+    const step = argOf(brief.args, '--step');
+    assert.match(step, /^model/, '步骤名仍要在最前');
+    assert.match(step, re, `${kind} 的签名没进到人手上的那条消息里`);
+    // push.js 的码表里 1=参数错、4=发送失败;模型故障没有子进程退出码,
+    // 合成一个数字会让同一个数字在两处含义不同
+    assert.equal(brief.args.includes('--code'), false, `${kind} 不该合成退出码`);
+    h.cleanup();
+  }
+});
+
+test('T74: 有真子进程退出码时照常透传,不被签名逻辑吃掉', () => {
+  const h = harness({ fail: { baseline: 3 } });
+  const brief = h.calls.find((c) => c.name === 'push');
+  assert.equal(argOf(brief.args, '--step'), 'baseline', '非 infra 类不加签名后缀');
+  assert.equal(argOf(brief.args, '--code'), '3');
+  h.cleanup();
 });

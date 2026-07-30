@@ -171,15 +171,19 @@ function interpretModelResult(r, pinnedModel) {
   const res = r || {};
   const errCode = res.error && res.error.code;
 
-  // E2BIG:单参数超 128KB(实测 3ms 返回)。它与"超时被 kill"的返回值在
+  // E2BIG:单参数超 128KB(实测 3ms 返回)。它与"进程根本没起来/被 kill"的返回值在
   // status/stdout 上完全一致 —— 都是 status=null + stdout 空,差别只在 signal/error:
   //   E2BIG    : { status: null, signal: null,      error.code: 'E2BIG' }
   //   超时 kill: { status: null, signal: 'SIGTERM', error.code: 'ETIMEDOUT' }
-  // 只看 status/stdout 会把网关变慢误判成"prompt 太大",于是既不重试也不算 infra,
-  // 真正的基础设施故障被静默吞掉。故环境信号优先级高于超长信号。
+  //   路径配错: { status: null, signal: null,      error.code: 'ENOENT' }
+  //   缺执行位: { status: null, signal: null,      error.code: 'EACCES' }
+  // 原则是「环境信号优先级高于超长信号」,所以这里必须白名单 E2BIG、其余 errCode 一律
+  // 归 infra ——只枚举 ETIMEDOUT 会让 ENOENT/EACCES 掉进下面那条兜底判成 oversize,
+  // 于是 OPENCLAW_BIN 配错会被报成"prompt 太大",把运维引向查 prompt 体积,
+  // 而 SKILL.md 自己把 openclaw 路径列为第一条排查项。
   if (errCode === 'E2BIG') return { ok: false, kind: 'oversize' };
-  if (res.signal != null || errCode === 'ETIMEDOUT') {
-    return { ok: false, kind: 'infra', stderr: `模型调用被中止(signal=${res.signal ?? '-'} error=${errCode ?? '-'})` };
+  if (errCode || res.signal != null) {
+    return { ok: false, kind: 'infra', stderr: `模型调用未能完成(signal=${res.signal ?? '-'} error=${errCode ?? '-'})` };
   }
   if (res.status === null && !res.stdout) return { ok: false, kind: 'oversize' };
   if (res.status !== 0) return { ok: false, kind: 'infra', stderr: res.stderr || `exit ${res.status}` };
@@ -229,6 +233,12 @@ function classifyOutcome({ isTradingDay, settled, degraded, failedStep, failureK
     ? { outcome: 'degraded_success', recordSkipped: false, push: true }
     : { outcome: 'success', recordSkipped: false, push: true };
 }
+
+// 失败简报里给人看的签名文案。运维拿到的是这几个字,不是 kind 的英文枚举。
+const FAILURE_SIGNATURE_LABEL = {
+  oversize: '参数超长(prompt 超过 128KB 上限,查各块字节数)',
+  infra: '模型 API 或运行环境异常(先查 openclaw 路径与网关)',
+};
 
 // run.js 自身的退出码。3 单独留给"入库归档已成功但备份失败"(commit.js 透传),
 // 与 6/7 分开 —— 那不是流水线失败,不该让 cron 的重试逻辑当成需要重跑。
@@ -454,9 +464,15 @@ function runPipeline({
     }
     bumpRunState(P.runState, cls.outcome);
     if (failedStep && cls.push && !dryRun) {
-      const brief = ['--mode', 'failure', '--step', failedStep, '--code', String(st.detail?.code ?? 1),
+      // 签名必须进到人手上的那条消息里。push.js 没有 --signature 形参(加形参属 Task 14
+      // 的接口),故并进 --step —— 简报正文是「失败步骤 X · 退出码 N」,这样 X 自带原因。
+      const label = FAILURE_SIGNATURE_LABEL[cls.signature];
+      const brief = ['--mode', 'failure', '--step', label ? `${failedStep} · ${label}` : failedStep,
         '--settled', st.settled ? '1' : '0', '--state-dir', stateDir,
         '--consecutive', String(readJsonOr(P.runState, {}).consecutive_failures ?? 1)];
+      // 只有真有子进程退出码时才传:模型故障没有子进程,合成一个数字会和 push.js
+      // 自己的码表(1=参数错 4=发送失败)撞车,同一个数字两处含义不同。缺省显示「未知」。
+      if (Number.isFinite(st.detail?.code)) brief.push('--code', String(st.detail.code));
       if (st.latestSession) brief.push('--date', st.latestSession);
       const pr = runScriptImpl('push', brief, { timeoutMs: BUDGET.collect_ms });
       if (pr.code !== 0) log(`FATAL: 失败简报也没发出去(push exit ${pr.code}) —— 告警通道本身出问题了`);
@@ -541,7 +557,8 @@ function runPipeline({
 
     const m = callModelWithRetry(prompt.text, { callModelImpl });
     if (m.kind === 'oversize' || m.kind === 'infra') {
-      st.detail = { code: m.kind === 'oversize' ? 1 : 4 };
+      // 不合成退出码:模型调用没有子进程退出码,编一个会和 push.js 的码表撞车
+      st.detail = { code: null };
       log(`模型调用失败(${m.kind},试 ${m.tries} 次):${m.stderr || ''}`);
       return finish({ failedStep: 'model', failureKind: m.kind });
     }
