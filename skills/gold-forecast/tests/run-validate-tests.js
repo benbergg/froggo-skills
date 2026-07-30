@@ -357,6 +357,8 @@ test('T40: 描述第三方持仓与流向的市场表述不得误拦', () => {
     ['四', '本报告不提供仓位建议，模型仅输出80%概率区间。'],
     ['五', '过去20期中有3期跌破下沿，若当时按下沿止损将全部被扫，故不建议如此使用。'],
     ['四', '若实际利率继续下行，区间中枢将上移，但本模型不据此调整仓位假设。'],
+    // 指令性标记与红线概念落在同一句的不同子句 —— 按句判定会误拦,故子句必须切中文逗号
+    ['四', '建议读者结合自身情况判断，多头仓位数据于下周公布。'],
   ];
   for (const [sec, s] of cases) {
     const f = validate(parseForecast(inject(sec, s)), CTX()).findings.filter((x) => x.check === 'C12');
@@ -394,6 +396,14 @@ test('T42: 免责声明本身绝不能被自己的红线检查拦下', () => {
   for (const sec of ['一', '二', '三', '四', '五', '六']) {
     const f = validate(parseForecast(inject(sec, DISCLAIMER_TEXT)), CTX()).findings.filter((x) => x.check === 'C12');
     assert.deepEqual(f, [], `免责声明注入第${sec}段后被自己的红线拦下`);
+  }
+  // 带数字的免责句是上一版真正踩到的形态(整句同时含红线词与数字);第六段禁数字故不适用
+  for (const sec of ['一', '二', '三', '四', '五']) {
+    for (const t of ['本报告不提供仓位建议，模型仅输出80%概率区间。',
+      '本报告不提供仓位、杠杆、买卖点位或止损价等具体操作建议，本期区间宽度约1.8%。']) {
+      const f = validate(parseForecast(inject(sec, t)), CTX()).findings.filter((x) => x.check === 'C12');
+      assert.deepEqual(f, [], `带数字的免责句注入第${sec}段后被拦: ${t}`);
+    }
   }
 });
 
