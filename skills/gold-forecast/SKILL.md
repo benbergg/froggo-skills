@@ -30,7 +30,7 @@ description: "黄金交易预测日报。确定性脚本从 LBMA/FRED/CFTC/东�
 | `GOLD_ARCHIVE_DIR` | ✓ | 归档目录,例 `<知识库>/05-Reports/gold`。亦可用 `--archive-dir` |
 | `GOLD_FEISHU_ACCOUNT` | – | 缺省 `helios`。本机装了多个飞书账号,open_id 按应用隔离,配错会被拒 `feishu_code=99992361 open_id cross app` |
 | `GOLD_REPORT_URL_BASE` | – | 归档站点前缀,给推送摘要拼归档链接 |
-| `SEND_NOTIFY` | – | 缺省 0 即**只演练不真发**;要真发必须显式设 1 |
+| `SEND_NOTIFY` | ✓(生产) | 缺省 0 即**只演练不真发,且退 0** ⇒ 整体 exit 0、链路全绿,而报告与失败简报都不会到达任何人。生产与 cron 必须显式设 1 |
 | `OPENCLAW_BIN` | – | 缺省 `~/.npm-global/bin/openclaw` |
 | `GOLD_RSYNC_BIN` | – | 覆盖 rsync 路径(非标准环境用) |
 
@@ -118,9 +118,30 @@ ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dr
 
 ### cron
 
-**默认不启用。** 先手动观察若干天的产出,确认无误后再由用户决定是否建定时任务;
-建的时候按上面那条 `flock` 写法包住 `run.js`,并显式导出 `FRED_API_KEY` /
-`GOLD_FEISHU_TARGET` / `GOLD_ARCHIVE_DIR` —— **cron 的环境不是登录 shell 的环境**。
+**默认不启用。** 先手动观察若干天的产出,确认无误后再由用户决定是否建定时任务。
+建的时候按上面那条 `flock` 写法包住 `run.js`,并把下面**四个**环境变量全部显式导出
+—— **cron 的环境不是登录 shell 的环境**:
+
+```cron
+0 8 * * *  FRED_API_KEY=... GOLD_FEISHU_TARGET=... GOLD_ARCHIVE_DIR=... SEND_NOTIFY=1 \
+           flock -n /tmp/gold-forecast.lock -c 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js' \
+           >> ~/.local/state/gold-forecast/cron.log 2>&1
+```
+
+> [!important] `SEND_NOTIFY=1` 不能漏
+> `push.js` 未设它时走 `--dry-run` 并**退 0**,于是 `run.js` 判 `success`、整体
+> `exit 0`——**链路全绿,而报告与失败简报都永不到达任何人**。这是本系统唯一一处
+> 「全部正常」和「通知层完全关闭」长得一模一样的地方。
+> `run.js` 在非 dry-run 且未设它时会打一条显著 WARN,但 cron 的 stderr 要有人看才算数,
+> 所以上面把日志重定向到了文件。
+
+值放在 crontab 里会被同机其他用户 `ps`/`/proc` 看到。生产上建议改成
+`. ~/.config/gold-forecast/env;` 前缀,把四个变量都写进那个 chmod 600 的文件。
+
+> [!note] 失败之后的周末会重跑,每次真付一次模型调用
+> 失败当天不入库 ⇒ `max(base_date)` 不推进 ⇒ 次日(哪怕是周六)仍判「有新定盘」
+> 而跑完整条流水线,直到某天成功为止。这是有意的自愈行为(故障修好后无需人工补跑),
+> 代价是每次重跑都真调一次 M3。连挂多天时留意这笔开销,必要时先停掉 cron 再排查。
 
 ## Step 4 写作规范摘要
 
@@ -158,9 +179,25 @@ openclaw **不在非交互 shell 的 PATH 中**(实测 `ssh <host> 'which opencl
 超时算 infra 并重试至多 3 次。日志里报的是哪一种就照哪一种查,别把两者混为一谈。
 
 **报告没来,也没收到失败简报**
-先看退出码。`4` 说明预测已入库、只是飞书没发出去(此时不会补发简报——同一条通道
-刚失败,简报会以完全相同的方式失败)。查 `~/.local/state/gold-forecast/sent.json`
-与 openclaw 的 run logs。
+**先确认 `SEND_NOTIFY=1` 已设**——这是最常见也最难看出来的一种:未设时 `push.js`
+走 `--dry-run` 退 0,整条流水线 `exit 0`、日志全绿,而两种消息都不会发出。
+`run.js` 会打 `WARN: SEND_NOTIFY 未设为 1`,在 cron 日志里搜这一行。
+
+排除它之后再看退出码:`4` 说明预测已入库、只是飞书没发出去(此时不会补发简报——
+同一条通道刚失败,简报会以完全相同的方式失败);`0` 且无 WARN 则查
+`~/.local/state/gold-forecast/sent.json`(内容相同的消息会被去重跳过)与 openclaw 的 run logs。
+
+**很多天没有任何输出,退出码一直是 0**
+看 `run-state.json` 的 `consecutive_non_trading`。LBMA 源冻结(持续返回 HTTP 200 +
+旧 JSON)时每天都判「无新定盘」,本就不推送——连续 6 次会自动发一条 `stale-lbma`
+告警兜底,但那条同样受 `SEND_NOTIFY` 约束。手工核对:
+`jq .latest ~/.local/state/gold-forecast/settlement-price.json` 的日期是否还在动。
+
+**`FATAL: predictions.json 不存在,但本机跑过`**
+权威库丢了。**不要**手工建一个空库了事——那会让 settle 在空库上跑、scorecard 全部
+`insufficient_sample`、commit 只入一条,随后 rsync 把备份也覆盖成单条版本。
+从 `~/backup/gold-forecast/` 恢复,或从 `~/.local/state/gold-forecast/versions/`
+捞回上一版(原子写留的滚动副本)。确属首次部署才手工创建空库。
 
 **某天变成「降级预测」**
 两个原因:① 模型 pin 校验失败(返回的 `model` 不是 M3 或发生过 failover)——

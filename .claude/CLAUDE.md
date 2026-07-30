@@ -395,10 +395,30 @@ exit 1(静默 filter 掉会让每个候选零级可跑→直落 exit 6,把排查
 - **退出码分层**:`commit`/`push` 的运行期异常退 5、参数错退 1、备份失败退 3。
   `run.js` 把 3 判成**成功**(入库归档已完成、重跑幂等)—— 判成失败会为了修一个
   rsync 问题重跑整条流水线再付一次模型费用;退出码仍透传 3 保持刺眼。
-- 测试 404 项。判别力全部经 revert-and-rerun,两处暴露假绿灯:①「naive_p 取 p0_N」
+- **`SEND_NOTIFY` 未设 = 通知层静默关闭且退 0**。`push.js` 未设它时走 `--dry-run`
+  并退 0 ⇒ run.js 判 success ⇒ 整体 exit 0,链路全绿而报告与失败简报都永不到达。
+  这是全系统唯一一处「完全正常」与「通知层完全关闭」外观一致的地方,故 cron 清单里
+  它与 key 同等必填,run.js 也会显式 WARN。
+- **进 prompt 的数字与 C4 允许池必须出自同一个投影**(`lib/prompt-payload.js`)。
+  两处各写一份必然漂移,而且是双向的:池窄于 prompt 时,模型引用自己看到的数字就被
+  block —— 设计 8.1 要求第五段写覆盖率与 abandoned 计数,它们在 `scorecard.coverage`,
+  旧池不含,等于**自检在阻止报告满足设计**。反方向的一半是「不想被引用的数字就别送」,
+  故运维诊断 `data_quality` 从 payload 里剥掉,剥掉后它自然也不在池里。
+- **环境信号优先级高于超长信号,且必须白名单而非枚举**。`oversize` 的兜底判据
+  (`status===null && !stdout`)会吃掉一切 `error.code`,只补 `ETIMEDOUT` 仍会让
+  `ENOENT`/`EACCES`(OPENCLAW_BIN 配错、丢执行位)判成「prompt 太大」。
+- **权威库「不见了」与「还没有」必须分开**。缺失时静默新建空库的后果链全程 exit 0:
+  settle 在空库上跑 → scorecard 全 insufficient → commit 只入一条 → rsync 同名覆盖
+  把备份也换成单条版本。判据用 `run-state.json` 或 `versions/` 是否存在。
+- **测试套件的零外部流量要靠机制而非自觉**。子进程拿的是白名单 env、不继承
+  `NODE_OPTIONS`,所以 `helpers.runCli` 强制注入断网 shim;曾有一条 CLI 测试跑完整
+  `runPipeline` 真打 LBMA 端点,而它的断言是 `status !== 5`,通网断网都成立。
+- 测试 423 项。判别力全部经 revert-and-rerun,**四处暴露假绿灯**:①「naive_p 取 p0_N」
   在 `model:'p0_N'` 的夹具下与取 `baseline.prob_up` 完全同值,必须造一个 logistic
   已生效的夹具才测得到;②「删产物只在最终放弃时」换成 `!passed` 照样全绿 ——
-  两者只在 pin 不符中途 break 时才分叉。
+  两者只在 pin 不符中途 break 时才分叉;③ 源冻结告警的阈值断言拿常量自身去算种子数,
+  会跟着常量一起缩放,阈值改成 2 也照样绿;④ `status !== 5` 那条对任何回归都成立。
+  共同点:**断言必须钉在绝对的、外部的判据上**,拿被测对象自己算出来的期望值等于没测。
 
 ## 版本管理
 
