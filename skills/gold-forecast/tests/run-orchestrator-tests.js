@@ -994,3 +994,168 @@ test('T78: 设计 8.1 要求第五段写的覆盖率与 abandoned 计数,写得�
     baseline: baselineFixture(), scorecard: RICH_SCORECARD });
   assert.deepEqual(findings, [], JSON.stringify(findings));
 });
+
+// ---- dry-run 不碰权威库 / 权威库丢失 / 日期口径 / 通知开关 / 源冻结 --------
+
+const QUIET_ENV = { SEND_NOTIFY: '1' };
+
+test('T79: dry-run 失败时不写 skipped_dates、不累计失败连击', () => {
+  for (const step of ['settle', 'collect-facts', 'render']) {
+    const h = harness({ dryRun: true, fail: { [step]: 1 }, env: QUIET_ENV });
+    const db = h.readState();
+    assert.deepEqual(db.skipped_dates, [], `${step} 失败时 dry-run 写了 skipped_dates`);
+    assert.equal(fs.existsSync(h.S('run-state.json')), false, `${step} 失败时 dry-run 起了失败连击`);
+    assert.equal(h.order.includes('push'), false);
+    h.cleanup();
+  }
+});
+
+test('T80: 非 dry-run 才写权威库,两者行为必须不同(否则上一条是空跑)', () => {
+  const h = harness({ fail: { render: 1 }, env: QUIET_ENV });
+  assert.deepEqual(h.readState().skipped_dates, ['2026-07-29']);
+  assert.equal(JSON.parse(fs.readFileSync(h.S('run-state.json'), 'utf-8')).consecutive_failures, 1);
+  h.cleanup();
+});
+
+test('T81: skipped_dates 恒为 target_date 口径,baseline 之前失败也一样', () => {
+  // baseline 之后失败 → predictionId;之前失败 → 由 latestSession 现推。
+  // 两条路必须落在同一套口径上,否则覆盖率的分母混了两种日期,
+  // 而 Set 去重还会把「D 日晚失败」与「D+1 日早失败」并成一天。
+  const after = harness({ fail: { render: 1 }, env: QUIET_ENV });
+  const before = harness({ fail: { 'collect-facts': 1 }, env: QUIET_ENV });
+  assert.deepEqual(after.readState().skipped_dates, ['2026-07-29']);
+  assert.deepEqual(before.readState().skipped_dates, ['2026-07-29'],
+    `baseline 之前失败记成了 ${before.readState().skipped_dates}(base_date 口径)`);
+  after.cleanup(); before.cleanup();
+});
+
+test('T82: 首次部署新建空库,库丢失则拒绝新建并退 5', () => {
+  const mk = (seed) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-db-'));
+    const stateDir = path.join(tmp, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    seed(stateDir);
+    const calls = [];
+    const res = R.runPipeline({
+      stateDir, archiveDir: path.join(tmp, 'archive'), log: () => {}, env: QUIET_ENV,
+      callModelImpl: () => { throw new Error('不该走到模型'); },
+      runScriptImpl: (name) => {
+        calls.push(name);
+        if (name === 'collect-settlement') {
+          fs.writeFileSync(path.join(stateDir, 'settlement-price.json'),
+            JSON.stringify({ latest: { date: '2026-07-28', value: 4022.2 }, history: [] }));
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    return { res, calls, stateDir, tmp };
+  };
+
+  const fresh = mk(() => {});
+  assert.ok(fs.existsSync(path.join(fresh.stateDir, 'predictions.json')), '首次部署应新建空库');
+  assert.notEqual(fresh.res.outcome, 'failed_before_settle');
+  fs.rmSync(fresh.tmp, { recursive: true, force: true });
+
+  // 跑过的痕迹 + 库不见了 = 丢失,不是首次部署
+  for (const seed of [
+    (d) => fs.writeFileSync(path.join(d, 'run-state.json'), '{"last_outcome":"success"}'),
+    (d) => { fs.mkdirSync(path.join(d, 'versions'), { recursive: true });
+             fs.writeFileSync(path.join(d, 'versions', 'predictions.json.1753000000000.1.000000'), '{}'); },
+  ]) {
+    const gone = mk(seed);
+    assert.equal(gone.res.exitCode, 5, '权威库丢失必须退 5,不能静默重开局');
+    assert.equal(fs.existsSync(path.join(gone.stateDir, 'predictions.json')), false, '绝不新建空库');
+    assert.equal(gone.calls.includes('settle'), false, '不能让 settle 在空库上跑');
+    assert.ok(gone.calls.includes('push'), '要发失败简报');
+    fs.rmSync(gone.tmp, { recursive: true, force: true });
+  }
+});
+
+test('T83: predictionsDbState 三态判定', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-dbstate-'));
+  const P = { predictions: path.join(tmp, 'predictions.json'), runState: path.join(tmp, 'run-state.json') };
+  assert.equal(R.predictionsDbState(P), 'fresh');
+  fs.writeFileSync(P.runState, '{}');
+  assert.equal(R.predictionsDbState(P), 'missing');
+  fs.writeFileSync(P.predictions, '{}');
+  assert.equal(R.predictionsDbState(P), 'present', '库在就是在,不管有没有跑过的痕迹');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T84: SEND_NOTIFY 未设时显著告警(通知层静默关闭而退出码是 0)', () => {
+  const off = harness({ env: {} });
+  assert.equal(off.res.notifyDisabled, true);
+  assert.ok(off.logs.some((m) => /SEND_NOTIFY/.test(m)), '必须告警,否则运维以为发出去了');
+  assert.equal(off.res.exitCode, 0, '不 fail —— 演练场景合法');
+  off.cleanup();
+
+  const on = harness({ env: QUIET_ENV });
+  assert.equal(on.res.notifyDisabled, false);
+  assert.equal(on.logs.some((m) => /SEND_NOTIFY/.test(m)), false, '设了就不该再吵');
+  on.cleanup();
+
+  const dry = harness({ dryRun: true, env: {} });
+  assert.equal(dry.res.notifyDisabled, false, 'dry-run 本就不推送,不必为此告警');
+  dry.cleanup();
+});
+
+test('T85: 连续非交易日计数与失败计数互不污染', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-state-'));
+  const p = path.join(tmp, 'run-state.json');
+  let s = R.bumpRunState(p, 'non_trading_day');
+  assert.equal(s.consecutive_non_trading, 1);
+  assert.equal(s.consecutive_failures, 0, '周末不是失败');
+  s = R.bumpRunState(p, 'non_trading_day');
+  assert.equal(s.consecutive_non_trading, 2);
+  s = R.bumpRunState(p, 'failed_after_settle');
+  assert.equal(s.consecutive_non_trading, 0, '出现一次真运行就该清零');
+  assert.equal(s.consecutive_failures, 1);
+  s = R.bumpRunState(p, 'success');
+  assert.equal(s.consecutive_failures, 0);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T86: 连续无新定盘达阈值即告警(LBMA 源冻结的兜底)', () => {
+  const runOnce = (priorCount) => {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-stale-'));
+    const stateDir = path.join(tmp, 'state');
+    fs.mkdirSync(stateDir, { recursive: true });
+    fs.writeFileSync(path.join(stateDir, 'predictions.json'), JSON.stringify({
+      schema_version: 2, skipped_dates: [],
+      predictions: [{ id: '2026-07-29', base_date: '2026-07-28', horizons: {} }] }));
+    fs.writeFileSync(path.join(stateDir, 'run-state.json'), JSON.stringify({
+      last_outcome: 'non_trading_day', consecutive_failures: 0, consecutive_non_trading: priorCount }));
+    const calls = [];
+    const logs = [];
+    const res = R.runPipeline({
+      stateDir, archiveDir: path.join(tmp, 'archive'), log: (m) => logs.push(m), env: QUIET_ENV,
+      callModelImpl: () => { throw new Error('不该走到模型'); },
+      runScriptImpl: (name, args) => {
+        calls.push({ name, args });
+        if (name === 'collect-settlement') {
+          fs.writeFileSync(path.join(stateDir, 'settlement-price.json'),
+            JSON.stringify({ latest: { date: '2026-07-28', value: 4022.2 }, history: [] }));
+        }
+        return { code: 0, stdout: '', stderr: '' };
+      },
+    });
+    fs.rmSync(tmp, { recursive: true, force: true });
+    return { res, calls, logs };
+  };
+
+  // 阈值必须用绝对值钉住:拿 STALE_SESSION_ALERT_RUNS 自己去算种子数,
+  // 断言会跟着常量一起缩放 —— 阈值改成 2 也照样绿(实测过),等于没测。
+  // 4 是真实日历的上界:复活节周五假 + 周末 + 周一假,圣诞同量级。
+  assert.ok(R.STALE_SESSION_ALERT_RUNS >= 5,
+    `阈值 ${R.STALE_SESSION_ALERT_RUNS} 会被正常假期误触发,连续告警会训练出忽略习惯`);
+  const quiet = runOnce(3);   // 本次运行后计到 4,仍在日历能解释的范围内
+  assert.equal(quiet.res.outcome, 'non_trading_day');
+  assert.equal(quiet.calls.some((c) => c.name === 'push'), false, '真实假期最长连跑 4 次,不能被误触发');
+
+  const loud = runOnce(R.STALE_SESSION_ALERT_RUNS - 1);
+  assert.equal(loud.res.outcome, 'non_trading_day');
+  const alert = loud.calls.find((c) => c.name === 'push');
+  assert.ok(alert, '源冻结会让系统无限期静默,必须有兜底告警');
+  assert.match(argOf(alert.args, '--step'), /stale-lbma/);
+  assert.equal(argOf(alert.args, '--mode'), 'failure');
+});

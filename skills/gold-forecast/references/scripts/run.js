@@ -376,21 +376,44 @@ function buildDegradedForecast({ baseline, reason }) {
 
 const FAILED_OUTCOMES = new Set(['failed_before_settle', 'failed_after_settle', 'infra_failure']);
 
+// LBMA 源冻结(持续返回 HTTP 200 + 旧 JSON)会让系统每天判 non_trading_day、
+// 零推送、零告警、无限期静默。真实假期最长连跑 4 次(复活节:周五假 + 周末 + 周一假,
+// 圣诞同量级),故 6 次是「日历解释不了」的下界,不会被正常假期误触发。
+const STALE_SESSION_ALERT_RUNS = 6;
+
 const readJsonOr = (p, fallback = null) => {
   try { return JSON.parse(fs.readFileSync(p, 'utf-8')); } catch { return fallback; }
 };
 
-// 连续失败天数是「偶发还是坏了」的唯一线索,故必须跨运行持久化;
-// 成功与非交易日都清零 —— 非交易日不是失败,让它累计会把周末算成故障。
+const isTruthy = (v) => /^(1|true|yes|on)$/i.test(String(v ?? ''));
+
+// 连续计数是「偶发还是坏了」的唯一线索,故必须跨运行持久化。
+// 两个计数分开:非交易日不是失败(混进失败计数会把周末算成故障),
+// 但连续太多次非交易日本身也是一种故障(源冻结),故单独计一份。
 function bumpRunState(statePath, outcome) {
   const prev = readJsonOr(statePath, {}) || {};
-  const prevN = Number.isFinite(prev.consecutive_failures) ? prev.consecutive_failures : 0;
+  const prevF = Number.isFinite(prev.consecutive_failures) ? prev.consecutive_failures : 0;
+  const prevN = Number.isFinite(prev.consecutive_non_trading) ? prev.consecutive_non_trading : 0;
   const next = {
     last_outcome: outcome,
-    consecutive_failures: FAILED_OUTCOMES.has(outcome) ? prevN + 1 : 0,
+    consecutive_failures: FAILED_OUTCOMES.has(outcome) ? prevF + 1 : 0,
+    consecutive_non_trading: outcome === 'non_trading_day' ? prevN + 1 : 0,
   };
   atomicWriteJSON(statePath, next, { keepVersions: 0 });
   return next;
+}
+
+// 「首次部署」与「权威库不见了」必须分开:前者要新建空库,后者一旦新建就会
+// settle 在空库上跑 → scorecard 全 insufficient → commit 只入一条 → rsync 把备份也
+// 换成单条版本,全程 exit 0 无告警,整部历史静默归零。
+// 判据:run-state.json 每次运行都写,versions/ 是原子写滚动的旧版 —— 两者任一存在
+// 都说明这台机器跑过,那 predictions.json 就是「不见了」而不是「还没有」。
+function predictionsDbState({ predictions, runState }) {
+  if (fs.existsSync(predictions)) return 'present';
+  const versionsDir = path.join(path.dirname(predictions), 'versions');
+  const hadVersions = fs.existsSync(versionsDir)
+    && fs.readdirSync(versionsDir).some((f) => f.startsWith(`${path.basename(predictions)}.`));
+  return (fs.existsSync(runState) || hadVersions) ? 'missing' : 'fresh';
 }
 
 // 跳过的日期记入 skipped_dates 并在 scorecard 报告覆盖率;去重后排序,重跑幂等。
@@ -432,7 +455,8 @@ function resolvePaths({ stateDir, archiveDir }) {
 // 校验先于入库;任何非零退出都触发失败通知。
 function runPipeline({
   stateDir, archiveDir, today: todayArg = null, dryRun = false, urlBase = null,
-  runScriptImpl = runScript, callModelImpl = callModel, log = (m) => process.stderr.write(`${m}\n`),
+  runScriptImpl = runScript, callModelImpl = callModel, env = process.env,
+  log = (m) => process.stderr.write(`${m}\n`),
 } = {}) {
   const P = resolvePaths({ stateDir, archiveDir });
   const trace = [];
@@ -441,6 +465,15 @@ function runPipeline({
 
   fs.mkdirSync(P.work.dir, { recursive: true });
 
+  // push.js 未设 SEND_NOTIFY 时走 --dry-run 且**退 0**,于是链路全绿、报告永不到达、
+  // 失败简报同样永不到达 —— 整条通知层静默关闭而退出码是 0。不 fail(演练场景合法),
+  // 但必须显著告警,否则运维会以为发出去了。
+  st.notifyDisabled = !dryRun && !isTruthy(env.SEND_NOTIFY);
+  if (st.notifyDisabled) {
+    log('WARN: SEND_NOTIFY 未设为 1 —— push.js 将只演练不真发,报告与失败简报都不会到达任何人,'
+      + '而退出码仍是 0。cron 环境请显式导出 SEND_NOTIFY=1。');
+  }
+
   const step = (name, args, timeoutMs = BUDGET.collect_ms) => {
     const r = runScriptImpl(name, args, { timeoutMs });
     trace.push({ step: name, code: r.code, timedOut: Boolean(r.timedOut) });
@@ -448,22 +481,43 @@ function runPipeline({
     return r;
   };
 
-  const finish = ({ failedStep = null, failureKind = null, isTradingDay = true }) => {
+  // skipped_dates 必须与 prediction.id 同一套口径(都是 short 的 target_date),
+  // 否则覆盖率会把 base_date 与 target_date 两种日期混进同一个分母,
+  // 而 Set 去重还会把「D 日晚失败」和「D+1 日早失败」并成一天。
+  const skipDateFor = () => {
+    if (st.predictionId) return st.predictionId;
+    const base = todayArg || st.latestSession;
+    return base ? addSessions(base, N_BY_HORIZON.short) : null;
+  };
+
+  const finish = ({ failedStep = null, failureKind = null, isTradingDay = true, exitOverride = null }) => {
     const cls = classifyOutcome({ isTradingDay, settled: st.settled, degraded: st.degraded, failedStep, failureKind });
-    if (cls.recordSkipped) {
-      // 跳过日期取「本该产出的 id」;失败太早连 baseline 都没有时退回目标日
-      const d = st.predictionId || todayArg || st.latestSession || null;
+    // dry-run 一个字节都不写权威库:部署清单第 5 步就是先演练一次,那时 key 多半还没配好,
+    // 第一次演练就往 predictions.json 记跳过日、还起一条失败连击,是最坏的首因印象。
+    // 裁定 2 授权的是「1a/1b 对 history/ 的 upsert 照常」,不含写 predictions.json。
+    if (dryRun) {
+      log(`dry-run:不写 skipped_dates、不累计连续失败(结局 ${cls.outcome})`);
+    } else if (cls.recordSkipped) {
+      const d = skipDateFor();
       if (d) recordSkippedDate(P.predictions, d);
       else log('WARN: Step 1a 就挂了,连目标日都无从确定,本次不记 skipped_dates —— 记一个编造的日期比不记更糟');
     }
-    bumpRunState(P.runState, cls.outcome);
+    const runState = dryRun ? (readJsonOr(P.runState, {}) || {}) : bumpRunState(P.runState, cls.outcome);
+    // 源冻结的兜底:连续太多次「无新定盘」不可能由日历解释
+    const staleRuns = runState.consecutive_non_trading || 0;
+    if (cls.outcome === 'non_trading_day' && staleRuns >= STALE_SESSION_ALERT_RUNS && !dryRun) {
+      log(`WARN: 已连续 ${staleRuns} 次判为无新定盘,LBMA 源可能已冻结(持续返回旧数据)`);
+      runScriptImpl('push', ['--mode', 'failure', '--step', `stale-lbma · 连续 ${staleRuns} 次无新定盘`,
+        '--settled', '0', '--state-dir', stateDir, '--consecutive', String(staleRuns)],
+      { timeoutMs: BUDGET.collect_ms });
+    }
     if (failedStep && cls.push && !dryRun) {
       // 签名必须进到人手上的那条消息里。push.js 没有 --signature 形参(加形参属 Task 14
       // 的接口),故并进 --step —— 简报正文是「失败步骤 X · 退出码 N」,这样 X 自带原因。
       const label = FAILURE_SIGNATURE_LABEL[cls.signature];
       const brief = ['--mode', 'failure', '--step', label ? `${failedStep} · ${label}` : failedStep,
         '--settled', st.settled ? '1' : '0', '--state-dir', stateDir,
-        '--consecutive', String(readJsonOr(P.runState, {}).consecutive_failures ?? 1)];
+        '--consecutive', String(runState.consecutive_failures ?? 1)];
       // 只有真有子进程退出码时才传:模型故障没有子进程,合成一个数字会和 push.js
       // 自己的码表(1=参数错 4=发送失败)撞车,同一个数字两处含义不同。缺省显示「未知」。
       if (Number.isFinite(st.detail?.code)) brief.push('--code', String(st.detail.code));
@@ -471,12 +525,13 @@ function runPipeline({
       const pr = runScriptImpl('push', brief, { timeoutMs: BUDGET.collect_ms });
       if (pr.code !== 0) log(`FATAL: 失败简报也没发出去(push exit ${pr.code}) —— 告警通道本身出问题了`);
     }
-    let exitCode = EXIT_BY_OUTCOME[cls.outcome];
+    let exitCode = exitOverride ?? EXIT_BY_OUTCOME[cls.outcome];
     // 备份失败与推送失败都不推翻「预测已入库」这个事实,但退出码要刺眼
     if (exitCode === 0 && st.backupFailed) exitCode = 3;
     if (exitCode === 0 && st.pushFailed) exitCode = 4;
     log(`结局 ${cls.outcome},退出码 ${exitCode}`);
     return { ...cls, exitCode, trace, degraded: st.degraded, rounds: st.rounds,
+             notifyDisabled: Boolean(st.notifyDisabled), staleRuns,
              predictionId: st.predictionId, backupFailed: st.backupFailed, pushFailed: st.pushFailed,
              failedStep, failureKind };
   };
@@ -489,7 +544,18 @@ function runPipeline({
   const latestSession = settlement && settlement.latest && settlement.latest.date;
   st.latestSession = latestSession;
 
-  if (!fs.existsSync(P.predictions)) atomicWriteJSON(P.predictions, EMPTY_DB);
+  const dbState = predictionsDbState(P);
+  if (dbState === 'missing') {
+    log('FATAL: predictions.json 不存在,但本机跑过(run-state.json 或 versions/ 仍在)——'
+      + '判为权威库丢失,拒绝新建空库。从 ~/backup/gold-forecast/ 恢复,'
+      + '或从 versions/ 捞回上一版;确属首次部署请手工创建一个空库再跑。');
+    st.detail = { code: 5 };
+    return finish({ failedStep: 'predictions-db', exitOverride: 5 });
+  }
+  if (dbState === 'fresh') {
+    log('首次部署:新建空 predictions.json');
+    atomicWriteJSON(P.predictions, EMPTY_DB);
+  }
   const db = readJsonOr(P.predictions);
 
   // 显式传 --today 即人工补跑/重跑意图,跳过本闸门(upsert 幂等);
@@ -709,5 +775,6 @@ module.exports = {
   addSessions, computeC9Triggered, scorecardForPrompt, promptPayload, naivePOf, buildPredictionRecord,
   normalizeModel, interpretModelResult, callModel, classifyOutcome, resolveToday,
   shouldDeleteArtifacts, runScript, callModelWithRetry, hasNewSession, workPaths, artifactsToDelete,
+  predictionsDbState, STALE_SESSION_ALERT_RUNS,
   buildDegradedForecast, bumpRunState, recordSkippedDate, resolvePaths, runPipeline,
 };
