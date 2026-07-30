@@ -868,19 +868,39 @@ test('T68: 进模型的 prompt 里没有 data_quality', () => {
 
 test('T69: CLI 参数错退 1,不退 5 —— 5 的语义是运行期异常/权威库损坏', () => {
   const { spawnSync } = require('node:child_process');
+  const { BLOCK_NETWORK } = require('./helpers');
   const script = path.join(__dirname, '..', 'references', 'scripts', 'run.js');
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-cli-'));
+  // 子进程不继承 runner 的 NODE_OPTIONS(这里给的是白名单 env),必须自己注入断网 shim。
+  // 不注入的话下面那条 --dry-run 会跑完整 runPipeline,Step 1a 真打 LBMA 端点。
   const run = (args) => spawnSync(process.execPath, [script, ...args],
-    { encoding: 'utf-8', timeout: 20_000, env: { PATH: process.env.PATH, HOME: tmp } });
+    { encoding: 'utf-8', timeout: 20_000,
+      env: { PATH: process.env.PATH, HOME: tmp, NODE_OPTIONS: `--require ${BLOCK_NETWORK}` } });
   assert.equal(run(['--help']).status, 0);
   assert.equal(run(['--nope']).status, 1, '未知参数');
   assert.equal(run([]).status, 1, '缺 archive-dir');
   assert.equal(run(['--today', '2026/7/29', '--dry-run']).status, 1, '非法日期是参数错,不是运行期异常');
-  assert.equal(run(['--dry-run', '--state-dir', tmp]).status !== 5, true);
   // 缺收件人必须在开跑前就拦住:跑完整条流水线(含模型费用)才发现配错了太晚
   const noTarget = run(['--archive-dir', tmp, '--state-dir', tmp]);
   assert.equal(noTarget.status, 1);
   assert.match(noTarget.stderr, /GOLD_FEISHU_TARGET/);
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
+
+test('T87: --dry-run 无需 archive-dir,能越过参数层进到流水线(且全程离线)', () => {
+  const { spawnSync } = require('node:child_process');
+  const { BLOCK_NETWORK } = require('./helpers');
+  const script = path.join(__dirname, '..', 'references', 'scripts', 'run.js');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-cli-'));
+  const r = spawnSync(process.execPath, [script, '--dry-run', '--state-dir', tmp],
+    { encoding: 'utf-8', timeout: 30_000,
+      env: { PATH: process.env.PATH, HOME: tmp, NODE_OPTIONS: `--require ${BLOCK_NETWORK}` } });
+  // 原断言是 `status !== 5`,通网断网都成立 —— 近乎空断言,还掩盖了真实出网。
+  // 现在钉死两件事:①越过了参数层(不是 1)②确实进到了 Step 1a 并因断网而失败(6)。
+  assert.equal(r.status, 6, `--dry-run 应越过参数层进流水线,实得 ${r.status}: ${r.stderr.slice(0, 300)}`);
+  assert.match(r.stderr, /NET-BLOCKED/, '这一步本来就在打真实 LBMA 端点,shim 必须拦到');
+  assert.match(r.stderr, /collect-settlement/);
+  assert.equal(/GOLD_FEISHU_TARGET|archive-dir/.test(r.stderr), false, 'dry-run 不该要求这两项');
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 

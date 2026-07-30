@@ -4,7 +4,7 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { test } = require('node:test');
 const assert = require('node:assert/strict');
-const { freshTmp, FIXTURE } = require('./helpers');
+const { freshTmp, FIXTURE, BLOCK_NETWORK } = require('./helpers');
 const C = require('../references/scripts/commit');
 const P = require('../references/scripts/push');
 
@@ -39,7 +39,9 @@ const SCRIPT = (name) => path.join(__dirname, '..', 'references', 'scripts', nam
 function runScript(script, args, { home, env = {} }) {
   const r = spawnSync('node', [SCRIPT(script), ...args], {
     encoding: 'utf-8', cwd: home, timeout: 30_000,
-    env: { PATH: process.env.PATH, HOME: home, ...env },
+    // 断网 shim:commit/push 目前不出网(openclaw 与 rsync 都由测试打桩),
+    // 但子进程不继承 runner 的 NODE_OPTIONS,一律注入才不用每次改动都重新论证一遍
+    env: { PATH: process.env.PATH, HOME: home, NODE_OPTIONS: `--require ${BLOCK_NETWORK}`, ...env },
   });
   return { code: r.status, stdout: r.stdout || '', stderr: r.stderr || '' };
 }
