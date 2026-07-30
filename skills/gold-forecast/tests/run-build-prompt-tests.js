@@ -205,15 +205,23 @@ test('T20: 修正目标与上一轮原文分成两块,且都紧跟契约块', ()
   assert.ok(targets.includes('第 2 轮'));
 });
 
-test('T21: findings 块可截断,与其余块共用同一个 100KB 预算', () => {
-  const bulky = Array.from({ length: 400 }, (_, i) => ({
-    check: 'C4', severity: 'block', locator: `第二段:「${i}」`, expected: 'x'.repeat(300), actual: String(i) }));
-  const r = P.buildPrompt({ ...BASE_ARGS, facts: { note: 'f'.repeat(30_000) },
-                            priorFindings: { round: 3, findings: bulky, forecast: 'y'.repeat(40_000) } });
+// findings 数量可调的夹具:prior_findings 刻意做成最大的块,才测得到「最大者吸收全部超额」
+const bulkyFindings = (n) => Array.from({ length: n }, (_, i) => ({
+  check: 'C4', severity: 'block', locator: `第二段:「${i}」`, expected: 'x'.repeat(300), actual: String(i) }));
+
+test('T21: prior_findings 不可截断,超额由其余可截断块吸收', () => {
+  // keepBytes 让**最大的那一个**可截断块吸收全部超额,可被直接压到 0 —— 实测本块被压到
+  // 只剩截断标记而 prior_output 保住 36KB,于是修复轮拿到一份空的修正指令,必然失败。
+  const r = P.buildPrompt({ ...BASE_ARGS, facts: { note: 'f'.repeat(10_000) },
+                            priorFindings: { round: 3, findings: bulkyFindings(200), forecast: 'y'.repeat(20_000) } });
   assert.ok(r.bytes <= P.MAX_BYTES, `总字节 ${r.bytes} 应回落到上限内,而非交给 run.js 裸拼接后超限`);
-  const pf = r.blocks.find((b) => b.name === 'prior_findings');
-  assert.equal(pf.truncatable, true);
   const byName = (n) => r.blocks.find((b) => b.name === n);
+  const pf = byName('prior_findings');
+  assert.equal(pf.truncatable, false);
+  assert.equal(pf.truncated, false, 'prior_findings 是修复轮唯一的修正指令来源,不得被压缩');
+  assert.ok(pf.text.includes('"i": 200'), '最后一条修正目标丢了 = 修复轮拿到的是残缺指令');
+  assert.equal(pf.text.includes('已截断'), false);
+  assert.ok(r.blocks.some((b) => b.truncated), '超额应确实由其余可截断块吸收');
   assert.equal(byName('baseline').truncated, false, 'findings 再大也不能挤掉不可截断块');
   assert.equal(byName('calibration').truncated, false);
 });
@@ -329,4 +337,15 @@ test('T29: 超限压缩后预算基本用满,长字符串行不会把整块抹�
   const factsBytes = Buffer.byteLength(f.text);
   assert.ok(factsBytes > 30_000, `facts 块只剩 ${factsBytes} 字节,整块被抹掉了`);
   assert.ok(r.bytes > 100_000, `prompt 只有 ${r.bytes} 字节,预算 ${P.MAX_BYTES} 大半没用上`);
+});
+
+test('T30: prior_findings 自身撑爆预算时响亮抛错,不静默交出无法满足的修复轮', () => {
+  let message = '';
+  assert.throws(() => {
+    try {
+      P.buildPrompt({ ...BASE_ARGS, facts: { note: 'f'.repeat(30_000) },
+                      priorFindings: { round: 3, findings: bulkyFindings(400), forecast: 'y'.repeat(40_000) } });
+    } catch (e) { message = e.message; throw e; }
+  }, /100KB|字节/);
+  assert.match(message, /prior_findings=\d+/, '报错须点出是哪个块撑爆的,否则排查会指向 facts');
 });

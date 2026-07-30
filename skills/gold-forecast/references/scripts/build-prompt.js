@@ -121,9 +121,10 @@ function buildPrompt({ facts, baseline, scorecard, lessons, contextTags, news = 
   const prior = normalizePriorFindings(priorFindings);
   const blocks = [
     { name: 'contract', truncatable: false, truncated: false, text: CONTRACT },
-    // 紧跟契约:修正指令必须在模型读到数据之前就看到。可截断 —— 它和其余块共用
-    // 同一个 100KB 预算,轮次叠加时该被压缩的是它而不是让整个 prompt 超限。
-    ...(prior ? [{ name: 'prior_findings', truncatable: true, truncated: false, text: priorTargetsText(prior) }] : []),
+    // 紧跟契约:修正指令必须在模型读到数据之前就看到。不可截断 —— keepBytes 让最大的那个
+    // 可截断块吸收全部超额,可被压到 0;实测本块被压到只剩截断标记而 prior_output 保住 36KB。
+    // 它体积小、又是修复轮唯一的修正指令来源,静默给出一个模型无法满足的修复轮比抛错差得多。
+    ...(prior ? [{ name: 'prior_findings', truncatable: false, truncated: false, text: priorTargetsText(prior) }] : []),
     ...(prior ? [{ name: 'prior_output', truncatable: true, truncated: false, text: priorEvidenceText(prior) }] : []),
     { name: 'facts', truncatable: true, truncated: false, text: '## 事实包\n```json\n' + JSON.stringify(facts, null, 1) + '\n```' },
     { name: 'baseline', truncatable: false, truncated: false, text: '## 量化基线\n```json\n' + JSON.stringify(baseline, null, 1) + '\n```' },
