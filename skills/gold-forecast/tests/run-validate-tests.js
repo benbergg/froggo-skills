@@ -223,3 +223,82 @@ test('T32: C12 挖空必要短语后扫描,合法完整免责声明不误拦', (
   const doc = parseForecast(md('forecast-good.md'));
   assert.equal(validate(doc, CTX()).findings.some((f) => f.check === 'C12'), false);
 });
+
+// —— MF-3:产品红线在正文一–六段的机器约束 ——
+// 原先红线在一–六段唯一的执行者是提示词一行。实测在通过全部 14 项的 good 夹具第六段
+// 注入下列越界句,findings 全部为空 —— 端点/基准价本就在 C4 池里,结构上抓不到。
+
+// 在指定段落标题后插入一句,其余全不动
+function inject(section, sentence) {
+  const src = md('forecast-good.md');
+  const re = new RegExp(`(## ${section}、[^\\n]*\\n\\n)`);
+  assert.ok(re.test(src), `夹具里找不到第${section}段标题`);
+  return src.replace(re, `$1${sentence}\n\n`);
+}
+
+test('T33: 第六段的止损价/买卖点位/加仓越界句必须被拦', () => {
+  // 这几句在修法前全部零 findings;它们用的数字就是区间端点与基准价,C4 抓不到
+  for (const s of ['建议在3987设置止损，突破4059可加仓。', '止损位设在3987。',
+    '4022.2以下买入，4059以上卖出。', '可用2倍杠杆参与。', '建议投入3成仓位。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `未被 C12 拦下: ${s} -> ${JSON.stringify(f)}`);
+  }
+});
+
+test('T34: 第六段禁的是阿拉伯数字这个不变量,不是词表', () => {
+  // 一句不含任何红线词、看似无害的数字同样要拦 —— 否则「用端点当止损价」永远绕得过
+  const f = validate(parseForecast(inject('六', '区间半宽约为45点。')), CTX()).findings;
+  assert.ok(f.some((x) => x.check === 'C12'), `无红线词但含数字的句子也须拦: ${JSON.stringify(f)}`);
+  // 对照组:同一句改用中文数字表述,必须放行
+  const ok = validate(parseForecast(inject('六', '区间半宽约为数十点。')), CTX()).findings;
+  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '中文数字表述不该被拦');
+});
+
+test('T35: 一–五段红线词与数字同句被拦,不同句则放行', () => {
+  for (const s of ['建议仓位控制在2成以内。', '在3978附近买入较为合适。', '止损设在3978。']) {
+    const f = validate(parseForecast(inject('四', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `未被 C12 拦下: ${s} -> ${JSON.stringify(f)}`);
+  }
+  // 免责表述本身不带数字,必须放行 —— 否则每天都会因为一句免责话触发修复轮
+  const ok = validate(parseForecast(inject('四', '本报告不提供仓位与杠杆建议。')), CTX()).findings;
+  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '不含数字的免责表述不该被拦');
+});
+
+test('T36: 现有全部夹具与降级模板的 C12 误报为 0', () => {
+  const { checkC12 } = require('../references/scripts/validate');
+  const { buildDegradedForecast } = require('../references/scripts/run');
+  const names = fs.readdirSync(path.dirname(FIXTURE('forecast-good.md')))
+    .filter((f) => /^forecast-.*\.md$/.test(f));
+  assert.ok(names.length >= 4, `夹具太少(${names.length}),这条测不到东西`);
+  for (const n of names) {
+    assert.deepEqual(checkC12(parseForecast(md(n))), [], `${n} 触发了 C12 误报`);
+  }
+  // 降级模板是另一条独立的正文生成路径,红线检查同样要放行它
+  const degraded = buildDegradedForecast({
+    reason: '测试',
+    baseline: { base_date: '2026-07-29', base_price: 4022.2,
+      horizons: { short: { prob_up: 0.53, low: 3978, high: 4067 },
+        medium: { prob_up: 0.55, low: 3922, high: 4124 },
+        long: { prob_up: 0.58, low: 3818, high: 4234 } } },
+  });
+  assert.deepEqual(checkC12(parseForecast(degraded)), [], '降级模板触发了 C12 误报');
+});
+
+test('T37: 红线词表单点持有于 lib/disclaimer', () => {
+  // 两处检查(第七段扫描、一–五段同句判定)共用一份;各写一份必然漂移
+  const { REDLINE_WORDS } = require('../references/scripts/lib/disclaimer');
+  for (const w of ['仓位', '杠杆', '止损', '买卖点位', '买入', '卖出', '加仓', '减仓']) {
+    assert.ok(REDLINE_WORDS.includes(w), `红线词表缺 ${w}`);
+  }
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'references', 'scripts', 'validate.js'), 'utf-8');
+  assert.equal(/C12_FORBIDDEN_WORDS = \[/.test(src), false, 'validate.js 不得再自己维护一份词表');
+});
+
+test('T38: 提示词已把两条红线约束写进契约(自检拦得住但模型不知道会每天烧修复轮)', () => {
+  const r = buildPrompt({ facts: {}, baseline: { horizons: {} }, scorecard: { by_horizon: {} },
+    lessons: [], contextTags: [] });
+  const contract = r.blocks.find((b) => b.name === 'contract').text;
+  assert.match(contract, /第六段[^\n]*阿拉伯数字/);
+  assert.match(contract, /一至五段[^\n]*数字/);
+});

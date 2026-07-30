@@ -4,7 +4,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { parseForecast } = require('./forecast-parser');
-const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES } = require('./lib/disclaimer');
+const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES, REDLINE_WORDS } = require('./lib/disclaimer');
 const { promptScorecard, promptFacts, promptBaseline, findingTargets } = require('./lib/prompt-payload');
 
 const HORIZONS = ['short', 'medium', 'long'];
@@ -18,7 +18,9 @@ const C4_TOL_REL = 0.005;
 const OZ_TO_GRAM = 31.1035;
 const COUNTERPARTY_GROUPS = ['commercial', 'noncommercial', 'nonreportable'];
 const LESSON_METRICS = ['range', 'brier', 'dir'];
-const C12_FORBIDDEN_WORDS = ['仓位', '杠杆', '止损', '买卖点位'];
+const C12_FORBIDDEN_WORDS = REDLINE_WORDS;
+// 第六段按设计 8.1 只讲方法、不给具体数值,故整段禁阿拉伯数字(需要计数用中文数字)
+const REDLINE_SECTIONS = ['一', '二', '三', '四', '五'];
 const C5_NEGATION_WORDS = ['无', '缺失', '暂无', '未获取', '不足', '缺少', '缺'];
 const C7_INDICATORS = ['胜率', 'Brier', 'Winkler'];
 const PLACEHOLDER_TOKENS = ['TODO', 'TBD', 'FIXME', '占位', '待补充', 'XXX', 'N/A', '{{', '}}'];
@@ -395,9 +397,37 @@ function checkC11(doc) {
   return out;
 }
 
+// 产品红线的机器约束。原先红线在正文一–六段唯一的执行者是提示词一行,而本仓库的记忆里
+// 明确记着「弱模型无视提示词中止约束」。实测:在通过全部 14 项的 good 夹具第六段注入
+// 「止损位设在3987」「4022.2以下买入,4059以上卖出」——零 findings。因为区间端点与基准价
+// 本就在 C4 池里,拿它们当止损价/买卖点位是这套自检结构上永远抓不到的。
+//
+// 故两条都写成不变量而非「禁止说什么」的词表:
+//   第六段禁阿拉伯数字 = 取消把价格/点位/倍数/仓位大小说出口的能力(设计 8.1 本就要求不给具体数值);
+//   一–五段红线词与数字同句即拦。
+function checkRedline(doc) {
+  const out = [];
+  for (const line of (doc.sections['六'] || '').split('\n')) {
+    if (!/\d/.test(line)) continue;
+    out.push(findingOf('C12', `第六段:「${line.trim().slice(0, 40)}」`,
+      '第六段只讲方法不给具体数值,不得出现阿拉伯数字(需要计数请用中文数字)', line.trim().match(/\d[\d,.]*/)[0]));
+  }
+  for (const s of REDLINE_SECTIONS) {
+    for (const sent of splitSentences(doc.sections[s] || '')) {
+      if (!/\d/.test(sent)) continue;
+      const hit = C12_FORBIDDEN_WORDS.find((w) => sent.includes(w));
+      if (hit) {
+        out.push(findingOf('C12', `第${s}段:「${sent.trim().slice(0, 40)}」`,
+          `不得给出具体「${hit}」数值;要提及请与数字分句且只作免责表述`, hit));
+      }
+    }
+  }
+  return out;
+}
+
 // ---- C12: 免责声明存在且未被改写(查必要短语,非逐字节相等;DISCLAIMER_TEXT 见 lib/disclaimer) ----
 function checkC12(doc) {
-  const out = [];
+  const out = checkRedline(doc);
   const text = doc.sections['七'] || '';
   if (!text) {
     out.push(findingOf('C12', '第七段', '第七段须存在并含固定免责声明', '缺失'));

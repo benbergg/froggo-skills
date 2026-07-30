@@ -14,4 +14,9 @@ const DISCLAIMER_REQUIRED_PHRASES = [
   '风险自负',
 ];
 
-module.exports = { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES };
+// 产品红线词表。checkC12 有两处在用(第七段的免责声明扫描、一–五段的红线词+数字同句),
+// 单点持有才不会两处漂移。词表只是红线的一半,另一半是「与数字同句」这个不变量 ——
+// 光靠词表抓不住「4022.2以下买入」,而端点/基准价本就在 C4 池里。
+const REDLINE_WORDS = ['仓位', '杠杆', '止损', '买卖点位', '买入', '卖出', '加仓', '减仓'];
+
+module.exports = { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES, REDLINE_WORDS };
