@@ -54,9 +54,40 @@ function truncateToBytes(str, maxBytes) {
   return buf.slice(0, maxBytes).toString('utf8').replace(new RegExp('\\uFFFD+$'), '');
 }
 
-function buildPrompt({ facts, baseline, scorecard, lessons, contextTags, news = [] }) {
+// 修复循环第 2/3 轮把 findings 与上一轮原文喂回模型。必须走 buildPrompt 这条路 ——
+// 在 run.js 里往 prompt 后面裸拼接会突破 100KB 上限,而超限的失败签名恰好和网关超时
+// 撞车(见 run.js 的 interpretModelResult),制造一个极难分辨的故障。
+function normalizePriorFindings(prior) {
+  if (!prior) return null;
+  const obj = Array.isArray(prior) ? { findings: prior } : prior;
+  const findings = Array.isArray(obj.findings) ? obj.findings : [];
+  const forecast = typeof obj.forecast === 'string' ? obj.forecast : '';
+  if (!findings.length && !forecast) return null;
+  return { round: Number.isFinite(obj.round) ? obj.round : null, findings, forecast };
+}
+
+// 上一轮原文自身含 ```json 围栏,故外层用四个反引号包;原文里若出现 4 个以上反引号
+// 会就地冲出围栏、把后续整块 prompt 变成代码,压成 3 个即可(它是本系统自己的模型
+// 输出,不是外部不可信数据,不走 sanitizeNews 那条路)。
+const fenceSafe = (s) => s.replace(/`{4,}/g, '```');
+
+function priorFindingsText(norm) {
+  const head = norm.round ? `## 上一轮(第 ${norm.round} 轮)自检未通过项` : '## 上一轮自检未通过项';
+  const lines = [head,
+    '以下为自检器对上一轮输出的判定。请逐条修正后**重新输出完整报告**(JSON 块 + 七段正文)。',
+    '修正时不得改动事实包 / 量化基线 / 统计校准中的任何数值,也不得为了绕过检查而删除整段内容。',
+    '```json', JSON.stringify(norm.findings, null, 1), '```'];
+  if (norm.forecast) lines.push('### 上一轮原文', '````markdown', fenceSafe(norm.forecast), '````');
+  return lines.join('\n');
+}
+
+function buildPrompt({ facts, baseline, scorecard, lessons, contextTags, news = [], priorFindings = null }) {
+  const prior = normalizePriorFindings(priorFindings);
   const blocks = [
     { name: 'contract', truncatable: false, truncated: false, text: CONTRACT },
+    // 紧跟契约:修正指令必须在模型读到数据之前就看到。可截断 —— 它和其余块共用
+    // 同一个 100KB 预算,轮次叠加时该被压缩的是它而不是让整个 prompt 超限。
+    ...(prior ? [{ name: 'prior_findings', truncatable: true, truncated: false, text: priorFindingsText(prior) }] : []),
     { name: 'facts', truncatable: true, truncated: false, text: '## 事实包\n```json\n' + JSON.stringify(facts, null, 1) + '\n```' },
     { name: 'baseline', truncatable: false, truncated: false, text: '## 量化基线\n```json\n' + JSON.stringify(baseline, null, 1) + '\n```' },
     { name: 'counterparty', truncatable: true, truncated: false, text: '## 对手盘\n```json\n' + JSON.stringify((facts && facts.cftc) || {}, null, 1) + '\n```' },
@@ -124,4 +155,4 @@ JSON 块字段:
 - 第七段须原样复制以下免责声明全文,不得改写、增删、意译:
   「${DISCLAIMER_TEXT}」`;
 
-module.exports = { sanitizeNews, selectLessons, buildPrompt, MAX_BYTES };
+module.exports = { sanitizeNews, selectLessons, buildPrompt, normalizePriorFindings, MAX_BYTES };
