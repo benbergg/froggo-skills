@@ -51,11 +51,19 @@ function selectLessons(lessons, tags, max = 5) {
 
 // 按字节数(非字符数)截断,避免在 UTF-8 多字节字符中间切断产生乱码;
 // Buffer 转字符串时不完整的尾字节序列由 toString 替换为 U+FFFD,随后剔除。
+//
+// 再回退到最后一个换行:字节切点会落在数字字面量中间 —— 实测同一个块挪一个字节,
+// 模型读到的依次是 `"lbma_pm_usd": 4022` / `402` / `4`,真值 4022.2 变成十分之一,
+// 整篇报告会锚在一个不存在的金价上。JSON.stringify(obj, null, 1) 每个值独占一行,
+// 故行边界即安全边界。只回退不前进,回落到上限内的保证不受影响;
+// 块内无换行时退回纯字节切(总比整块丢掉强)。
 function truncateToBytes(str, maxBytes) {
   if (maxBytes <= 0) return '';
   const buf = Buffer.from(str, 'utf8');
   if (buf.length <= maxBytes) return str;
-  return buf.slice(0, maxBytes).toString('utf8').replace(new RegExp('\\uFFFD+$'), '');
+  const cut = buf.slice(0, maxBytes).toString('utf8').replace(new RegExp('\\uFFFD+$'), '');
+  const lastNewline = cut.lastIndexOf('\n');
+  return lastNewline > 0 ? cut.slice(0, lastNewline) : cut;
 }
 
 // 修复循环第 2/3 轮把 findings 与上一轮原文喂回模型。必须走 buildPrompt 这条路 ——
@@ -174,4 +182,6 @@ JSON 块字段:
 - 第七段须原样复制以下免责声明全文,不得改写、增删、意译:
   「${DISCLAIMER_TEXT}」`;
 
-module.exports = { sanitizeNews, selectLessons, buildPrompt, normalizePriorFindings, MAX_BYTES };
+module.exports = { sanitizeNews, selectLessons, buildPrompt, normalizePriorFindings, MAX_BYTES,
+  // 仅供测试:截断的安全边界是这层的性质,从 buildPrompt 外面测不到
+  __truncateToBytes: truncateToBytes };

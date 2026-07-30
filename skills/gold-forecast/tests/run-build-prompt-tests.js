@@ -248,3 +248,42 @@ test('T18: 标题里瞎猜的 nonce 闭合标记无法冒充真实边界', () =>
   const realEndCount = out.split(realEndMatch[0]).length - 1;
   assert.equal(realEndCount, 1, '真实结束标记应仅出现一次,伪造标记不能冒充');
 });
+
+// ---- 截断不得把数字从中间切开 --------------------------------------------
+
+const numTokens = (t) => new Set((String(t).match(/(?<![\d.A-Za-z])-?\d[\d,]*(?:\.\d+)?/g) || []));
+
+test('T24: 截断后出现的每个数字,都必须在原块里原样存在过', () => {
+  // 复审实测:字节切点挪一位,`"lbma_pm_usd": 4022` 依次变成 402 / 4 —— 模型会读到
+  // 一个被腰斩的金价(真值的十分之一),整篇要么锚在错价上,要么引用它被 C4 拦下白烧一轮。
+  // 逐字节扫一遍触发区间,任何一个位置切出新数字都算失败。
+  const facts = { lbma_pm_usd: 4022.2, dfii10: 2.44, udi: 101.29, spx: 5138.77,
+                  filler: 'f'.repeat(60_000), tail: { deep: 91735.46 } };
+  const original = `## 事实包\n\`\`\`json\n${JSON.stringify(facts, null, 1)}\n\`\`\``;
+  const before = numTokens(original);
+  let checked = 0;
+  for (let k = original.length - 40; k < original.length - 4; k++) {
+    const cut = P.__truncateToBytes(original, k);
+    checked++;
+    for (const n of numTokens(cut)) {
+      assert.ok(before.has(n), `切点 ${k} 切出了原文没有的数字 ${n}(数字被腰斩)`);
+    }
+  }
+  assert.ok(checked > 20, `只扫了 ${checked} 个切点`);
+});
+
+test('T25: 行边界回退不破坏「回落到上限内」的保证', () => {
+  // 注意 sanitizeNews 会把标题截到 200 字符,靠新闻把 prompt 顶爆是顶不动的
+  const facts = { note: 'f'.repeat(60_000), v: 4022.2 };
+  const baseline = { blob: 'B'.repeat(40_000) };
+  const scorecard = { blob: 'C'.repeat(20_000) };
+  const r = P.buildPrompt({ facts, baseline, scorecard, lessons: [], contextTags: ['t'], news: [] });
+  assert.ok(r.bytes <= P.MAX_BYTES, `总字节 ${r.bytes} 应回落到上限内`);
+  assert.ok(r.blocks.some((b) => b.truncated), '本用例应确实触发了截断');
+});
+
+test('T26: 块内无换行时退回纯字节切,不整块丢掉', () => {
+  const oneLine = 'x'.repeat(5000);
+  const cut = P.__truncateToBytes(oneLine, 100);
+  assert.equal(cut.length, 100, '没有换行可退时不能把整块切没');
+});
