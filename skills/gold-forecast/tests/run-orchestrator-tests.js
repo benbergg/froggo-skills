@@ -1696,3 +1696,93 @@ test('T107: 已声明的块名与 build-prompt 的发射点静态对齐(条件�
   assert.deepEqual([...new Set(emitted)], declared,
     'build-prompt 的发射点与 BLOCK_CITABILITY 不一致 —— 条件块不会因夹具没触发而豁免');
 });
+
+// —— MF-2:calibration 块随结算样本线性膨胀且不可截断 ——
+
+const { buildScorecard } = require('../references/scripts/scorecard');
+
+// 造 n 条三期全结算的记录,只为量 calibration 块体积
+function settledDb(n) {
+  const predictions = [];
+  for (let i = 0; i < n; i++) {
+    const horizons = {};
+    for (const [k, ns] of Object.entries({ short: 1, medium: 5, long: 20 })) {
+      horizons[k] = { n_sessions: ns, settled: true, settled_kind: 'exact', actual: 4010,
+        final: { prob_up: 0.58, low: 3950, high: 4050 }, baseline: { prob_up: 0.53, low: 3940, high: 4060 },
+        score: { dir_correct: i % 3 !== 0, brier: i % 3 !== 0 ? 0.1764 : 0.3364, in_range: true,
+          winkler: 100, baseline_brier: 0.2209, baseline_winkler: 120,
+          baseline_dir_correct: true, naive_brier: 0.2256, naive_p: 0.51 } };
+    }
+    predictions.push({ id: `p-${String(i).padStart(5, '0')}`, base_price: 4000, degraded: false,
+      model_id: 'minimax/MiniMax-M3', context_tags: [], horizons });
+  }
+  return { schema_version: 2, predictions, skipped_dates: [] };
+}
+
+const calibrationBytes = (scorecard) => Buffer.byteLength(
+  BP.buildPrompt({ facts: RICH_FACTS, baseline: baselineFixture(), scorecard, lessons: [], contextTags: [], news: [] })
+    .blocks.find((b) => b.name === 'calibration').text);
+
+test('T108: calibration 块不随已结算样本增长(否则 250 条起每天 exit 7)', () => {
+  // 先钉住这确实是个会撞上限的量级 —— 否则下面的上界断言可能只是因为夹具太小。
+  // 实测 250 条已到 10 万字节量级、约 260 条越过 100KB,300 条稳超。
+  const raw = buildScorecard(settledDb(300), {});
+  const unstripped = Buffer.byteLength('## 统计校准\n```json\n' + JSON.stringify(raw, null, 1) + '\n```');
+  assert.ok(unstripped > BP.MAX_BYTES,
+    `未剥离时 300 条只有 ${unstripped} 字节,没超过 ${BP.MAX_BYTES},这条测不到东西`);
+
+  const small = calibrationBytes(PP.promptScorecard(buildScorecard(settledDb(25), {})));
+  const big = calibrationBytes(PP.promptScorecard(buildScorecard(settledDb(600), {})));
+  assert.ok(big < 10 * 1024, `600 条时 calibration 仍应恒定在几 KB,实得 ${big}`);
+  assert.ok(big - small < 2048, `块体积随样本增长了 ${big - small} 字节,说明还有随 n 膨胀的字段`);
+  // calibration 不可截断,所以它自己就必须装得下;而 buildPrompt 整体也不该抛错
+  assert.ok(big < BP.MAX_BYTES / 2);
+});
+
+test('T109: 剥掉 brier_series 不减少任何模型可引用的数字(末点恒等于已有聚合值)', () => {
+  for (const n of [25, 100, 600]) {
+    const sc = buildScorecard(settledDb(n), {});
+    for (const k of ['short', 'medium', 'long']) {
+      const h = sc.by_horizon[k];
+      const last = h.brier_series[h.brier_series.length - 1];
+      assert.equal(last.final, h.final.brier, `${k}@${n} 末点应等于聚合 final.brier`);
+      assert.equal(last.baseline, h.baseline.brier, `${k}@${n} 末点应等于聚合 baseline.brier`);
+      assert.equal(last.naive, h.naive.brier, `${k}@${n} 末点应等于聚合 naive.brier`);
+    }
+    const p = PP.promptScorecard(sc);
+    for (const k of ['short', 'medium', 'long']) {
+      assert.equal('brier_series' in p.by_horizon[k], false, `${k} 的 brier_series 未被剥掉`);
+      // 聚合值必须留下 —— 设计 8.1 要求第五段引用三方对照
+      assert.equal(p.by_horizon[k].final.brier, sc.by_horizon[k].final.brier);
+      assert.equal(p.by_horizon[k].n, sc.by_horizon[k].n);
+    }
+    assert.ok(Array.isArray(sc.by_horizon.short.brier_series), '不得就地改动调用方对象');
+  }
+});
+
+test('T110: 聚合 Brier 仍在 C4 池里,序列中间点不在', () => {
+  const sc = buildScorecard(settledDb(60), {});
+  // 不能用 c4On:它写死了 RICH_SCORECARD(本就没有 brier_series),
+  // 于是「剥没剥」两种实现都绿 —— 这里必须把本用例自己的 scorecard 送进 ctx
+  const on = (n) => V.checkC4({ json: {}, sections: { 二: String(n) }, headings: {}, raw: '' },
+    { schema: SCHEMA, facts: FLAT_FACTS, facts_raw: RICH_FACTS, baseline: baselineFixture(), scorecard: sc });
+  const agg = sc.by_horizon.short.final.brier;
+  assert.deepEqual(on(agg), [], `聚合 Brier ${agg} 必须可引用`);
+  // 找一个与三期任一聚合值都拉开距离(超出 0.5% 容差)的中间点,作为「池里够不到」的控制值
+  const aggs = ['short', 'medium', 'long'].flatMap((k) =>
+    ['final', 'baseline', 'naive'].map((g) => sc.by_horizon[k][g].brier));
+  const mid = sc.by_horizon.short.brier_series.map((p) => p.final)
+    .find((v) => Number.isFinite(v) && aggs.every((a) => Math.abs(v - a) > Math.max(0.005 * Math.abs(a), 0.01)));
+  assert.ok(mid !== undefined, '夹具里找不到与聚合值拉开距离的中间点,这条测不到东西');
+  assert.equal(on(mid).length, 1, `序列中间点 ${mid} 已不在 prompt 里,引用它应被拦`);
+});
+
+test('T111: render 仍从 scorecard.json 画出完整序列,不受 payload 剥离影响', () => {
+  const { renderReport } = require('../references/scripts/render');
+  const sc = buildScorecard(settledDb(30), {});
+  const doc = { json: { horizons: {} }, headings: {}, raw: '', sections: {} };
+  const { html } = renderReport({ doc, scorecard: sc, baseline: baselineFixture(), settlement: null });
+  const m = html.match(/class="ln ln-final" d="([^"]+)"/);
+  assert.ok(m, 'brier 曲线应画出来');
+  assert.equal((m[1].match(/[ML]/g) || []).length, 30, '顶点数须等于完整序列长度,不是聚合后的三个点');
+});

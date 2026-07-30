@@ -23,6 +23,14 @@ const { N_BY_HORIZON } = require('../baseline');
 const OPS_ONLY_SCORECARD_KEYS = ['data_quality', 'generated_at'];
 const OPS_ONLY_FACTS_KEYS = ['generated_at'];
 
+// by_horizon[*].brier_series 的长度 = 已结算条数,而 calibration 块**不可截断**:
+// 实测 250 条时单块 100992 字节,已超整个 prompt 的 100KB 预算 ⇒ 每天 exit 7,
+// 而运维照 SKILL.md 查到 calibration 后会发现没有任何旋钮能缩小它;更早还有一段
+// 「可截断块被压扁 + C4 池仍按完整对象算 ⇒ 三轮修复全废 ⇒ 降级发布,全程 exit 0」的
+// 静默期。剥掉零信息损失:序列末点恒等于 payload 里已有的 {final,baseline,naive}.brier,
+// 唯一消费者 render.js 读的是 scorecard.json 而非 prompt。剥掉后恒定约 3KB。
+const OPS_ONLY_HORIZON_KEYS = ['brier_series'];
+
 const dropKeys = (obj, keys) => {
   if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return obj;
   const out = { ...obj };
@@ -30,7 +38,13 @@ const dropKeys = (obj, keys) => {
   return out;
 };
 
-const promptScorecard = (scorecard) => dropKeys(scorecard, OPS_ONLY_SCORECARD_KEYS);
+function promptScorecard(scorecard) {
+  const out = dropKeys(scorecard, OPS_ONLY_SCORECARD_KEYS);
+  if (!out || !out.by_horizon || typeof out.by_horizon !== 'object') return out;
+  const by_horizon = {};
+  for (const [k, h] of Object.entries(out.by_horizon)) by_horizon[k] = dropKeys(h, OPS_ONLY_HORIZON_KEYS);
+  return { ...out, by_horizon };
+}
 const promptFacts = (facts) => dropKeys(facts, OPS_ONLY_FACTS_KEYS);
 
 // baseline 补上 n_sessions。原先模型只能从 `p0_1`/`p0_5`/`p0_20` 这几个**键名**里
@@ -108,5 +122,5 @@ const BLOCK_CITABILITY = {
 module.exports = {
   promptPayload, promptScorecard, promptFacts, promptBaseline,
   findingTargets, findingEvidence,
-  OPS_ONLY_SCORECARD_KEYS, OPS_ONLY_FACTS_KEYS, BLOCK_CITABILITY,
+  OPS_ONLY_SCORECARD_KEYS, OPS_ONLY_FACTS_KEYS, OPS_ONLY_HORIZON_KEYS, BLOCK_CITABILITY,
 };
