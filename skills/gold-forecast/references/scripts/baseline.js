@@ -6,6 +6,7 @@ const { normInv, predictLogistic, assertAllFinite } = require('./lib/stats');
 
 const Z80 = normInv(0.9);
 const SIGMA_WINDOW = 20;
+const MA_WINDOW = 20;
 const TRAIN_WINDOW = 250;
 const N_BY_HORIZON = { short: 1, medium: 5, long: 20 };
 const COT_PCTILE_MIN_SAMPLES = 20;
@@ -60,6 +61,15 @@ function cotPctile(cotRows, minSamples = COT_PCTILE_MIN_SAMPLES) {
   return series.filter((v) => v <= current).length / series.length;
 }
 
+// 动量 z:训练端(backtest.dailyView)与服务端共用这一份。两端各写一份时改一个窗口
+// 就是「在一个分布上训练、在另一个分布上预测」,而全套测试一条都不会红。
+function momentumZ(prices, sigma, window = MA_WINDOW) {
+  if (!(sigma > 0)) return null;
+  const w = prices.slice(-window);
+  const ma = w.reduce((a, b) => a + b, 0) / w.length;
+  return (prices[prices.length - 1] / ma - 1) / sigma;
+}
+
 // 两端都必须是有限数才相减:落盘过 null 的行相减得 0(`null - null === 0`),
 // Number.isFinite(0) 为真 ⇒ degraded_features 判它健康、常数 0 被当成「今日实际利率没变」
 // 服务出去,而这正是 FRED 回填形态出错时的表现。
@@ -98,10 +108,9 @@ function computeBaseline({ store, asOf, params: rawParams }) {
   const cot = readFeature(store, 'cftc_gold', asOf);
   const dfii = readFeature(store, 'fred_DFII10', asOf);
 
-  const ma20 = prices.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, prices.length);
   const features = {
     p0_1: p0N(prices, 1), p0_5: p0N(prices, 5), p0_20: p0N(prices, 20),
-    momentum_z: (basePrice / ma20 - 1) / sigma,
+    momentum_z: momentumZ(prices, sigma),
     // 取不到就是 null,不再用 0 冒充「今天实际利率没变」
     real_yield_chg: realYieldChg(dfii),
     cot_pctile: cotPctile(cot),
@@ -162,6 +171,6 @@ function main() {
 
 if (require.main === module) main();
 module.exports = {
-  MODEL_FEATURES, N_BY_HORIZON, COT_PCTILE_MIN_SAMPLES,
-  sigmaDaily, p0N, intervalFor, readFeature, cotPctile, realYieldChg, validateParams, computeBaseline,
+  MODEL_FEATURES, N_BY_HORIZON, COT_PCTILE_MIN_SAMPLES, MA_WINDOW,
+  sigmaDaily, p0N, intervalFor, readFeature, cotPctile, momentumZ, realYieldChg, validateParams, computeBaseline,
 };

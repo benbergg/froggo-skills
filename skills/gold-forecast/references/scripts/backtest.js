@@ -2,7 +2,7 @@
 const { HistoryStore } = require('./lib/history-store');
 const { atomicWriteJSON } = require('./lib/atomic-write');
 const { dieboldMariano, fitLogistic, predictLogistic, assertAllFinite } = require('./lib/stats');
-const { p0N, sigmaDaily, readFeature, cotPctile, realYieldChg,
+const { p0N, sigmaDaily, readFeature, cotPctile, momentumZ, realYieldChg,
   MODEL_FEATURES, N_BY_HORIZON } = require('./baseline');
 
 // 指真正进入评估的样本数,非日历天数。卡住样本量的不是 LBMA spine —— 它是全量历史
@@ -120,13 +120,11 @@ function dailyView(store, spine, warmup) {
     cot.advanceTo(spine[i]);
     if (i < warmup || price.values.length < warmup) continue;
     const prices = price.values;
-    const basePrice = prices[prices.length - 1];
-    const ma20 = prices.slice(-20).reduce((a, b) => a + b, 0) / Math.min(20, prices.length);
     const sigma = sigmaDaily(prices);
-    const dfiiRows = dfii.rows;
+    // 三个特征全部走 baseline 的实现:训练端另写一份就等于换个分布训练(实测改窗口 478 项全绿)
     const f = {
-      momentum_z: sigma > 0 ? (basePrice / ma20 - 1) / sigma : null,
-      real_yield_chg: realYieldChg(dfiiRows),
+      momentum_z: momentumZ(prices, sigma),
+      real_yield_chg: realYieldChg(dfii.rows),
       cot_pctile: cotPctile(cot.rows),
     };
     const x = MODEL_FEATURES.map((k) => f[k]);

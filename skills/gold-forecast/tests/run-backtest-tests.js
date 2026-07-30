@@ -377,3 +377,27 @@ test('T19: value 为 null 的 FRED 行在训练端也算特征缺失,不得被 n
   fs.rmSync(tmp, { recursive: true, force: true });
   fs.rmSync(tmp2, { recursive: true, force: true });
 });
+
+test('T20: 训练端与服务端的三个模型特征必须逐值相等', () => {
+  // 判据是绝对的:同一份库、同一个 as-of,两端各自算出的 MODEL_FEATURES 逐一相等。
+  // 任一端任一特征被改动(换窗口、换归一化、换缺失填充)都会打红,而「看代码一样」不是判据 ——
+  // 实测把服务端 momentum_z 的 MA 窗口 20 改成 10,原有 478 项一条都不红。
+  const tmp = freshTmp();
+  const store = new HistoryStore(tmp);
+  const dates = seedMarket(store, { n: 600 });
+  const last = dates.length - 1;
+  const serve = B.computeBaseline({ store, asOf: dates[last], params: null }).features;
+  const train = BT.dailyView(store, dates, SMALL.warmup).get(last);
+  assert.ok(train, 'dailyView 应产出末日视图');
+  // 夹具非退化:两端都返回 null 也算「相等」,那样这条测不到东西
+  for (const k of B.MODEL_FEATURES) {
+    assert.ok(Number.isFinite(serve[k]), `服务端 ${k} 须为有限数,否则夹具没覆盖到该特征: ${serve[k]}`);
+  }
+  assert.ok(Math.abs(serve.momentum_z) > 1e-6, `momentum_z 恰为 0 的夹具对窗口改动不敏感: ${serve.momentum_z}`);
+  assert.ok(serve.cot_pctile > 0 && serve.cot_pctile < 1, `cot_pctile 落在端点上判别力弱: ${serve.cot_pctile}`);
+  B.MODEL_FEATURES.forEach((k, i) => {
+    assert.equal(train.x[i], serve[k], `特征 ${k} 训练端与服务端分叉: train=${train.x[i]} serve=${serve[k]}`);
+  });
+  assert.equal(train.ok, true, '三特征齐全的日子训练端须判 ok');
+  fs.rmSync(tmp, { recursive: true, force: true });
+});
