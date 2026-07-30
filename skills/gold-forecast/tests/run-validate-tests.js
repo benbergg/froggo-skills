@@ -475,6 +475,32 @@ test('T43: 第六段禁的是「具体数量」,中文数量与档位词同等�
   assert.deepEqual(chineseQuantities('数十 几百 第三方 万一 一致 十分 三步'), []);
 });
 
+test('T46: 显式指令标记压过反事实豁免;描述性主语豁免只在一–五段生效', () => {
+  // 条件式指令是交易建议最标准的写法,原先反事实层排在指令检查之前无条件 continue
+  for (const [sec, s] of [['四', '如果你想参与就在3978买入。'], ['五', '假设行情走弱则应当清仓。']]) {
+    const f = validate(parseForecast(inject(sec, s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `带指令标记的条件式指令未被拦: ${sec} ${s}`);
+  }
+  // 反向控制取样落在反事实集**内部**:同样命中 COUNTERFACTUAL_RE,但不带指令标记 ⇒ 照旧豁免
+  for (const [sec, s] of [['五', '过去20期中有3期跌破下沿，若当时按下沿止损将全部被扫，故不建议如此使用。'],
+    ['四', '若实际利率继续下行，区间中枢将上移，但本模型不据此调整仓位假设。']]) {
+    const f = validate(parseForecast(inject(sec, s)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `反面警示句被误拦: ${sec} ${s}`);
+  }
+  // 第六段不需要描述第三方持仓,那层豁免在那里没有存在理由
+  for (const s of ['多头趋势未变，半仓参与即可。', '交易商普遍轻仓，跟随他们轻仓操作即可。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `第六段借第三方主语夹带的操作指令未被拦: ${s}`);
+  }
+  // 同一句注入一–五段仍放行(已知局限 8 的「描述性主语」族),这个反差是刻意的而非疏漏
+  const s45 = validate(parseForecast(inject('二', '多头趋势未变，半仓参与即可。')), CTX()).findings;
+  assert.deepEqual(s45.filter((x) => x.check === 'C12'), [],
+    '若这条已被拦下,说明一–五段的描述性主语口径变了,已知局限 8 须同步更新');
+  // 反向控制取样落在描述性主语集**内部**:第六段里 B 类词单独出现仍不算指令
+  const ok = validate(parseForecast(inject('六', '机构增持并不改变本区间的读法。')), CTX()).findings;
+  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '第六段的第三方流向描述被误拦');
+});
+
 test('T45: 第六段的概念匹配同样先挖空长复合词(取舍已实测,不是顺手写的)', () => {
   // 不挖空的代价:冻结语料里 3 条合法描述性表述(净买入97吨 / 净卖出12.4吨 /
   // 去杠杆…杠杆资金规模)在第六段被误拦;收益只有 1 条真越界(「请将杠杆率提高一档」)。

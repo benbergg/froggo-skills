@@ -488,19 +488,23 @@ function checkRedline(doc) {
       ? REDLINE_SELF_WORDS.filter((w) => !SECTION6_ALLOWED_CONCEPTS.includes(w))
       : REDLINE_SELF_WORDS;
     for (const sent of splitSentences(doc.sections[s] || '')) {
-      // 描述性主语按整句判:「各国央行持续购金，仓位创历史新高」的主语在前一子句
-      const descriptive = REDLINE_DESCRIPTIVE_SUBJECTS.some((w) => sent.includes(w));
+      // 描述性主语按整句判:「各国央行持续购金，仓位创历史新高」的主语在前一子句。
+      // 第六段不需要描述第三方持仓,这层豁免在那里没有存在理由。
+      const descriptive = s !== '六'
+        && REDLINE_DESCRIPTIVE_SUBJECTS.some((w) => sent.includes(w));
       for (const clause of splitClauses(sent)) {
         const c = maskCompounds(normalizeDigits(clause));
         const self = selfWords.find((w) => c.includes(w));
         const flow = REDLINE_FLOW_WORDS.find((w) => c.includes(w));
         if (!self && !flow) continue;
+        // 显式指令标记同样优先于反事实:「若跌破下沿就止损离场」是条件式指令(交易建议
+        // 最标准的写法),而「若当时按下沿止损将被扫」不带指令标记,照旧豁免。
+        const marker = REDLINE_DIRECTIVE_MARKERS.some((w) => c.includes(w));
         if (REDLINE_NEGATION_MARKERS.some((w) => c.includes(w))
-          || COUNTERFACTUAL_RE.test(c) || SELF_NEGATION_RE.test(c)) continue;
+          || (COUNTERFACTUAL_RE.test(c) && !marker) || SELF_NEGATION_RE.test(c)) continue;
         // 显式指令标记优先于描述性主语:「央行增持，建议半仓跟随」仍要拦。
         // 反之价位构造不足以压过第三方主语 —— 「央行在4000附近增持」与「在4000附近买入」
         // 的区别只在主语,前者是设计要求第二段必写的内容。
-        const marker = REDLINE_DIRECTIVE_MARKERS.some((w) => c.includes(w));
         if (!marker && descriptive) continue;
         // B 类词单独出现是描述第三方流向的写法;A 类词或价位构造才指向读者自己的操作
         if (!marker && !self && !PRICE_LEVEL_RE.test(c)) continue;
