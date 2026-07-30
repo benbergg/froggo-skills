@@ -159,10 +159,17 @@ function writeIndexes({ archiveDir, entries }) {
 
 // 不带 --delete:2026-07-28 知识库同步一次提交删掉 VM 两个归档件的实证说明备份必须只增不减。
 // 加了 --delete,权威目录被误删后一次 rsync 就把恢复源一并抹平。
+// work/ 是本次运行的草稿区(prompt / forecast / report / record,以及 dry-run 的
+// 权威库副本),一律不进恢复源:演练留下的 work/dry-run-sandbox/predictions.json 会让
+// 备份里出现**两个** predictions.json,权威库丢失时捞错那个 = 回到演练当天的近空库,
+// 而 settle 的一次性语义会用今天的价格把被回滚的 horizon 重新结算、错分永久写死。
+const BACKUP_EXCLUDES = ['work/'];
+
 function backupState({ stateDir, backupDir, bin = 'rsync' }) {
   fs.mkdirSync(backupDir, { recursive: true });
   const slash = (p) => p.replace(/\/*$/, '/');
-  const r = spawnSync(bin, ['-a', slash(stateDir), slash(backupDir)],
+  const excludes = BACKUP_EXCLUDES.map((p) => `--exclude=${p}`);
+  const r = spawnSync(bin, ['-a', ...excludes, slash(stateDir), slash(backupDir)],
     { encoding: 'utf-8', timeout: BACKUP_TIMEOUT_MS });
   return {
     ok: r.status === 0,
@@ -263,4 +270,4 @@ if (require.main === module) {
   }
 }
 
-module.exports = { upsertPrediction, buildIndex, writeIndexes, backupState, indexFileName, reportFileName, yearOf };
+module.exports = { upsertPrediction, buildIndex, writeIndexes, backupState, indexFileName, reportFileName, yearOf, BACKUP_EXCLUDES };

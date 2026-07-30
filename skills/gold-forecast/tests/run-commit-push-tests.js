@@ -336,6 +336,31 @@ test('T32: 备份只增不减,不传导权威目录的删除', () => {
   fs.rmSync(home, { recursive: true, force: true });
 });
 
+test('T32b: work/ 草稿区不进恢复源', () => {
+  // dry-run 会在 work/dry-run-sandbox/ 留一份权威库副本。它若被备份走,
+  // 恢复源里就有**两个** predictions.json —— 权威库丢失时捞错那个 = 回到演练当天的
+  // 近空库,而 settle 一次性的语义会把被回滚的 horizon 用今天的价格重新结算、错分写死。
+  const home = freshTmp();
+  seedCommitInputs(home);
+  const stateDir = path.join(home, '.local', 'state', 'gold-forecast');
+  const sandbox = path.join(stateDir, 'work', 'dry-run-sandbox');
+  fs.mkdirSync(sandbox, { recursive: true });
+  fs.writeFileSync(path.join(sandbox, 'predictions.json'), '{"predictions":[],"__sandbox":true}');
+  fs.writeFileSync(path.join(stateDir, 'work', 'prompt-r1.txt'), 'x');
+
+  const r = runScript('commit.js', ['--record', 'record.json', '--archive-dir', 'arch'], { home });
+  assert.equal(r.code, 0, r.stderr);
+  const backup = path.join(home, 'backup', 'gold-forecast');
+  assert.ok(fs.existsSync(path.join(backup, 'predictions.json')), '权威库本体仍要备份');
+  assert.equal(fs.existsSync(path.join(backup, 'work')), false,
+    'work/ 进了恢复源 —— 演练副本会冒充权威库');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T32c: 排除项显式声明,不是靠 rsync 的默认行为', () => {
+  assert.deepEqual(C.BACKUP_EXCLUDES, ['work/']);
+});
+
 // 上期已结算一条 + 本期未结算一条,即 push 时 predictions.json 的真实形态
 // (commit 是 Step 6、push 是 Step 7,当天记录此刻已经入库但 short 尚未结算)
 const DB_SETTLED = { schema_version: 2, skipped_dates: [], predictions: [
