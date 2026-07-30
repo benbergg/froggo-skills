@@ -22,8 +22,8 @@ const OZ_TO_GRAM = 31.1035;
 const COUNTERPARTY_GROUPS = ['commercial', 'noncommercial', 'nonreportable'];
 const LESSON_METRICS = ['range', 'brier', 'dir'];
 const C12_FORBIDDEN_WORDS = REDLINE_WORDS;
-// 第六段按设计 8.1 只讲方法、不给具体数值,故整段禁具体数量(阿拉伯数字 ∪ 中文数量);
-// 指令性构造的判定覆盖一–六段,第六段只放过设计要求它讲的那三个概念。
+// 指令性构造的判定覆盖一–六段,第六段只放过设计要求它讲的那三个概念;
+// 第六段另按「红线概念 + 具体数量同子句」判(见 checkRedline)。
 const REDLINE_SECTIONS = ['一', '二', '三', '四', '五', '六'];
 const C5_NEGATION_WORDS = ['无', '缺失', '暂无', '未获取', '不足', '缺少', '缺'];
 const C7_INDICATORS = ['胜率', 'Brier', 'Winkler'];
@@ -449,9 +449,12 @@ function checkC11(doc) {
 // 本就在 C4 池里,拿它们当止损价/买卖点位是这套自检结构上永远抓不到的。
 //
 // 故两段各按自己的不变量写,而不是「禁止说什么」的词表:
-//   第六段禁具体数值(阿拉伯数字 ∪ 中文数量 ∪ 仓位档位词)= 取消把价格/点位/倍数/仓位大小
-//   说出口的能力(设计 8.1 本就要求不给具体数值);该段合法地要讲「怎么自行推算止损距离」,
-//   所以拦的是数值而不是「止损」这个词。
+//   第六段合法地要讲「怎么用波动率区间自行推算止损距离」,于是该段「讲概念」与「给指令」的
+//   唯一分界就是有没有附上具体数量 ⇒ 判据是红线概念与具体数量落在同一子句。
+//   曾实现成「整段禁数量」,结果把中文最自然的行文拦下(实测 9 条合法方法说明误拦 7 条:
+//   「有一点需要说明」「并非一成不变」「分为两块」——量词表里的 点/档/块/元/成 全命中),
+//   而 C12 是 block ⇒ 每天触发修复轮 ⇒ 每天降级发布。收窄量词表治不了它:「三成」是仓位的
+//   规范写法,「一成不变」删不掉;判据必须落在语义维度而不是字面清单。
 //   一–五段按指令性构造:指令性标记(或价位构造)与红线概念落在同一子句才算越界 ——
 //   否则央行购金吨数/ETF 流向/COT 多空持仓这些设计要求必写的内容天天被拦。
 // 长复合词先挖空,否则「净买入」留下的「买入」照样咬。
@@ -467,13 +470,17 @@ function splitClauses(text) {
 
 function checkRedline(doc) {
   const out = [];
-  for (const line of (doc.sections['六'] || '').split('\n')) {
-    const norm = normalizeDigits(line);
+  for (const clause of splitClauses(doc.sections['六'] || '')) {
+    const norm = normalizeDigits(clause);
+    const masked = maskCompounds(norm);
+    // 用全表(含第六段放行的止损/仓位/杠杆):放行的是「讲概念」,附上数量就变成给指令
+    const word = REDLINE_WORDS.find((w) => masked.includes(w));
+    if (!word) continue;
     const digit = norm.match(/\d[\d,.]*/);
     const cn = chineseQuantities(norm);
     if (!digit && !cn.length) continue;
-    out.push(findingOf('C12', `第六段:「${line.trim().slice(0, 40)}」`,
-      '第六段只讲方法不给具体数值,不得出现阿拉伯数字或中文数量(三成、两倍、四千零二十二)',
+    out.push(findingOf('C12', `第六段:「${clause.slice(0, 40)}」`,
+      `第六段只讲方法不给具体数值,「${word}」不得与具体数量(阿拉伯数字或中文数量,如三成、两倍、四千零二十二)同现于一个子句`,
       digit ? digit[0] : cn[0]));
   }
   for (const s of REDLINE_SECTIONS) {
@@ -589,7 +596,9 @@ function checkC14(doc) {
   }
 
   for (const sent of sentences) {
-    const stripped = stripDates(sent);
+    // 区间是 validate.js 里第二个取数点,归一化漏在这里等于「唯一入口」没做到:
+    // 拿 long 端点冒充短期区间,半角出 C14、全角零 findings(两端点都在 C4 池里,C4 抓不到)
+    const stripped = stripDates(normalizeDigits(sent));
     RANGE_RE.lastIndex = 0;
     let m;
     const target = matchHorizonKeyword(sent);

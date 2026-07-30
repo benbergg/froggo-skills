@@ -245,13 +245,23 @@ test('T33: 第六段的止损价/买卖点位/加仓越界句必须被拦', () =
   }
 });
 
-test('T34: 第六段禁的是阿拉伯数字这个不变量,不是词表', () => {
-  // 一句不含任何红线词、看似无害的数字同样要拦 —— 否则「用端点当止损价」永远绕得过
-  const f = validate(parseForecast(inject('六', '区间半宽约为45点。')), CTX()).findings;
-  assert.ok(f.some((x) => x.check === 'C12'), `无红线词但含数字的句子也须拦: ${JSON.stringify(f)}`);
-  // 对照组:同一句改用中文数字表述,必须放行
-  const ok = validate(parseForecast(inject('六', '区间半宽约为数十点。')), CTX()).findings;
-  assert.deepEqual(ok.filter((x) => x.check === 'C12'), [], '中文数字表述不该被拦');
+test('T34: 第六段禁的是「红线概念与具体数量同子句」,不是整段禁数量', () => {
+  // 正向:一个指令性标记都没有,只有概念 + 数量 —— 唯一能拦它的就是这条判据
+  for (const s of ['止损距离取45点。', '止损距离设为20美元。', '杠杆倍数为两倍。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `概念与数量同子句未被拦: ${s} -> ${JSON.stringify(f)}`);
+  }
+  // 反向 a:有概念、无数量 —— 设计 8.1 要求该段讲「怎么自行推算止损距离」
+  // 反向 b:有数量、无概念 —— 整段禁数量的写法会把它连带拦下
+  for (const s of ['可用波动率区间自行推算止损距离。', '按80%概率区间推算即可。',
+    '区间半宽约为45点。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `第六段合法说明被误拦: ${s}`);
+  }
+  // 同一子句才算越界:数量与概念被逗号拆开时不拦(与一–六段的子句口径一致)
+  const split = validate(parseForecast(inject('六',
+    '区间半宽约为45点，具体风险距离请自行按止损偏好换算。')), CTX()).findings;
+  assert.deepEqual(split.filter((x) => x.check === 'C12'), [], '数量与概念分处两个子句不该拦');
 });
 
 test('T35: 一–五段按指令性构造判定,免责表述放行', () => {
@@ -320,8 +330,8 @@ test('T38: 提示词已把两条红线约束写进契约(自检拦得住但模�
 // 于是一处编码问题同时关掉 C4 整个溯源层与产品红线。实测同一个编造值:
 // `51737` 被 C4 拦下、`５１７３７` 零 findings。
 
-test('T39: 全角数字必须同时对 C4 与红线可见,且不是「见全角就拦」', () => {
-  const { checkC4, extractNumbers } = require('../references/scripts/validate');
+test('T39: 全角数字必须同时对 C4 / 红线 / C14 可见,且不是「见全角就拦」', () => {
+  const { checkC4, checkC14, extractNumbers } = require('../references/scripts/validate');
   const base = checkC4(parseForecast(md('forecast-good.md')), CTX()).length;
   const cite = (v) => checkC4(parseForecast(
     md('forecast-good.md').replace(/(## 四、[^\n]*\n\n)/, `$1本段引用一个值 ${v}。\n\n`)), CTX()).length - base;
@@ -339,6 +349,20 @@ test('T39: 全角数字必须同时对 C4 与红线可见,且不是「见全角�
     const f = validate(parseForecast(inject(sec, s)), CTX()).findings;
     assert.ok(f.some((x) => x.check === 'C12'), `全角越界句未被拦: ${sec} ${s}`);
   }
+  // C14 的区间路径是 validate.js 里第二个取数点(`RANGE_RE`,不走 extractNumbers)。
+  // 取 long 端点冒充短期区间:两个端点都在 C4 池里,所以 C4 结构上抓不到,只有 C14 能拦。
+  // 这两条断言删掉 checkC14 里的归一化就会红 —— 而下面那条真值反向控制不会
+  // (删掉后全角根本抽不出数字,findings 仍为 0),故它不构成对归一化本身的第二重保险。
+  const doc = (s) => parseForecast(md('forecast-good.md').replace(/(## 四、[^\n]*\n\n)/, `$1${s}\n\n`));
+  const c14base = checkC14(parseForecast(md('forecast-good.md'))).length;
+  const c4base = checkC4(parseForecast(md('forecast-good.md')), CTX()).length;
+  const FAKE = '短期区间为3825-4225。';        // 3825/4225 是 long 自己的端点
+  const FAKE_FW = '短期区间为３８２５-４２２５。';
+  assert.equal(checkC4(doc(FAKE), CTX()).length, c4base, 'C4 结构上抓不到它,这条才是 C14 的存在理由');
+  assert.ok(checkC14(doc(FAKE)).length > c14base, '半角的错周期区间本就该被 C14 拦下');
+  assert.ok(checkC14(doc(FAKE_FW)).length > c14base,
+    '全角错周期区间绕过 C14 = 归一化没做到「唯一入口」');
+  assert.equal(checkC14(doc('短期区间为３９８７-４０５９。')).length, c14base, '全角写法的真区间不得被误拦');
 });
 
 // —— F-3:一–五段改判「指令性构造」——
@@ -415,6 +439,11 @@ test('T43: 第六段禁的是「具体数量」,中文数量与档位词同等�
     const f = validate(parseForecast(inject('六', s)), CTX()).findings;
     assert.ok(f.some((x) => x.check === 'C12'), `第六段越界句未被拦: ${s}`);
   }
+  // 量词表内部的取样:成/点/档/块/元 全在 CN_UNIT_RE 里,配上红线概念必须照拦
+  for (const s of ['每档仓位对应一成资金。', '止损距离折算约五十点。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C12'), `量词表内部的越界写法未被拦: ${s}`);
+  }
   // 反向:非数量的中文连用词与约数必须放行,否则第六段每天都在报警
   for (const s of ['区间半宽约为数十点，具体取值随波动率变化，不宜一概而论。',
     '万一价格跌破下沿，应先复核波动率估计是否失真，而非立刻反向操作。',
@@ -424,10 +453,42 @@ test('T43: 第六段禁的是「具体数量」,中文数量与档位词同等�
     const f = validate(parseForecast(inject('六', s)), CTX()).findings.filter((x) => x.check === 'C12');
     assert.deepEqual(f, [], `第六段合法方法说明被误拦: ${s}`);
   }
+  // 反向控制的取样必须落在量词表**内部**:上一版的 7 个反例(数十/几百/第三方/万一/一致/
+  // 十分/三步)全部取自实现者自己写的排除机制,于是只能验证「排除清单生效」,永远验证不到
+  // 「量词清单过宽」—— 而实测误拦 7/9 正是后者。下列 9 条命中的量词是 点/档/块/元/成,
+  // 都在 CN_UNIT_RE 里,且「三成」是仓位的规范写法、「成」删不掉 ⇒ 收窄清单治不了它。
+  for (const s of ['波动率并非一成不变，使用前请复核最新估计。',
+    '有一点需要说明：区间只描述价格分布，不描述路径。',
+    '使用本区间有三点注意事项，均与统计口径有关。',
+    '这一点在样本外尤其重要，不可一概而论。',
+    '若把区间当成必然边界，就会在极端行情里吃到亏，这一档风险须自行承担。',
+    '两者的差异来自波动率估计窗口的不同。',
+    '本段说明分为两块：方向的读法与区间的读法。',
+    '判断方向时一元化地只看概率是不够的。',
+    '区间宽度与周期长度并非线性关系，切勿按倍数直接外推。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `普通中文行文被第六段规则误拦: ${s}`);
+  }
   // 判据层:量词与位数写法各自独立生效
   assert.deepEqual(chineseQuantities('三成两倍'), ['三', '两']);
   assert.deepEqual(chineseQuantities('三千九百八十七'), ['三千九百八十七']);
   assert.deepEqual(chineseQuantities('数十 几百 第三方 万一 一致 十分 三步'), []);
+});
+
+test('T45: 第六段的概念匹配同样先挖空长复合词(取舍已实测,不是顺手写的)', () => {
+  // 不挖空的代价:冻结语料里 3 条合法描述性表述(净买入97吨 / 净卖出12.4吨 /
+  // 去杠杆…杠杆资金规模)在第六段被误拦;收益只有 1 条真越界(「请将杠杆率提高一档」)。
+  // 误拦每天触发修复轮 ⇒ 每天降级发布,故取漏拦这一侧。这条断言在去掉挖空时会红 ——
+  // 否则「第六段挖不挖空」在整套 485 项里没有任何判别力(实测)。
+  for (const s of ['各国央行三季度合计净买入97吨黄金，创同期新高。',
+    '海外市场去杠杆压力缓解，杠杆资金规模回落约4%。']) {
+    const f = validate(parseForecast(inject('六', s)), CTX()).findings.filter((x) => x.check === 'C12');
+    assert.deepEqual(f, [], `第六段的长复合词被误拦: ${s}`);
+  }
+  // 代价侧同样钉住,免得半年后误以为它拦得住:复合词把红线概念整词吃掉后无人接手
+  const leak = validate(parseForecast(inject('六', '请将杠杆率提高一档。')), CTX()).findings;
+  assert.deepEqual(leak.filter((x) => x.check === 'C12'), [],
+    '若这条已被拦下,说明挖空口径变了,已知局限 8 的「长复合词挖空」族须同步更新');
 });
 
 test('T44: 第六段放过的只有设计要求它讲的那三个概念,其余操作指令照拦', () => {
