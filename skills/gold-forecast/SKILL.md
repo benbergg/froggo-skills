@@ -107,6 +107,11 @@ ssh <host> 'cd ~/.openclaw/skills/gold-forecast && node --test tests/run-*-tests
 ssh <host> '. ~/.config/gold-forecast/env; node ~/.openclaw/skills/gold-forecast/references/scripts/backfill.js \
   --history ~/.local/state/gold-forecast/history --since 2019-01-01 --until $(date -d yesterday +%F)'
 
+# 3b. 【强制核对,不通过不得进入第 4 步】抽查 FRED 落盘形态
+ssh <host> 'head -1 ~/.local/state/gold-forecast/history/fred_DFII10.jsonl;
+  awk -F"\"available_date\":\"" "{print substr(\$2,1,10)}" \
+    ~/.local/state/gold-forecast/history/fred_DFII10.jsonl | sort -u | head -5'
+
 # 4. 基线参数标定(walk-forward 回测)
 ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/backtest.js \
   --history ~/.local/state/gold-forecast/history --from 2019-01-01 --to $(date -d yesterday +%F) \
@@ -115,6 +120,23 @@ ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/backtest.js
 # 5. 首次演练,确认各步产物齐备后再去掉 --dry-run
 ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dry-run'
 ```
+
+### 第 3b 步的判据(两条都必须成立)
+
+1. 第一行的 `value` 是**有限数**,不是 `null`
+2. `available_date` 有**多个不同取值**,且不是全部等于 `--until`
+
+不满足就**停在这里**,别跑第 4 步。两条都不成立的典型签名是 FRED 返回了宽表
+(`output_type=2/3`:列名 `SERIESID_YYYYMMDD`、没有 `value` 键)。这个故障曾经
+全程 `exit 0`:回填打 `✓ inserted=N`、`回填完成: 成功 5, 失败 0`,而整库落成
+`value:null`;生产端 `null - null === 0` 被「特征降级」判为健康,回测端因
+`available_date` 全等于 `--until` 而 FRED 行全程不可见 ⇒ `evaluated=0` ⇒
+logistic 永远拿不到系数。现在形态不符会让该序列进 `failed` 并退 2,但**响亮失败
+只能保证「不装作成功」,不能保证「形态是对的」** —— 这一步是唯一的正向确认。
+
+另外:`baseline.js` 现在会对任何退回 `p0_N` 的周期打一行
+`WARN 未跑 logistic 的周期: …`。日常若持续看到它,先查 `params.json` 是否存在、
+`coefficients` 是否为空,再查特征降级。
 
 ### `--since 2019-01-01` 不能改短
 
@@ -129,6 +151,9 @@ ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dr
 实测覆盖 6.0 年 ⇒ long 周期只剩 1115 条,不足 1200 的验收下限;6.3 年才刚够。
 留 7 个完整日历年 ⇒ 约 1910 交易日,余量约 325。**把窗口调短会让回测验收门槛静默失效**
 (样本不足时门槛判不出差异,却不会报错)。
+
+另需在回测产出后标定 `validate.js` 的 `C3_K_LO` / `C3_K_HI`(当前 0.5 / 2.0 是占位值,
+区间偏宽,只是约束松、不会误拦),做法是枚举宽度倍数看哪个区间能同时容纳历史通过项。
 
 回测三期各自记录 `n` / `brier_gain` / `dm_p` / `passed`。**未通过的周期退化为 `p0_N`
 是预期结果之一,不是失败**——那正是「基线只在证明得了自己的地方才上模型」的设计意图。
@@ -171,7 +196,8 @@ ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dr
 - 标 `missing` 的字段,正文不得出现相关论据
 - 胜率 / Brier / Winkler 必须直接引用统计校准的数值,不得自算
 - 新闻必须带链接,链接须来自新闻线索块
-- **不给仓位、杠杆、买卖点位、止损价**——产品红线
+- **不给仓位、杠杆、买卖点位、止损价**——产品红线。机器执行者是 C12,两条不变量:
+  第六段禁阿拉伯数字(该段只讲方法);一–五段红线词与数字同句即拦
 - 偏离基线超阈值必须给出 `adjustment_reason` 并引用具体 facts 字段
 - 第七段原样复制免责声明全文
 
@@ -246,6 +272,31 @@ openclaw 的 fallback 链在本系统里是污染源,别的模型跑出的预测
 知识库副本处在会被同步删除的区域内(2026-07-28 实证:一次 backup 提交删掉了运行主机上
 两个归档件),所以它不能承担恢复职责。备份用的 rsync **不带 `--delete`**:
 权威目录被误删后,一次带 delete 的同步就会把恢复源一并抹平。
+
+## 已知局限
+
+合并前评审裁定「留但必须成文」的项。都不是 bug 报告的替代品——列在这里是为了让
+下一个人不必再发现一次。
+
+1. **C4 的盎司/克容差把允许池放宽了。** 白名单运算含 `÷31.1035`,于是任一池内数字
+   乘/除 31.1035 后的值也算「有出处」。评审实测的误接受率量级 7.4% / 11.1% / 8.2% / 2.9%
+   (四组夹具)。**正确修法是按 `facts.schema.json` 的 `unit` 字段收窄**(只允许
+   单位确为盎司/克的字段参与换算),属独立 task;**不是删掉 ×31.1035** ——
+   `eastmoney.aum` 的单位本身就是 CNY/g,删了会把合法引用拦下。
+2. **截断态下 C4 的池宽于 prompt。** 池由**完整**对象算出,而 prompt 里的可截断块
+   可能被压缩过,于是模型看不到的数字仍在池里(单向放宽,不会误拦)。
+   `brier_series` 从 payload 剥出后 `calibration` 恒定约 3KB、唯一大块只剩 `facts`,
+   这条的暴露面已大幅下降。
+3. **C-1 残留:C2 的 `expected` 里可能回显模型上轮自己写的值。** `prior_findings`
+   块只含 `expected`(自检器自算的修正目标)因而可引用,但 C2 的 expected 形如
+   `prob_up=0.58 时须为 up`,那个 `0.58` 来自模型上轮的输出而非事实源。裁定为留:
+   它来自 JSON 块、已由 C1/C2/C3/C14 逐值管辖,当轮 `doc.json` 同名值本就在池里,
+   回显不引入新能力。
+4. **`lessons.json` 没有写入端 ⇒ 设计 §5.9 的反思累积机制当前是死的。**
+   `build-prompt` 会读它、`scorecard` 会统计它的命中率,但没有任何代码把模型产出的
+   `new_lessons` 落盘。文件不存在时全链路照常工作(选出空数组),所以这件事**不会
+   以任何方式报错**。待独立 task。
+5. **`C3_K_LO` / `C3_K_HI` 仍是占位值**(0.5 / 2.0),待回测枚举宽度倍数后标定。
 
 ## 依赖
 
