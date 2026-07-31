@@ -44,7 +44,9 @@ test('T4: 教训按 trials 升序选取,上限 5 条', () => {
     { id: 'E', tag: 't', status: 'active', trials: 5, created: '2026-01-01' },
     { id: 'F', tag: 't', status: 'active', trials: 6, created: '2026-01-01' },
   ];
-  const sel = P.selectLessons(lessons, ['t'], 5);
+  // trials 来自 scorecard 而非条目自带(设计 2.1),传 lessons.id → trials 的映射
+  const scLessons = Object.fromEntries(lessons.map((L) => [L.id, { trials: L.trials }]));
+  const sel = P.selectLessons(lessons, ['t'], scLessons, 5);
   assert.equal(sel.length, 5);
   assert.deepEqual(sel.map((l) => l.id), ['B', 'C', 'D', 'E', 'F']);
 });
@@ -52,12 +54,14 @@ test('T4: 教训按 trials 升序选取,上限 5 条', () => {
 test('T5: 已退休的教训不注入', () => {
   const lessons = [{ id: 'A', tag: 't', status: 'retired', trials: 1, created: '2026-01-01' },
                    { id: 'B', tag: 't', status: 'active', trials: 2, created: '2026-01-01' }];
-  assert.deepEqual(P.selectLessons(lessons, ['t'], 5).map((l) => l.id), ['B']);
+  const scLessons = { A: { trials: 1 }, B: { trials: 2 } };
+  assert.deepEqual(P.selectLessons(lessons, ['t'], scLessons, 5).map((l) => l.id), ['B']);
 });
 
 test('T6: 标签不匹配的教训不注入', () => {
   const lessons = [{ id: 'A', tag: 'other', status: 'active', trials: 1, created: '2026-01-01' }];
-  assert.deepEqual(P.selectLessons(lessons, ['t'], 5), []);
+  const scLessons = { A: { trials: 1 } };
+  assert.deepEqual(P.selectLessons(lessons, ['t'], scLessons, 5), []);
 });
 
 test('T7: prompt 含七块且不可截断块齐全', () => {
@@ -361,4 +365,28 @@ test('T-P1: promptScorecard 剥掉 retired*,保留 active', () => {
   const out = promptScorecard(sc);
   assert.deepEqual(Object.keys(out.lessons), ['L001'], '只保留 active');
   assert.ok(out.lessons.L001, '不能整块剥掉');
+});
+
+// —— selectLessons 排序键从 scorecard 取(设计 2.1) ——
+
+test('T-P2: selectLessons 按 scorecard 的 trials 升序,不看条目自带字段', () => {
+  const { selectLessons } = require('../references/scripts/build-prompt');
+  const lessons = [
+    { id: 'A', tag: 't', status: 'active', created: '2026-01-01', trials: 99 },
+    { id: 'B', tag: 't', status: 'active', created: '2026-01-01', trials: 0 },
+  ];
+  // scorecard 说 A 才是没检验过的那条 —— 与条目自带的 trials 刻意相反
+  const scLessons = { A: { trials: 0 }, B: { trials: 9 } };
+  const sel = selectLessons(lessons, ['t'], scLessons);
+  assert.deepEqual(sel.map((l) => l.id), ['A', 'B']);
+});
+
+test('T-P3: scorecard 没有该 id ⇒ 按 trials=0 排,排在已检验的前面', () => {
+  const { selectLessons } = require('../references/scripts/build-prompt');
+  const lessons = [
+    { id: 'A', tag: 't', status: 'active', created: '2026-01-01' },
+    { id: 'B', tag: 't', status: 'active', created: '2026-01-01' },
+  ];
+  const sel = selectLessons(lessons, ['t'], { B: { trials: 3 } });
+  assert.deepEqual(sel.map((l) => l.id), ['A', 'B']);
 });

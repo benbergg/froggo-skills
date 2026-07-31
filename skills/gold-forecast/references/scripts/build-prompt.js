@@ -42,10 +42,15 @@ function sanitizeNews(items, nonce = makeNonce()) {
   ].join('\n');
 }
 
-function selectLessons(lessons, tags, max = 5) {
+// trials 不存 lessons.json(设计 2.1):它是 scorecard 对 predictions 的投影,单一事实源
+function selectLessons(lessons, tags, scorecardLessons = {}, max = 5) {
+  const trialsOf = (l) => {
+    const s = scorecardLessons && scorecardLessons[l.id];
+    return s && Number.isFinite(s.trials) ? s.trials : 0;
+  };
   return (lessons || [])
     .filter((l) => l.status === 'active' && tags.includes(l.tag))
-    .sort((a, b) => (a.trials - b.trials) || (a.created < b.created ? 1 : -1))
+    .sort((a, b) => (trialsOf(a) - trialsOf(b)) || (a.created < b.created ? 1 : -1))
     .slice(0, max);
 }
 
@@ -131,7 +136,7 @@ function buildPrompt({ facts, baseline, scorecard, lessons, contextTags, news = 
     { name: 'counterparty', truncatable: true, truncated: false, text: '## 对手盘\n```json\n' + JSON.stringify((facts && facts.cftc) || {}, null, 1) + '\n```' },
     { name: 'calibration', truncatable: false, truncated: false, text: '## 统计校准\n```json\n' + JSON.stringify(scorecard, null, 1) + '\n```' },
     { name: 'lessons', truncatable: true, truncated: false, text: '## 教训\n' + LESSONS_NOTE + '\n'
-      + JSON.stringify(selectLessons(lessons, contextTags || []), null, 1) },
+      + JSON.stringify(selectLessons(lessons, contextTags || [], (scorecard && scorecard.lessons) || {}), null, 1) },
     { name: 'news', truncatable: true, truncated: false, text: '## 新闻线索\n' + sanitizeNews(news) },
   ];
   const header = `情境标签: ${(contextTags || []).join(', ')}\n\n`;
