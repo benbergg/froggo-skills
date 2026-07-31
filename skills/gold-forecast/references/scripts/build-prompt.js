@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 const { DISCLAIMER_TEXT } = require('./lib/disclaimer');
-const { findingTargets, findingEvidence } = require('./lib/prompt-payload');
+const { findingTargets, findingEvidence, normalizePriorFindings } = require('./lib/prompt-payload');
 
 const MAX_BYTES = 100 * 1024;
 // 与 news 块同构的块内约束:模型天然倾向引用被喂进来的上下文,而教训是模型自己写的
@@ -85,15 +85,6 @@ function truncateToBytes(str, maxBytes) {
 // 修复循环第 2/3 轮把 findings 与上一轮原文喂回模型。必须走 buildPrompt 这条路 ——
 // 在 run.js 里往 prompt 后面裸拼接会突破 100KB 上限,而超限的失败签名恰好和网关超时
 // 撞车(见 run.js 的 interpretModelResult),制造一个极难分辨的故障。
-function normalizePriorFindings(prior) {
-  if (!prior) return null;
-  const obj = Array.isArray(prior) ? { findings: prior } : prior;
-  const findings = Array.isArray(obj.findings) ? obj.findings : [];
-  const forecast = typeof obj.forecast === 'string' ? obj.forecast : '';
-  if (!findings.length && !forecast) return null;
-  return { round: Number.isFinite(obj.round) ? obj.round : null, findings, forecast };
-}
-
 // 上一轮原文自身含 ```json 围栏,故外层用四个反引号包;原文里若出现 4 个以上反引号
 // 会就地冲出围栏、把后续整块 prompt 变成代码,压成 3 个即可(它是本系统自己的模型
 // 输出,不是外部不可信数据,不走 sanitizeNews 那条路)。

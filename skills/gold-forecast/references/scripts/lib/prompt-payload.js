@@ -86,12 +86,27 @@ function promptPayload({ facts, baseline, scorecard }) {
 //               不带 --prior-findings 时 51737 被拦、带上就放行。
 //
 // 故在**块层**切开:targets 进可引用块与 C4 池,evidence(含上一轮原文)进不可引用块。
-function findingTargets(findings) {
-  return (findings || []).map((f, i) => ({ i: i + 1, check: f.check, expected: f.expected }));
+//
+// 归一化必须住在这里,不能由调用方各自做:prompt 侧拿到的是 run.js 组的
+// `{round, findings, forecast}`,C4 池侧拿到的是 findings-r{n}.json 整个文件
+// `{passed, findings}` —— 两侧各写一份的下场是第 2 轮自检直接 TypeError 崩掉。
+function normalizePriorFindings(prior) {
+  if (!prior) return null;
+  const obj = Array.isArray(prior) ? { findings: prior } : prior;
+  const findings = Array.isArray(obj.findings) ? obj.findings : [];
+  const forecast = typeof obj.forecast === 'string' ? obj.forecast : '';
+  if (!findings.length && !forecast) return null;
+  return { round: Number.isFinite(obj.round) ? obj.round : null, findings, forecast };
 }
 
-function findingEvidence(findings) {
-  return (findings || []).map((f, i) => ({ i: i + 1, check: f.check, locator: f.locator, actual: f.actual }));
+const findingsOf = (prior) => (normalizePriorFindings(prior) || { findings: [] }).findings;
+
+function findingTargets(prior) {
+  return findingsOf(prior).map((f, i) => ({ i: i + 1, check: f.check, expected: f.expected }));
+}
+
+function findingEvidence(prior) {
+  return findingsOf(prior).map((f, i) => ({ i: i + 1, check: f.check, locator: f.locator, actual: f.actual }));
 }
 
 // 每个进 prompt 的块都必须**显式表态**是否可引用。新增块时这里没有它的名字 ⇒
@@ -128,6 +143,6 @@ const BLOCK_CITABILITY = {
 
 module.exports = {
   promptPayload, promptScorecard, promptFacts, promptBaseline,
-  findingTargets, findingEvidence,
+  findingTargets, findingEvidence, normalizePriorFindings,
   OPS_ONLY_SCORECARD_KEYS, OPS_ONLY_FACTS_KEYS, OPS_ONLY_HORIZON_KEYS, BLOCK_CITABILITY,
 };

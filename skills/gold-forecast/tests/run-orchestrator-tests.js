@@ -1623,6 +1623,14 @@ test('T104: C4 自己产的 finding 不得给被拦数字发放行券(端到端,
   assert.equal(hit([]), true, '基准:编造的数字本该被 C4 拦下');
   assert.equal(hit(['--prior-findings', pfPath]), true,
     '带上 --prior-findings 后放行 —— C4 给自己刚拦下的数字发了放行券');
+
+  // run.js 传的是 findings-r{n}.json 整个文件,形态是 validate 的产物 {passed, findings}
+  // 而非裸数组。上面那个夹具是裸数组 ⇒ 这条路径在生产上第 2 轮必崩,套件却全绿。
+  const prodPath = w('findings-prod.json', { passed: false, findings: [{ check: 'C4',
+    severity: 'block', locator: `第一段:「${FAKE}」`,
+    expected: '数字须能在 facts/baseline/scorecard 中找到', actual: String(FAKE) }] });
+  assert.equal(hit(['--prior-findings', prodPath]), true,
+    'validate 必须认 validate 自己的产物形态,否则第 2 轮自检 TypeError 崩掉');
   fs.rmSync(tmp, { recursive: true, force: true });
 });
 
