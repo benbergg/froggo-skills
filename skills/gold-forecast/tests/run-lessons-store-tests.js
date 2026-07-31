@@ -95,3 +95,99 @@ test('T10: scorecard.lessons 里没有该 id ⇒ 不退休', () => {
   const { lessons } = applyLessons({ current: [mkLesson()], incoming: [], scorecard: sc, createdId: '2026-08-03' });
   assert.equal(lessons[0].status, 'active');
 });
+
+const mkIncoming = (o = {}) => ({
+  text: '新教训甲', tag: 'pre_cpi', metric: 'range', horizon: 'short', evidence: ['2026-07-20'], ...o });
+
+test('T11: 新教训入库,字段与 id 形态正确', () => {
+  const sc = mkScorecard();
+  const { lessons } = applyLessons({ current: [], incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.length, 1);
+  assert.deepEqual(lessons[0], {
+    id: 'L001', text: '新教训甲', tag: 'pre_cpi', metric: 'range', horizon: 'short',
+    created: '2026-08-03', evidence: ['2026-07-20'], status: 'active' });
+});
+
+test('T12: created 取 createdId,当天那次不计入 trials', () => {
+  // lessonStats 用 p.id > L.created 排除创建当日。createdId 是 short 的 target_date,
+  // 若误传 base_date,当天这条预测的 id(未来日期)也 > created ⇒ 当天被算进 trials。
+  const sc = mkScorecard();
+  const { lessons } = applyLessons({ current: [], incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
+  const created = lessons[0].created;
+  const todayPredictionId = '2026-08-03';
+  assert.equal(created >= todayPredictionId, true, 'created 不得早于当天 prediction id');
+});
+
+test('T13: 幂等 —— 同一份 incoming 连跑两次结果逐字节相同', () => {
+  const sc = mkScorecard();
+  const a = applyLessons({ current: [], incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
+  const b = applyLessons({ current: a.lessons, incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(JSON.stringify(b.lessons), JSON.stringify(a.lessons));
+  assert.equal(a.lessons.length, 1, '未达上限、未触限流 —— 相同不是因为被拒收');
+  assert.deepEqual(b.warnings, [], '重跑走去重路径,静默');
+});
+
+test('T14: 每日限流 2 条,WARN 含被丢的 text', () => {
+  const sc = mkScorecard();
+  const { lessons, warnings } = applyLessons({
+    current: [], scorecard: sc, createdId: '2026-08-03',
+    incoming: [mkIncoming({ text: '甲' }), mkIncoming({ text: '乙' }), mkIncoming({ text: '丙' })] });
+  assert.equal(lessons.length, 2);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /丙/);
+});
+
+test('T15: active 达 20 ⇒ 拒收 + WARN', () => {
+  const current = Array.from({ length: 20 }, (_, i) =>
+    mkLesson({ id: `L${String(i + 1).padStart(3, '0')}`, text: `旧${i}` }));
+  const sc = mkScorecard();
+  const { lessons, warnings } = applyLessons({
+    current, incoming: [mkIncoming({ text: '新的' })], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.length, 20);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /新的/);
+});
+
+test('T16: 流转在闸门之前 —— 库满 20 但今日 2 条退休 ⇒ 新教训进得来', () => {
+  const current = Array.from({ length: 20 }, (_, i) =>
+    mkLesson({ id: `L${String(i + 1).padStart(3, '0')}`, text: `旧${i}` }));
+  // 前 2 条今日满足 retired_ineffective,释放 2 个名额
+  const sc = mkScorecard({ lessons: { L001: { trials: 5, hits: 0 }, L002: { trials: 5, hits: 0 } } });
+  const { lessons, warnings } = applyLessons({
+    current, incoming: [mkIncoming({ text: '新的' })], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.length, 21, '顺序反了会先看到 active=20 而拒收');
+  assert.equal(lessons.at(-1).text, '新的');
+  assert.deepEqual(warnings, []);
+});
+
+test('T17: 流转在去重之前 —— 库里已有今日教训时退休仍照跑', () => {
+  const current = [mkLesson({ id: 'L001', created: '2026-08-03', text: '新教训甲' })];
+  const sc = mkScorecard({ lessons: { L001: { trials: 5, hits: 0 } } });
+  const { lessons } = applyLessons({ current, incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.length, 1, '同 (created,text) 不重复追加');
+  assert.equal(lessons[0].status, 'retired_ineffective', '去重路径不得跳过流转');
+});
+
+test('T18: text 为空 ⇒ 丢弃 + WARN', () => {
+  const sc = mkScorecard();
+  const { lessons, warnings } = applyLessons({
+    current: [], incoming: [mkIncoming({ text: '   ' })], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.length, 0);
+  assert.equal(warnings.length, 1);
+  assert.match(warnings[0], /text/);
+});
+
+test('T19: id 不复用被退休的序号', () => {
+  const current = [mkLesson({ id: 'L003', status: 'retired' })];
+  const sc = mkScorecard();
+  const { lessons } = applyLessons({ current, incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.at(-1).id, 'L004');
+});
+
+test('T20: incoming 为 null/undefined ⇒ 视为空,正常返回', () => {
+  const sc = mkScorecard();
+  const { lessons, warnings } = applyLessons({
+    current: [mkLesson()], incoming: null, scorecard: sc, createdId: '2026-08-03' });
+  assert.equal(lessons.length, 1);
+  assert.deepEqual(warnings, []);
+});
