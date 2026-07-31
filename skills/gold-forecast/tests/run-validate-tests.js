@@ -182,6 +182,26 @@ test('T18d: 样本不足时样本量 n 可引用,只有指标不可', () => {
   assert.equal(checkC7(withSent('短期样本量 n 为 3。'), ctxWithStats).length, 0);
 });
 
+test('T18e: 段标题漏了 ## 仍能解析,但正文里的枚举行不得被当成段标题', () => {
+  // 部署演练实测:M3 时而写「## 一、xxx」时而写裸「一、xxx」(总标题却带 ##),
+  // 后者七段全判缺失 ⇒ 三轮空转后降级。内容其实完整,只是 markdown 标记漏了。
+  const good = md('forecast-good.md');
+  const stripped = good.replace(/^##\s*([一二三四五六七])、/gm, '$1、');
+  const d = parseForecast(stripped);
+  for (const n of ['一', '二', '三', '四', '五', '六', '七']) {
+    assert.ok(d.sections[n] && d.sections[n].length > 0, `裸标题下第${n}段应能解析`);
+  }
+  assert.deepEqual(parseForecast(good).sections, parseForecast(good).sections);
+
+  // 反向控制:正文中的长句枚举不该抢走段边界
+  const trap = good.replace(/^##\s*三、([^\n]*)$/m,
+    (m0, h) => `${m0}\n一、这是正文里的一句很长的枚举说明文字，用来验证它不会被误当成段标题抢走边界`);
+  const t = parseForecast(trap);
+  assert.equal(t.sections['一'], parseForecast(good).sections['一'],
+    '正文里的「一、」不得抢走第一段的边界');
+  assert.ok(t.sections['三'].includes('这是正文里的一句'), '它应留在第三段正文里');
+});
+
 test('T19: findings 带可定位的 locator', () => {
   const f = findings('forecast-c4-bad.md').find((x) => x.check === 'C4');
   assert.ok(f.locator && f.locator.length > 0, 'locator 不精确等于让模型重猜');
