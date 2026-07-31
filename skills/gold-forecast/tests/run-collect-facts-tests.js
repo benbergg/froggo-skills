@@ -19,11 +19,13 @@ test('T2: 软依赖缺失不算硬失败', () => {
 });
 
 test('T3: 等级判定完全来自 schema,不在代码里硬编码', () => {
-  // 临时把 UDI 降级为 soft,分类结果须随之改变
+  // 必须拿一个当前确实是 forecast_hard 的字段:拿 soft 字段"降级"成 soft 是重言式
+  assert.equal(SCHEMA.fields['fred.DFII10'].dependency, 'forecast_hard', '本条依赖它是硬依赖');
   const patched = JSON.parse(JSON.stringify(SCHEMA));
-  patched.fields['eastmoney.UDI'].dependency = 'soft';
-  const r = C.classify({ 'eastmoney.UDI': 'missing' }, patched);
-  assert.deepEqual(r.forecastHardMissing, [], 'schema 改了行为就该改');
+  patched.fields['fred.DFII10'].dependency = 'soft';
+  assert.deepEqual(C.classify({ 'fred.DFII10': 'missing' }, SCHEMA).forecastHardMissing, ['fred.DFII10']);
+  assert.deepEqual(C.classify({ 'fred.DFII10': 'missing' }, patched).forecastHardMissing, [],
+    'schema 改了行为就该改');
 });
 
 // —— context_tags:必须确定性推导 ——
@@ -191,6 +193,22 @@ test('T13: 预测硬依赖缺失时 exit 3 且不留产物', () => {
   assert.equal(r.code, 3);
   assert.equal(fs.existsSync(path.join(r.tmp, 'out', 'facts.json')), false);
   assert.equal(fs.existsSync(path.join(r.tmp, 'hist')), false, '不得留下半截产物');
+  r.cleanup();
+  fs.rmSync(fixtureDir, { recursive: true, force: true });
+});
+
+test('T13b: 东财 UDI 缺失不阻塞预测 —— 单个中国端点抖动抄不掉整条流水线', () => {
+  // 部署实测:VM 到 push2his 的成功率会掉到 5%,而 UDI 全代码库无计算消费者,
+  // 只是喂给模型的一个事实;真正的驱动变量实际利率 fred.DFII10 仍是硬依赖。
+  const fixtureDir = makeFixtureDir({ udi: false });
+  const r = runCli({
+    script: 'collect-facts.js',
+    args: ['--out', 'out/facts.json', '--history', 'hist', '--today', '2026-07-29', '--fixture-dir', fixtureDir],
+  });
+  assert.equal(r.code, 0, r.stderr);
+  const facts = JSON.parse(fs.readFileSync(path.join(r.tmp, 'out', 'facts.json'), 'utf-8'));
+  assert.ok(facts._missing.includes('eastmoney.UDI'), '缺了要如实记 missing,不是假装有');
+  assert.equal(facts.fields['fred.DFII10'].status, 'ok');
   r.cleanup();
   fs.rmSync(fixtureDir, { recursive: true, force: true });
 });

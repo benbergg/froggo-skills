@@ -73,7 +73,7 @@ node references/scripts/run.js --today 2026-07-29
 | 脚本 | 0 | 1 | 其他 |
 |---|---|---|---|
 | `collect-settlement.js` | 成功 | 运行期异常 | **4**=数据陈旧或无有效记录 |
-| `collect-facts.js` | 成功 | 参数/运行期异常 | **3**=预测硬依赖缺失,不写任何产物 |
+| `collect-facts.js` | 成功 | 参数/运行期异常 | **3**=预测硬依赖缺失,不写任何产物(当前只有 `fred.DFII10`) |
 | `backfill.js` | 全部成功 | 全失败 | **2**=部分序列失败 |
 | `validate.js` | 恒 0 | — | 通过与否看 `findings.json` 的 `passed`,**不看退出码** |
 | `render.js` | 成功 | 参数错 | — |
@@ -139,6 +139,12 @@ ssh <host> '. ~/.config/gold-forecast/env; node ~/.openclaw/skills/gold-forecast
 > 补跑用 `--only`(支持逗号分隔),**每次之间隔几秒**;连续失败就停手等十几分钟,
 > 继续重试只会把冷却时间拉长。日常 `collect-facts` 每序列只拉 60 条、总共 5 个请求,
 > 负载与回填不是一个量级。
+>
+> 量化过程:部署开始时前 2 个请求还成功,量到 1.5 小时后间隔 5s 跑 20 次只成 1 次。
+> **不是封禁** —— 同一时刻 curl 与 node 一起失败、ICMP 0% 丢包 84ms、
+> 本机 Mac 打同一 URL 200/0.36s、而 VM 自己解析的边缘节点仍会偶尔回 200。
+> 是按 IP 的累积限流,恢复窗口 > 1.5 小时。故五个东财字段**全部是 soft**,
+> 全挂也只让 facts 变薄、不阻塞当日预测。
 
 ### 第 3b 步的判据(两条都必须成立)
 

@@ -4,7 +4,7 @@
   "fields": {
     "lbma.pm_usd":            { "dependency": "settlement_hard", "traceable": true,  "unit": "USD/oz" },
     "fred.DFII10":            { "dependency": "forecast_hard",   "traceable": true,  "unit": "percent" },
-    "eastmoney.UDI":          { "dependency": "forecast_hard",   "traceable": true,  "unit": "index" },
+    "eastmoney.UDI":          { "dependency": "soft",            "traceable": true,  "unit": "index",     "missing_keywords": ["美元指数", "美元走强", "美元走弱", "DXY"] },
     "fred.T10YIE":            { "dependency": "soft", "traceable": true, "unit": "percent", "missing_keywords": ["通胀预期", "盈亏平衡"] },
     "fred.DFF":               { "dependency": "soft", "traceable": true, "unit": "percent", "missing_keywords": ["联邦基金", "政策利率"] },
     "eastmoney.SPX":          { "dependency": "soft", "traceable": true, "unit": "index",   "missing_keywords": ["标普", "美股"] },
