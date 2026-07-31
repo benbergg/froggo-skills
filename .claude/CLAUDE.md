@@ -599,6 +599,23 @@ exit 1(静默 filter 掉会让每个候选零级可跑→直落 exit 6,把排查
 - **终判据是端到端**:14 → 3(离线夹具) → 1(线上重跑),结局 `degraded_success` → `success`。
   剩的那 1 条是模型自算的天数(`未来 8—27 日内`)确无出处,拦得对,第 2 轮它自己改掉了。
 
+### gold-forecast — 定时任务落在 openclaw cron 而非系统 crontab (2026-07-31)
+
+- **`openclaw cron add` 不传 `--announce` 也会建出 `delivery.mode: "announce"`**
+  (`channel: "last"`)⇒ openclaw 把命令的原始 stdout 再发一遍到最后一个频道。
+  本 skill 的报告推送由 `push.js` 自己完成,于是同一天会收到两条:一条排版好的报告、
+  一条日志文本。必须建完再 `cron edit <id> --no-deliver` 并用 `cron get` 确认。
+  这条只有实际建过一次才看得到 —— help 里 `--announce` 标着 `(default: false)`。
+- **`--command` 型任务的默认 `--timeout <ms>` 是 30000**(30 秒)。黄金流水线光
+  `BUDGET.collect_ms` 就是 300 秒、模型每轮 120 秒 × 最多 3 轮,不显式给
+  `--timeout-seconds` 会每天被掐断在采集阶段。
+- **入口固定成 `cron-entry.sh`,不把命令写进单行 `--command`**。引号嵌套、
+  退出码保真(管道会吃掉)、双写日志(stdout 给 openclaw 存 run 历史、`cron.log` 给人 grep)
+  三件事写进单行必然出错,而错了要等次日才发现。脚本另需区分「`flock` 抢不到锁」与
+  「`run.js` 参数错」—— 两者都退 1,靠输出是否为空区分,否则后台只看到光秃秃的 `1`。
+- **迁移时必须先删系统 crontab 那条**。两边都留不是「双保险」而是每天跑两次、
+  付两次模型钱:`flock` 只挡同一时刻的并发,挡不住 8:00 与 8:05 各跑一次。
+
 ## 版本管理
 
 版本号在 `.claude-plugin/plugin.json` 的 `version` 字段中维护。

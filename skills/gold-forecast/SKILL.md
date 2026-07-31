@@ -187,24 +187,51 @@ logistic 永远拿不到系数。现在形态不符会让该序列进 `failed` �
 ### cron
 
 **默认不启用。** 先手动观察若干天的产出,确认无误后再由用户决定是否建定时任务。
-建的时候按上面那条 `flock` 写法包住 `run.js`,并把下面**四个**环境变量全部显式导出
-—— **cron 的环境不是登录 shell 的环境**:
 
-```cron
-0 8 * * *  FRED_API_KEY=... GOLD_FEISHU_TARGET=... GOLD_ARCHIVE_DIR=... SEND_NOTIFY=1 \
-           flock -n /tmp/gold-forecast.lock -c 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js' \
-           >> ~/.local/state/gold-forecast/cron.log 2>&1
+用 **openclaw cron**(不是系统 crontab)——运行主机上的其余日报都在这里,
+定时任务集中一处才看得见、才有统一的 run 历史。`--command` 型任务由 Gateway
+以 `sh -lc` 执行,入口固定为 `cron-entry.sh`:
+
+```bash
+openclaw cron add \
+  --name "黄金交易预测日报" \
+  --cron "0 8 * * *" --tz Asia/Shanghai --exact \
+  --command "sh \$HOME/.openclaw/skills/gold-forecast/references/scripts/cron-entry.sh" \
+  --timeout-seconds 1800 --output-max-bytes 65536
+openclaw cron edit <id> --no-deliver     # 见下,这一步不能省
 ```
+
+> [!warning] `--no-deliver` 不能省:不加 delivery 默认是 `announce`
+> `cron add` 即使没传 `--announce`,建出来的 job 也是
+> `delivery: { mode: "announce", channel: "last" }` ⇒ **openclaw 会把命令的原始
+> stdout 再发一遍到最后一个频道**。本 skill 的报告推送由 `push.js` 自己完成,
+> 于是同一天会收到两条:一条是排版好的报告,一条是日志文本。建完必须
+> `cron edit <id> --no-deliver`,并用 `cron get <id>` 确认 `delivery.mode` 是 `none`。
+
+**为什么要 `cron-entry.sh` 而不是把命令直接写进 `--command`**:引号嵌套、
+退出码保真(不能被管道吃掉)、双写日志(stdout 给 openclaw 存 run 历史、
+`cron.log` 给人 grep)这三件事写进单行必然出错,而错了要等到次日才发现。
+脚本还负责区分「`flock` 抢不到锁」与「`run.js` 参数错」——两者都退 1,
+靠输出是否为空区分,否则后台只看到一个光秃秃的 `1`。
+
+凭据由脚本从 `~/.config/gold-forecast/env` 读入,**不放进 job 配置** ——
+`cron get` / 后台管理会把 payload 原样展示。
 
 > [!important] `SEND_NOTIFY=1` 不能漏
 > `push.js` 未设它时走 `--dry-run` 并**退 0**,于是 `run.js` 判 `success`、整体
 > `exit 0`——**链路全绿,而报告与失败简报都永不到达任何人**。这是本系统唯一一处
 > 「全部正常」和「通知层完全关闭」长得一模一样的地方。
-> `run.js` 在非 dry-run 且未设它时会打一条显著 WARN,但 cron 的 stderr 要有人看才算数,
-> 所以上面把日志重定向到了文件。
+> `run.js` 在非 dry-run 且未设它时会打一条显著 WARN,但那要有人看才算数,
+> 所以 `cron-entry.sh` 把输出同时落进 `cron.log`。
 
-值放在 crontab 里会被同机其他用户 `ps`/`/proc` 看到。生产上建议改成
-`. ~/.config/gold-forecast/env;` 前缀,把四个变量都写进那个 chmod 600 的文件。
+日常排查:
+
+```bash
+openclaw cron list                       # 看 Next / Last / Status
+openclaw cron runs --id <id>             # 看历次运行
+openclaw cron run <id>                   # 立刻触发一次(调试)
+tail -40 ~/.local/state/gold-forecast/cron.log
+```
 
 > [!note] 失败之后的周末会重跑,每次真付一次模型调用
 > 失败当天不入库 ⇒ `max(base_date)` 不推进 ⇒ 次日(哪怕是周六)仍判「有新定盘」
