@@ -636,3 +636,65 @@ test('T48: failure CLI 同天去重、跨天不去重', () => {
   assert.equal(callCount(home), 2, '换一天必须是新告警');
   fs.rmSync(home, { recursive: true, force: true });
 });
+
+// —— 教训库入库:与 predictions.json 同一事务 ——
+
+const STATE = (home) => path.join(home, '.local', 'state', 'gold-forecast');
+const COMMIT_ARGS = ['--record', 'record.json', '--archive-dir', 'arch', '--scorecard', 'scorecard.json'];
+
+function seedNewLessons(home, arr) {
+  fs.writeFileSync(path.join(home, 'new-lessons.json'), JSON.stringify(arr));
+  return [...COMMIT_ARGS, '--new-lessons', 'new-lessons.json'];
+}
+
+test('T-C1: --new-lessons 的条目落进 lessons.json', () => {
+  const home = freshTmp();
+  const record = seedCommitInputs(home);
+  const args = seedNewLessons(home, [{ text: '甲', tag: 'pre_cpi', metric: 'range',
+    horizon: 'short', evidence: ['2026-07-20'] }]);
+  const r = runScript('commit.js', args, { home });
+  assert.equal(r.code, 0, r.stderr);
+  const db = JSON.parse(fs.readFileSync(path.join(STATE(home), 'lessons.json'), 'utf-8'));
+  assert.equal(db.lessons.length, 1);
+  assert.equal(db.lessons[0].id, 'L001');
+  assert.equal(db.lessons[0].created, record.id, 'created 必须是 record.id');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T-C2: 不传 --new-lessons 时 lessons.json 不被创建', () => {
+  const home = freshTmp();
+  seedCommitInputs(home);
+  const r = runScript('commit.js', COMMIT_ARGS, { home });
+  assert.equal(r.code, 0, r.stderr);
+  assert.equal(fs.existsSync(path.join(STATE(home), 'lessons.json')), false);
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T-C3: lessons.json 内容非数组 ⇒ 退 5,且 lessons 与 predictions 都一个字节没动', () => {
+  const home = freshTmp();
+  seedCommitInputs(home);
+  fs.mkdirSync(STATE(home), { recursive: true });
+  const before = '{"lessons":{"L001":{}}}';
+  fs.writeFileSync(path.join(STATE(home), 'lessons.json'), before);
+  const args = seedNewLessons(home, [{ text: '甲', tag: 'pre_cpi', metric: 'range', horizon: 'short', evidence: [] }]);
+  const r = runScript('commit.js', args, { home });
+  assert.equal(r.code, 5);
+  assert.equal(fs.readFileSync(path.join(STATE(home), 'lessons.json'), 'utf-8'), before);
+  // 同一事务:教训库拒写时 predictions 也不得落盘
+  assert.equal(fs.existsSync(path.join(STATE(home), 'predictions.json')), false,
+    'lessons 抛错必须发生在任何 atomicWriteJSON 之前');
+  fs.rmSync(home, { recursive: true, force: true });
+});
+
+test('T-C4: 重跑幂等 —— 同一份 new-lessons 跑两次,lessons.json 逐字节相同', () => {
+  const home = freshTmp();
+  seedCommitInputs(home);
+  const args = seedNewLessons(home, [{ text: '甲', tag: 'pre_cpi', metric: 'range', horizon: 'short', evidence: [] }]);
+  assert.equal(runScript('commit.js', args, { home }).code, 0);
+  const p = path.join(STATE(home), 'lessons.json');
+  const after1 = fs.readFileSync(p, 'utf-8');
+  assert.equal(runScript('commit.js', args, { home }).code, 0);
+  assert.equal(fs.readFileSync(p, 'utf-8'), after1);
+  assert.equal(JSON.parse(after1).lessons.length, 1, '未达上限、未触限流 —— 相同不是因为被拒收');
+  fs.rmSync(home, { recursive: true, force: true });
+});

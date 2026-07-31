@@ -15,6 +15,7 @@ const { spawnSync } = require('node:child_process');
 const { atomicWriteText, atomicWriteJSON } = require('./lib/atomic-write');
 const { DISCLAIMER_TEXT } = require('./lib/disclaimer');
 const { escapeHtml } = require('./render');
+const { applyLessons } = require('./lib/lessons-store');
 
 const ISO_DATE_RE = /^\d{4}-\d{2}-\d{2}$/;
 const BACKUP_TIMEOUT_MS = 120_000;
@@ -182,7 +183,7 @@ function backupState({ stateDir, backupDir, bin = 'rsync' }) {
 // ---- CLI ---------------------------------------------------------------
 
 const FLAGS = ['record', 'predictions', 'state-dir', 'archive-dir', 'report-html', 'report-md',
-  'scorecard', 'backup-dir'];
+  'scorecard', 'backup-dir', 'new-lessons', 'lessons'];
 const BOOLS = ['no-backup'];
 
 function usage() {
@@ -190,6 +191,7 @@ function usage() {
     'Usage: commit.js --record <json> --archive-dir <dir>',
     '                 [--report-html <path>] [--report-md <path>] [--scorecard <json>]',
     '                 [--predictions <json>] [--state-dir <dir>] [--backup-dir <dir>] [--no-backup]',
+    '                 [--new-lessons <json>] [--lessons <json>]',
     '',
     '--archive-dir 亦可由环境变量 GOLD_ARCHIVE_DIR 提供;无默认值,不猜知识库路径。',
     'GOLD_RSYNC_BIN 可覆盖 rsync 可执行文件路径(测试与非标准环境用)。',
@@ -233,7 +235,23 @@ function main() {
     ? JSON.parse(fs.readFileSync(dbPath, 'utf-8'))
     : { schema_version: 2, predictions: [], skipped_dates: [] };
   const { action } = upsertPrediction(db, record);
+
+  // 先把两边都算完再落盘:任一侧抛错时两个文件都还没动(退 5 的语义靠这个顺序成立)
+  let lessonsWrite = null;
+  if (args['new-lessons']) {
+    const lessonsPath = path.resolve(args.lessons || path.join(stateDir, 'lessons.json'));
+    const raw = fs.existsSync(lessonsPath) ? JSON.parse(fs.readFileSync(lessonsPath, 'utf-8')) : {};
+    const sc = args.scorecard ? JSON.parse(fs.readFileSync(args.scorecard, 'utf-8')) : {};
+    const incoming = JSON.parse(fs.readFileSync(args['new-lessons'], 'utf-8'));
+    const { lessons, warnings } = applyLessons({
+      current: raw.lessons === undefined ? [] : raw.lessons,
+      incoming, scorecard: sc, createdId: record.id });
+    for (const w of warnings) process.stderr.write(`WARN: ${w}\n`);
+    lessonsWrite = { path: lessonsPath, data: { ...raw, lessons } };
+  }
+
   atomicWriteJSON(dbPath, db);
+  if (lessonsWrite) atomicWriteJSON(lessonsWrite.path, lessonsWrite.data);
 
   if (args['report-html']) writeArchive(path.join(arch, reportFileName(record.id, 'html')), fs.readFileSync(args['report-html'], 'utf-8'));
   if (args['report-md']) writeArchive(path.join(arch, reportFileName(record.id, 'md')), fs.readFileSync(args['report-md'], 'utf-8'));
