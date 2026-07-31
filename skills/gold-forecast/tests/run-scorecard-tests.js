@@ -3,8 +3,8 @@ const { test } = require('node:test');
 const assert = require('node:assert/strict');
 const { buildScorecard } = require('../references/scripts/scorecard');
 
-// 造 n 条已结算记录,dirOk 控制方向对错;horizon 决定哪个周期结算(默认 short,向后兼容)
-function mkDb(n, { dirOk = () => true, degradedIdx = [], probUp = 0.58, tags = [], horizon = 'short' } = {}) {
+// 造 n 条已结算记录,dirOk 控制方向对错;rangeOk 控制 in_range(默认 true);horizon 决定哪个周期结算(默认 short,向后兼容)
+function mkDb(n, { dirOk = () => true, rangeOk = () => true, degradedIdx = [], probUp = 0.58, tags = [], horizon = 'short' } = {}) {
   const predictions = [];
   const sessionsOf = { short: 1, medium: 5, long: 20 };
   for (let i = 0; i < n; i++) {
@@ -19,7 +19,7 @@ function mkDb(n, { dirOk = () => true, degradedIdx = [], probUp = 0.58, tags = [
       baseline: { prob_up: 0.53, low: 3940, high: 4060 },
       score: {
         dir_correct: dirOk(i), brier: dirOk(i) ? 0.1764 : 0.3364,
-        in_range: true, winkler: 100,
+        in_range: rangeOk(i), winkler: 100,
         baseline_brier: 0.2209, baseline_winkler: 120,
         baseline_dir_correct: true, naive_brier: 0.2256,
       },
@@ -389,4 +389,26 @@ test('T38: 乱序 append 不影响序列顺序', () => {
     buildScorecard(shuffled, {}).by_horizon.short.brier_series,
     buildScorecard(db, {}).by_horizon.short.brier_series,
     '曲线的横轴是日期,不能是 db.predictions 的插入次序');
+});
+
+// —— 教训退休基准:三类 metric 各要一个同口径的整体表现率(设计 5.9.1) ——
+
+test('T-S1: in_range_rate 等于逐条 in_range 的比例', () => {
+  const db = mkDb(20, { rangeOk: (i) => i < 15 });
+  const sc = buildScorecard(db, {});
+  assert.equal(sc.by_horizon.short.final.in_range_rate, 15 / 20);
+});
+
+test('T-S2: beat_baseline_rate 等于 brier 优于 baseline_brier 的比例', () => {
+  // dirOk 决定 brier:命中 0.1764 < baseline 0.2209,未命中 0.3364 > 0.2209
+  const db = mkDb(20, { dirOk: (i) => i < 13 });
+  const sc = buildScorecard(db, {});
+  assert.equal(sc.by_horizon.short.final.beat_baseline_rate, 13 / 20);
+});
+
+test('T-S3: 样本不足时 final 为 null,两个率不可达', () => {
+  const db = mkDb(5);
+  const sc = buildScorecard(db, {});
+  assert.equal(sc.by_horizon.short.insufficient_sample, true);
+  assert.equal(sc.by_horizon.short.final, null);
 });

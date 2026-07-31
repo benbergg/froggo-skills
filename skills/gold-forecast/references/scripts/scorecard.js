@@ -60,11 +60,16 @@ function group(rows, pick, label, issues) {
   report(issues, label, 'brier', brier.dropped);
   report(issues, label, 'winkler', winkler.dropped);
   report(issues, label, 'dir_correct', dirs.length - goodDirs.length);
+  // 教训退休基准(设计 5.9.1):三类 metric 各要一个同口径的整体表现率
+  const ranges = rows.map((r) => pick(r).inRange).filter((v) => typeof v === 'boolean');
+  const beats = rows.map((r) => pick(r).beatBaseline).filter((v) => typeof v === 'boolean');
   return {
     n: rows.length,
     dir_rate: goodDirs.length ? goodDirs.filter(Boolean).length / goodDirs.length : null,
     brier: brier.value,
     winkler: winkler.value,
+    in_range_rate: ranges.length ? ranges.filter(Boolean).length / ranges.length : null,
+    beat_baseline_rate: beats.length ? beats.filter(Boolean).length / beats.length : null,
   };
 }
 
@@ -96,7 +101,12 @@ function horizonStats(rows, issues = []) {
              by_confidence: null, calibration_buckets: null, range_bias: null, current_streak: 0,
              brier_series: null };
   }
-  const f = group(rows, (r) => ({ dir: r.h.score.dir_correct, brier: r.h.score.brier, winkler: r.h.score.winkler }), 'final', issues);
+  const f = group(rows, (r) => ({
+    dir: r.h.score.dir_correct, brier: r.h.score.brier, winkler: r.h.score.winkler,
+    inRange: r.h.score.in_range,
+    beatBaseline: Number.isFinite(r.h.score.brier) && Number.isFinite(r.h.score.baseline_brier)
+      ? r.h.score.brier < r.h.score.baseline_brier : undefined,
+  }), 'final', issues);
   const b = group(rows, (r) => ({ dir: r.h.score.baseline_dir_correct, brier: r.h.score.baseline_brier, winkler: r.h.score.baseline_winkler }), 'baseline', issues);
   // naive 不产生区间,故 Winkler 无从计算。dir_rate 必须与 naive_brier 同源:
   // 用 actual > base_price(恒猜涨命中率)会让同一行的两个数字来自两个不同预测器。
