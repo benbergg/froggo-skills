@@ -40,10 +40,17 @@ const dropKeys = (obj, keys) => {
 
 function promptScorecard(scorecard) {
   const out = dropKeys(scorecard, OPS_ONLY_SCORECARD_KEYS);
-  if (!out || !out.by_horizon || typeof out.by_horizon !== 'object') return out;
+  if (!out || typeof out !== 'object') return out;
+  // 退休教训对模型无用,却会让不可截断的 calibration 块随年份线性膨胀(同 brier_series)
+  const lessons = {};
+  for (const [id, s] of Object.entries(out.lessons || {})) {
+    if (s && s.status === 'active') lessons[id] = s;
+  }
+  const withLessons = out.lessons ? { ...out, lessons } : out;
+  if (!withLessons.by_horizon || typeof withLessons.by_horizon !== 'object') return withLessons;
   const by_horizon = {};
-  for (const [k, h] of Object.entries(out.by_horizon)) by_horizon[k] = dropKeys(h, OPS_ONLY_HORIZON_KEYS);
-  return { ...out, by_horizon };
+  for (const [k, h] of Object.entries(withLessons.by_horizon)) by_horizon[k] = dropKeys(h, OPS_ONLY_HORIZON_KEYS);
+  return { ...withLessons, by_horizon };
 }
 const promptFacts = (facts) => dropKeys(facts, OPS_ONLY_FACTS_KEYS);
 
@@ -108,9 +115,9 @@ const BLOCK_CITABILITY = {
   },
   lessons: {
     citable: false,
-    reason: '教训文本是模型自己写的历史散文,不是事实源。放进池等于给「把某天的数字洗进'
-      + '教训库、此后永久可引用」开口子。教训是策略提示,报告无须复述其数字,'
-      + '故取保守默认;若日后 lessons.json 有了写入端需重新评估',
+    reason: '教训文本是模型自己写的历史散文,不是事实源。写入端上线后这条从「保守默认」'
+      + '升级为硬边界:模型可以把某天的数字写进教训、次日起它永久在 prompt 里,'
+      + '放进池等于让模型给自己造一个绕开 C4 溯源的数字白名单',
   },
   news: {
     citable: false,

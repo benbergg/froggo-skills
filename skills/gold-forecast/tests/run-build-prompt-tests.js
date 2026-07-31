@@ -349,3 +349,16 @@ test('T30: prior_findings 自身撑爆预算时响亮抛错,不静默交出无�
   }, /100KB|字节/);
   assert.match(message, /prior_findings=\d+/, '报错须点出是哪个块撑爆的,否则排查会指向 facts');
 });
+
+// —— prompt 投影剥退休教训(设计 5.9) ——
+
+test('T-P1: promptScorecard 剥掉 retired*,保留 active', () => {
+  const { promptScorecard } = require('../references/scripts/lib/prompt-payload');
+  const sc = { by_horizon: {}, lessons: {
+    L001: { trials: 5, hits: 2, status: 'active' },
+    L002: { trials: 6, hits: 0, status: 'retired_ineffective' },
+    L003: { trials: 9, hits: 9, status: 'retired' } } };
+  const out = promptScorecard(sc);
+  assert.deepEqual(Object.keys(out.lessons), ['L001'], '只保留 active');
+  assert.ok(out.lessons.L001, '不能整块剥掉');
+});
