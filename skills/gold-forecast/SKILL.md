@@ -196,7 +196,8 @@ logistic 永远拿不到系数。现在形态不符会让该序列进 `failed` �
 
 - `trials` / `hits` **不在这个文件里** —— 它们是 scorecard 对 predictions 的投影,
   看 `scorecard.json` 的 `lessons` 段。改 `lessons.json` 里的 trials 不会有任何效果。
-- 每日最多进 2 条,active 满 20 条后拒收新教训并打 WARN。看到
+- 每日最多进 2 条,active 满 20 条后拒收新教训并打 WARN(commit 退 0,
+  由 `run.js` 转述进 run 日志)。看到
   `active 已达上限` 时先查是不是退休没生效(冷门 tag 下的教训攒不够 5 次 trials
   会永久占位),而不是直接调大上限。
 - status 单向流转,不复活。误判退休的教训要重新提出为新 id。

@@ -451,7 +451,8 @@ const GOOD_FORECAST = ['```json',
 const argOf = (args, flag) => args[args.indexOf(flag) + 1];
 
 // 桩:每个步骤只做「本该产出的文件」,退出码由 fail 表指定。
-function harness({ fail = {}, findingsSeq = null, modelSeq = null, baseline = null, ...opts } = {}) {
+function harness({ fail = {}, findingsSeq = null, modelSeq = null, baseline = null,
+                   stderrs = {}, ...opts } = {}) {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'gold-run-'));
   const stateDir = path.join(tmp, 'state');
   const archiveDir = path.join(tmp, 'archive');
@@ -481,7 +482,7 @@ function harness({ fail = {}, findingsSeq = null, modelSeq = null, baseline = nu
       if (name === 'validate') write(argOf(args, '--out'), (findings && findings.shift()) || { passed: true, findings: [] });
       if (name === 'render') { write(argOf(args, '--out-html'), '<html></html>'); write(argOf(args, '--out-md'), '# md'); }
     }
-    return { code, stdout: '', stderr: `${name} stub`, timedOut: false };
+    return { code, stdout: '', stderr: stderrs[name] || `${name} stub`, timedOut: false };
   };
   const callModelImpl = () => (models && models.length ? models.shift()
     : { ok: true, kind: 'ok', model: 'MiniMax-M3', attempts: [], text: GOOD_FORECAST });
@@ -1818,6 +1819,17 @@ test('T-R3: new_lessons 非数组时也落空数组,不把对象透传给 commit
     '```', '', '## 一、今日结论', '看涨', '', '## 七、免责声明', '固定文案'].join('\n');
   const h = harness({ modelSeq: [{ ok: true, kind: 'ok', model: 'MiniMax-M3', attempts: [], text: bad }] });
   assert.deepEqual(JSON.parse(fs.readFileSync(h.work.newLessons, 'utf-8')), []);
+  h.cleanup();
+});
+
+test('T-R5: 子进程退 0 但带 WARN 时,编排层仍转述 —— 否则教训库静默卡在上限', () => {
+  const h = harness({ stderrs: {
+    commit: '入库 2026-07-29 (insert),归档 x,索引 1 页\nWARN: active 已达上限 20,拒收:甲\n' } });
+  assert.equal(h.res.exitCode, 0, '退 0 是本条的前提:非 0 那条路径本来就打 stderr');
+  assert.ok(h.logs.some((m) => m.includes('active 已达上限')),
+    'commit 退 0 时 stderr 被吞 ⇒ 每天丢弃新教训而无人知晓,全程 exit 0');
+  assert.equal(h.logs.some((m) => m.includes('入库 2026-07-29')), false,
+    '只转述 WARN 行,整段 stderr 倒进日志会把真告警淹掉');
   h.cleanup();
 });
 

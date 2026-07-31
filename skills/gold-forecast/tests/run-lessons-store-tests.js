@@ -108,14 +108,13 @@ test('T11: 新教训入库,字段与 id 形态正确', () => {
     created: '2026-08-03', evidence: ['2026-07-20'], status: 'active' });
 });
 
-test('T12: created 取 createdId,当天那次不计入 trials', () => {
+test('T12: created 一律取 createdId,模型自带的 created 不得覆盖', () => {
   // lessonStats 用 p.id > L.created 排除创建当日。createdId 是 short 的 target_date,
-  // 若误传 base_date,当天这条预测的 id(未来日期)也 > created ⇒ 当天被算进 trials。
+  // 采信模型自带的 created(多半是 base_date)会让当天那条预测反过来算进 trials。
   const sc = mkScorecard();
-  const { lessons } = applyLessons({ current: [], incoming: [mkIncoming()], scorecard: sc, createdId: '2026-08-03' });
-  const created = lessons[0].created;
-  const todayPredictionId = '2026-08-03';
-  assert.equal(created >= todayPredictionId, true, 'created 不得早于当天 prediction id');
+  const { lessons } = applyLessons({ current: [], scorecard: sc, createdId: '2026-08-03',
+    incoming: [mkIncoming({ created: '2026-08-01' })] });
+  assert.equal(lessons[0].created, '2026-08-03');
 });
 
 test('T13: 幂等 —— 同一份 incoming 连跑两次结果逐字节相同', () => {

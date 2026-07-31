@@ -516,6 +516,10 @@ function runPipeline({
   const step = (name, args, timeoutMs = BUDGET.collect_ms) => {
     const r = runScriptImpl(name, args, { timeoutMs });
     trace.push({ step: name, code: r.code, timedOut: Boolean(r.timedOut) });
+    // 退 0 的 WARN 也得出声:教训库限流与拒收只走 stderr,吞掉就是静默卡死
+    for (const line of (r.stderr || '').split('\n')) {
+      if (line.startsWith('WARN:')) log(`${name}: ${line}`);
+    }
     if (r.code !== 0) log(`步骤 ${name} 退出码 ${r.code}${r.timedOut ? '(超时)' : ''}: ${(r.stderr || '').slice(-400)}`);
     return r;
   };
