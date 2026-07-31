@@ -202,6 +202,36 @@ test('T18e: 段标题漏了 ## 仍能解析,但正文里的枚举行不得被当
   assert.ok(t.sections['三'].includes('这是正文里的一句'), '它应留在第三段正文里');
 });
 
+test('T18f: 一句写完三档时不得锁定第一个周期,但只提一个周期时仍精确锁定', () => {
+  // 部署演练实测:设计要求汇总三档,模型自然一句写完,而 matchHorizonKeyword 取第一个
+  // 匹配 ⇒ 整句按 short 判 ⇒ 正确的中期/长期概率与区间全被拦,每天必触发。
+  const { checkC14 } = require('../references/scripts/validate');
+  const base = parseForecast(md('forecast-good.md'));
+  const J = base.json.horizons;
+  const withSent = (s) => { const d = JSON.parse(JSON.stringify(base)); d.sections['一'] = s; return d; };
+
+  const all = `短期上涨概率 ${J.short.prob_up}，区间 ${J.short.low} 至 ${J.short.high}；`
+    + `中期上涨概率 ${J.medium.prob_up}，区间 ${J.medium.low} 至 ${J.medium.high}；`
+    + `长期上涨概率 ${J.long.prob_up}，区间 ${J.long.low} 至 ${J.long.high}。`;
+  assert.equal(checkC14(withSent(all)).length, 0, '三档都写对了不该被拦');
+
+  // 反向控制:只提一个周期时必须仍按那个周期判,否则 T39 那条「拿 long 冒充 short」就漏了
+  assert.ok(checkC14(withSent(`短期区间 ${J.long.low} 至 ${J.long.high}。`)).length > 0,
+    '句子唯一指向 short 时,拿 long 的端点必须照拦');
+});
+
+test('T18g: 紧凑写法的日期不参与 C4 溯源', () => {
+  // 实测 C4 拦下「20260730」:池里有 2026-07-30,而 stripDates 只认带连字符的写法
+  const { checkC4 } = require('../references/scripts/validate');
+  const base = parseForecast(md('forecast-good.md'));
+  const withSent = (s) => { const d = JSON.parse(JSON.stringify(base)); d.sections['一'] = s; return d; };
+  const n = (s) => checkC4(withSent(s), CTX()).length;
+  assert.equal(n('基线日 20260730 的定盘价见下。'), 0, '日期不是需要溯源的数值');
+  // 反向控制必须落在「是不是合法日期」上:整类 8 位数一律放行等于开了个溯源缺口
+  assert.ok(n('库存 20261399 吨。') > 0, '月份 13 日 99 不是日期,仍须溯源');
+  assert.ok(n('库存 51737123 吨。') > 0, '同上,任意 8 位数不该白拿豁免');
+});
+
 test('T19: findings 带可定位的 locator', () => {
   const f = findings('forecast-c4-bad.md').find((x) => x.check === 'C4');
   assert.ok(f.locator && f.locator.length > 0, 'locator 不精确等于让模型重猜');

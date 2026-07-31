@@ -34,7 +34,9 @@ const HORIZON_KEYWORDS = {
   long: ['长期', '长周期', 'long'],
 };
 
-const DATE_RE = /\d{4}-\d{2}-\d{2}/g;
+// 紧凑写法也要剥:实测 C4 拦下「20260730」,而池里存的是 2026-07-30。
+// 仍校验月日范围 —— 整类 8 位数放行等于给溯源开缺口。
+const DATE_RE = /\d{4}-\d{2}-\d{2}|(?<![\d.])(?:19|20)\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\d|3[01])(?![\d.])/g;
 // 负向前瞻防两件事:「3987-4059」区间写法的第二个数被吃成负数;
 // 「DFII10」这类字段代码内嵌的数字被当成独立数值抽出。
 const NUM_RE = /(?<![\d.A-Za-z])-?\d[\d,]*(?:\.\d+)?%?/g;
@@ -587,8 +589,11 @@ function checkC13(doc, ctx) {
 }
 
 // ---- C14: 正文中出现的三期 prob_up/low/high 须等于 JSON 块 ----
+// 只在句子**唯一**指向一个周期时才锁定它。设计要求汇总三档,模型自然一句写完,
+// 而取第一个匹配会把整句按 short 判 ⇒ 正确的中期/长期值全被拦,每天必触发。
 function matchHorizonKeyword(sent) {
-  return HORIZONS.find((h) => HORIZON_KEYWORDS[h].some((kw) => sent.includes(kw)));
+  const hit = HORIZONS.filter((h) => HORIZON_KEYWORDS[h].some((kw) => sent.includes(kw)));
+  return hit.length === 1 ? hit[0] : undefined;
 }
 
 function checkC14(doc) {
