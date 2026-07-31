@@ -330,6 +330,7 @@ function workPaths(workDir) {
     reportHtml: at('report.html'),
     reportMd: at('report.md'),
     record: at('record.json'),
+    newLessons: at('new-lessons.json'),
   };
 }
 
@@ -706,6 +707,10 @@ function runPipeline({
   st.predictionId = record.id;
   atomicWriteJSON(P.work.record, record, { keepVersions: 0 });
 
+  // 降级时 doc 来自 buildDegradedForecast(没有 new_lessons 字段),这里自然落空数组
+  const newLessons = (doc && doc.json && Array.isArray(doc.json.new_lessons)) ? doc.json.new_lessons : [];
+  atomicWriteJSON(P.work.newLessons, newLessons, { keepVersions: 0 });
+
   // dry-run 只跳 Step 6/7;1a/1b 对 history/ 的 upsert 与结算照常(幂等)
   if (dryRun) {
     log(`dry-run:已产出 ${record.id} 的记录与报告,跳过入库与推送`);
@@ -715,7 +720,8 @@ function runPipeline({
   // —— Step 6:入库 + 归档 ——
   r = step('commit', ['--record', P.work.record, '--archive-dir', P.archiveDir, '--predictions', P.predictions,
     '--state-dir', stateDir, '--report-html', P.work.reportHtml, '--report-md', P.work.reportMd,
-    '--scorecard', P.scorecard]);
+    '--scorecard', P.scorecard,
+    '--new-lessons', P.work.newLessons, '--lessons', P.lessons]);
   if (r.code === 3) {
     // 备份失败:入库与归档已成功,重跑本命令幂等。算成功 —— 判成失败会为了修一个
     // rsync 问题去重跑整条流水线(含再付一次模型费用),而预测本身完好无损。

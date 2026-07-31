@@ -1786,3 +1786,46 @@ test('T111: render 仍从 scorecard.json 画出完整序列,不受 payload 剥�
   assert.ok(m, 'brier 曲线应画出来');
   assert.equal((m[1].match(/[ML]/g) || []).length, 30, '顶点数须等于完整序列长度,不是聚合后的三个点');
 });
+
+// —— new_lessons 中转:与 predictions.json 同一事务 ——
+
+const FORECAST_WITH_LESSONS = ['```json',
+  JSON.stringify({ horizons: AI_HORIZONS, new_lessons: [{ text: '甲', tag: 'pre_cpi',
+    metric: 'range', horizon: 'short', evidence: ['2026-07-20'] }] }, null, 1),
+  '```', '',
+  '## 一、今日结论', '看涨', '',
+  '## 七、免责声明', '固定文案'].join('\n');
+
+test('T-R1: 自检通过时 work/new-lessons.json 写出模型给的条目', () => {
+  const h = harness({ modelSeq: [{ ok: true, kind: 'ok', model: 'MiniMax-M3',
+    attempts: [], text: FORECAST_WITH_LESSONS }] });
+  const arr = JSON.parse(fs.readFileSync(h.work.newLessons, 'utf-8'));
+  assert.equal(arr.length, 1);
+  assert.equal(arr[0].text, '甲');
+  h.cleanup();
+});
+
+test('T-R2: 降级路径下 new-lessons 落空数组', () => {
+  // pin 不符 ⇒ degrade ⇒ doc 来自 buildDegradedForecast,根本没有 new_lessons 字段
+  const h = harness({ modelSeq: [{ ok: false, kind: 'pin_mismatch', model: 'VL-01', attempts: [] }] });
+  assert.deepEqual(JSON.parse(fs.readFileSync(h.work.newLessons, 'utf-8')), []);
+  h.cleanup();
+});
+
+test('T-R3: new_lessons 非数组时也落空数组,不把对象透传给 commit', () => {
+  const bad = ['```json',
+    JSON.stringify({ horizons: AI_HORIZONS, new_lessons: { text: '甲' } }, null, 1),
+    '```', '', '## 一、今日结论', '看涨', '', '## 七、免责声明', '固定文案'].join('\n');
+  const h = harness({ modelSeq: [{ ok: true, kind: 'ok', model: 'MiniMax-M3', attempts: [], text: bad }] });
+  assert.deepEqual(JSON.parse(fs.readFileSync(h.work.newLessons, 'utf-8')), []);
+  h.cleanup();
+});
+
+test('T-R4: Step 6 的 commit 参数里带 --new-lessons 与 --lessons', () => {
+  const h = harness();
+  const call = h.calls.find((c) => c.name === 'commit');
+  assert.ok(call, 'commit 应被调用');
+  assert.ok(call.args.includes('--new-lessons'), 'commit 必须收到 --new-lessons');
+  assert.ok(call.args.includes('--lessons'), 'commit 必须收到 --lessons');
+  h.cleanup();
+});
