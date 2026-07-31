@@ -1,0 +1,59 @@
+{
+  "generated_at": "2026-07-31T07:28:41.684Z",
+  "coverage": {
+    "expected": 3,
+    "settled": 0,
+    "skipped": 0,
+    "abandoned": 0,
+    "approx": 0
+  },
+  "by_horizon": {
+    "short": {
+      "n": 0,
+      "insufficient_sample": true,
+      "naive": null,
+      "baseline": null,
+      "final": null,
+      "by_confidence": null,
+      "calibration_buckets": null,
+      "range_bias": null,
+      "current_streak": 0,
+      "brier_series": null
+    },
+    "medium": {
+      "n": 0,
+      "insufficient_sample": true,
+      "naive": null,
+      "baseline": null,
+      "final": null,
+      "by_confidence": null,
+      "calibration_buckets": null,
+      "range_bias": null,
+      "current_streak": 0,
+      "brier_series": null
+    },
+    "long": {
+      "n": 0,
+      "insufficient_sample": true,
+      "naive": null,
+      "baseline": null,
+      "final": null,
+      "by_confidence": null,
+      "calibration_buckets": null,
+      "range_bias": null,
+      "current_streak": 0,
+      "brier_series": null
+    }
+  },
+  "by_model": {
+    "MiniMax-M3": {
+      "n": 1
+    }
+  },
+  "data_quality": [],
+  "excluded": {
+    "degraded": 0
+  },
+  "review_triggers": [],
+  "lessons": {}
+}

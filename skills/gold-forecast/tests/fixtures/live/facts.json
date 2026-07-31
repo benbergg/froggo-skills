@@ -1,0 +1,132 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-07-31T07:28:58.962Z",
+  "target_date": "2026-07-31",
+  "prev_session": "2026-07-30",
+  "context_tags": [],
+  "sigma_pctile": 0.52,
+  "fields": {
+    "lbma.pm_usd": {
+      "status": "ok",
+      "value": 4111.05,
+      "observed_date": "2026-07-30",
+      "available_date": "2026-07-30"
+    },
+    "fred.DFII10": {
+      "status": "ok",
+      "value": 2.41,
+      "observed_date": "2026-07-29",
+      "available_date": "2026-07-30"
+    },
+    "eastmoney.UDI": {
+      "status": "missing",
+      "value": null,
+      "observed_date": null,
+      "available_date": null
+    },
+    "fred.T10YIE": {
+      "status": "ok",
+      "value": 2.27,
+      "observed_date": "2026-07-30",
+      "available_date": "2026-07-31"
+    },
+    "fred.DFF": {
+      "status": "ok",
+      "value": 3.63,
+      "observed_date": "2026-07-29",
+      "available_date": "2026-07-30"
+    },
+    "eastmoney.SPX": {
+      "status": "missing",
+      "value": null,
+      "observed_date": null,
+      "available_date": null
+    },
+    "eastmoney.aum": {
+      "status": "missing",
+      "value": null,
+      "observed_date": null,
+      "available_date": null
+    },
+    "eastmoney.518880": {
+      "status": "missing",
+      "value": null,
+      "observed_date": null,
+      "available_date": null
+    },
+    "cftc.net_spec": {
+      "status": "ok",
+      "value": 183910,
+      "observed_date": "2026-07-21",
+      "available_date": "2026-07-24"
+    },
+    "cftc.net_comm": {
+      "status": "ok",
+      "value": -213199,
+      "observed_date": "2026-07-21",
+      "available_date": "2026-07-24"
+    },
+    "cftc.spec_pctile": {
+      "status": "ok",
+      "value": 0.37055837563451777,
+      "observed_date": "2026-07-21",
+      "available_date": "2026-07-24"
+    },
+    "calendar.next_releases": {
+      "status": "ok",
+      "value": null,
+      "observed_date": null,
+      "available_date": null
+    },
+    "news.items": {
+      "status": "missing",
+      "value": null,
+      "observed_date": null,
+      "available_date": null
+    }
+  },
+  "cftc": {
+    "net_spec": 183910,
+    "net_comm": -213199,
+    "spec_pctile": 0.37055837563451777,
+    "available_date": "2026-07-24",
+    "history_failed_years": []
+  },
+  "calendar": {
+    "next_releases": {
+      "cpi": [
+        "2026-08-12",
+        "2026-09-11",
+        "2026-10-14",
+        "2026-11-10",
+        "2026-12-10"
+      ],
+      "nfp": [
+        "2026-08-07",
+        "2026-09-04",
+        "2026-10-02",
+        "2026-11-06",
+        "2026-12-04"
+      ],
+      "pce": [
+        "2026-08-26",
+        "2026-09-30",
+        "2026-10-29",
+        "2026-11-25",
+        "2026-12-23"
+      ]
+    },
+    "failed_releases": []
+  },
+  "news": {
+    "items": [],
+    "status": "missing"
+  },
+  "_missing": [
+    "eastmoney.UDI",
+    "eastmoney.SPX",
+    "eastmoney.aum",
+    "eastmoney.518880",
+    "news.items"
+  ]
+}

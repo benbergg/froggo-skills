@@ -663,3 +663,87 @@ test('T57: C16 阈值两侧,4 位放行、5 位被拦', () => {
   const over = parseForecast(md('forecast-good.md').replace('Brier误差0.2377', '分位0.37056，Brier误差0.2377'));
   assert.ok(validate(over, CTX()).findings.some((x) => x.check === 'C16'), '5 位必须被拦');
 });
+
+// ---- 生产语料回归 ----
+// 夹具是 2026-07-31 演练里模型真实产出的两轮原文,连同当轮真实的
+// facts/baseline/scorecard 一起冻结。它在这批修复动手**之前**就已产生 ——
+// 由修复者现造验收语料等于循环论证:误解了性质就会同时写出不含该性质的代码
+// 和测不到该性质的断言,两者互相印证(本仓库第六段红线那轮的实证)。
+const LIVE = (n) => JSON.parse(fs.readFileSync(FIXTURE(path.join('live', `${n}.json`)), 'utf-8'));
+const LIVE_CTX = () => {
+  const factsJson = LIVE('facts');
+  const flat = {};
+  for (const f of Object.keys(SCHEMA.fields)) {
+    const rec = factsJson.fields && factsJson.fields[f];
+    if (rec && typeof rec.value === 'number') flat[f] = rec.value;
+  }
+  flat._missing = factsJson._missing || [];
+  flat.news = (factsJson.news && factsJson.news.items) || [];
+  return { schema: SCHEMA, facts: flat, facts_raw: factsJson, baseline: LIVE('baseline'),
+    scorecard: LIVE('scorecard'), predictions: [], lessons: [] };
+};
+const liveFindings = (n) => validate(parseForecast(md(`forecast-live-${n}.md`)), LIVE_CTX()).findings;
+
+test('T58: 生产语料第 2 轮零 findings —— 修复前是 2 条,三轮耗尽后降级', () => {
+  const f = liveFindings('r2');
+  assert.equal(f.length, 0, JSON.stringify(f.map((x) => [x.check, x.actual])));
+});
+
+test('T59: 生产语料第 1 轮只剩真缺陷,14 条里 11 条是误拦', () => {
+  const f = liveFindings('r1');
+  // 逐条都是真的:29291 是模型算错的差额(|-213199|-183910=29289),
+  // 0.014424 是 6 位小数直抄。断言钉死具体条目,只断数量的话
+  // 「误拦全清 + 真缺陷也一起放过」同样能满足
+  assert.deepEqual(f.map((x) => `${x.check}:${x.actual}`).sort(),
+    ['C16:6 位', 'C16:6 位', 'C4:29291'].sort(), JSON.stringify(f));
+});
+
+// ---- C14 漏拦侧:误拦归零很容易(把检查删掉即可),承重全在这里 ----
+const withProse = (sec, text) => {
+  const src = md('forecast-good.md');
+  const re = new RegExp(`(## ${sec}、[^\\n]*\\n\\n)`, 'm');
+  return parseForecast(src.replace(re, `$1${text}\n\n`));
+};
+
+test('T60: C14 仍拦与 JSON 不符的本期概率,含 prob_up= 写法', () => {
+  for (const s of ['短期上涨概率为0.72。', '短窗 prob_up=0.99。']) {
+    const f = validate(withProse('一', s), CTX()).findings;
+    assert.ok(f.some((x) => x.check === 'C14'), `未拦: ${s}`);
+  }
+});
+
+test('T61: 归属豁免只免 C14,编造的基线概率仍由 C4 拦下', () => {
+  // 0.4137 不在池里(逐个验过:baseline 三档为 0.53/0.55/0.58,scorecard 无此值)
+  const f = validate(withProse('一', '基线给出的原始上涨概率为0.4137。'), CTX()).findings;
+  assert.equal(f.some((x) => x.check === 'C14'), false, '归属他方的概率不该由 C14 判');
+  assert.ok(f.some((x) => x.check === 'C4' && x.actual === '0.4137'), '但出处仍须有人管');
+});
+
+test('T62: 「自 X 至 Y」只免起点,终点写错照拦', () => {
+  const ok = validate(withProse('一', '短期 prob_up 自0.4137微调至0.58。'), CTX()).findings;
+  assert.equal(ok.some((x) => x.check === 'C14'), false, '起点是原值,不该判');
+  const bad = validate(withProse('一', '短期 prob_up 自0.4137微调至0.71。'), CTX()).findings;
+  assert.ok(bad.some((x) => x.check === 'C14' && x.actual === '0.71'), '终点是本期值,必须判');
+});
+
+// ---- C4 漏拦侧 ----
+test('T63: 括号豁免只认 prompt 里真实存在的键名,编出来的标识符不给', () => {
+  const bad = validate(withProse('二', '目标位 51737 (target) 已确认。'), CTX()).findings;
+  assert.ok(bad.some((x) => x.check === 'C4' && x.actual === '51737'), 'target 不是任何键名');
+  const okDoc = validate(withProse('二', '标普 500 指数 (eastmoney.SPX) 标记为缺失。'), CTX()).findings;
+  assert.equal(okDoc.some((x) => x.check === 'C4' && x.actual === '500'), false, '字段标签内的数字是名称');
+});
+
+test('T64: 列表序号豁免不吃掉同行的真数值', () => {
+  const f = validate(withProse('四', '1. 首条论据显示价位 51737 值得注意。'), CTX()).findings;
+  assert.equal(f.some((x) => x.check === 'C4' && x.actual === '1'), false, '序号不是数值');
+  assert.ok(f.some((x) => x.check === 'C4' && x.actual === '51737'), '同行的编造数字必须照拦');
+});
+
+test('T65: 量词前的空格不再让整类数字穿过后缀判定', () => {
+  // 「10 年期」的 10 是名称的一部分;带不带空格必须同样处理
+  for (const s of ['10 年期国债收益率维持。', '10年期国债收益率维持。']) {
+    const f = validate(withProse('二', s), CTX()).findings;
+    assert.equal(f.some((x) => x.check === 'C4' && x.actual === '10'), false, `误拦: ${s}`);
+  }
+});

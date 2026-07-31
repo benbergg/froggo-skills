@@ -1,0 +1,39 @@
+{
+  "params_id": "p-20260730",
+  "params_rejected": null,
+  "base_date": "2026-07-30",
+  "base_price": 4111.05,
+  "sigma_d": 0.014424,
+  "features": {
+    "p0_1": 0.552,
+    "p0_5": 0.588,
+    "p0_20": 0.604,
+    "momentum_z": 0.6519559842221953,
+    "real_yield_chg": 0,
+    "cot_pctile": 0.37055837563451777
+  },
+  "horizons": {
+    "short": {
+      "prob_up": 0.552,
+      "model": "p0_N",
+      "low": 4035.75,
+      "high": 4187.75,
+      "half_width": 76
+    },
+    "medium": {
+      "prob_up": 0.588,
+      "model": "p0_N",
+      "low": 3944.59,
+      "high": 4284.54,
+      "half_width": 169.98
+    },
+    "long": {
+      "prob_up": 0.604,
+      "model": "p0_N",
+      "low": 3784.86,
+      "high": 4465.35,
+      "half_width": 340.24
+    }
+  },
+  "degraded_features": []
+}

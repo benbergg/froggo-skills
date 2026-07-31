@@ -120,7 +120,9 @@ function extractNumbers(text) {
     const start = m.index;
     const end = start + raw.length;
     if (stripped[start - 1] === '第') continue;
-    const after = stripped.slice(end, end + 2);
+    // 先吃掉空白:模型实际写的是「10 年期」「0.37 分位」,带空格就整类穿过后缀判定。
+    // 首日实测第二段的「10」因此被 C4 当成无出处数字拦下。
+    const after = stripped.slice(end, end + 4).replace(/^\s+/, '');
     const isPercent = raw.endsWith('%');
     const isPctile = !isPercent && PCTILE_SUFFIX_RE.test(after);
     if (!raw.includes('.') && !isPercent && !isPctile && SUFFIX_SKIP_RE.test(after)) continue;
@@ -244,9 +246,60 @@ function c4Matches(x, direct, pair) {
 // 注:胜率/Brier/Winkler 另有 C7 强制逐值对齐 scorecard,不因本处放宽而失守。
 const textNumbers = (obj) => (obj ? extractNumbers(JSON.stringify(obj)).map((n) => n.numeric) : []);
 
+// 括号里的字段代码判据取自 prompt 里**真实存在的键名**,不自造清单:自造的那种
+// 在中文里必然双向漏(第六段红线那轮的实证)。`(target)` 这类编出来的标识符不在任何
+// 键名集合里,因而拿不到豁免。
+function deepKeys(obj, out = new Set()) {
+  if (!obj || typeof obj !== 'object') return out;
+  for (const [k, v] of Object.entries(obj)) { out.add(k); deepKeys(v, out); }
+  return out;
+}
+
+function knownKeyNames(ctx) {
+  const names = deepKeys(ctx.facts_raw);
+  deepKeys(ctx.baseline, names);
+  deepKeys(ctx.scorecard, names);
+  for (const f of Object.keys((ctx.schema && ctx.schema.fields) || {})) {
+    names.add(f);
+    f.split('.').forEach((seg) => names.add(seg));
+  }
+  return names;
+}
+
+// 「标普 500 指数 (eastmoney.SPX)」「华安黄金 ETF 518880 (eastmoney.518880)」——
+// 括号前那截是字段的中文标签,里面的数字是名称的一部分,不是论据。标签只取到最近的
+// 分隔符,且限长:放任它往前吃会把整句都变成豁免区。
+const FIELD_LABEL_RE = /([^、,，。:：;；\n(（]{0,24})[(（]\s*([A-Za-z][A-Za-z0-9_.]*)\s*[)）]/g;
+
+function fieldLabelSpans(text, keyNames) {
+  const spans = [];
+  FIELD_LABEL_RE.lastIndex = 0;
+  let m;
+  while ((m = FIELD_LABEL_RE.exec(text))) {
+    const code = m[2];
+    const known = keyNames.has(code) || code.split('.').some((seg) => keyNames.has(seg));
+    if (!known) continue;
+    spans.push([m.index, m.index + m[1].length]);
+  }
+  return spans;
+}
+
+// markdown 有序列表的序号。位置+形态双重限定,不会误伤行首的真数值
+// (「4111.05 美元/盎司」带小数点、「183910 手」后面不是 `. `)。
+const LIST_MARKER_RE = /^[ \t]*\d+[.、)]\s/gm;
+
+function listMarkerSpans(text) {
+  const spans = [];
+  LIST_MARKER_RE.lastIndex = 0;
+  let m;
+  while ((m = LIST_MARKER_RE.exec(text))) spans.push([m.index, m.index + m[0].length]);
+  return spans;
+}
+
 function checkC4(doc, ctx) {
   const out = [];
   if (!doc.json) return out;
+  const keyNames = knownKeyNames(ctx);
   const direct = [
     ...factsPool(ctx.facts, ctx.schema),
     ...deepNumbers(promptFacts(ctx.facts_raw)),
@@ -263,7 +316,11 @@ function checkC4(doc, ctx) {
   for (const s of SECTIONS.slice(0, 6)) {
     const text = doc.sections[s];
     if (!text) continue;
+    // 下标口径必须与 extractNumbers 一致:它按归一化后的文本给 index
+    const norm = stripDates(normalizeDigits(text));
+    const skip = [...fieldLabelSpans(norm, keyNames), ...listMarkerSpans(norm)];
     for (const num of extractNumbers(text)) {
+      if (skip.some(([a, b]) => num.index >= a && num.index < b)) continue;
       const candidates = (num.isPercent || num.isPctile) ? [num.numeric, num.numeric / 100] : [num.numeric];
       if (!candidates.some((v) => c4Matches(v, direct, pair))) {
         out.push(findingOf('C4', `第${s}段:「${num.raw}」`,
@@ -593,6 +650,22 @@ function checkC13(doc, ctx) {
 // ---- C14: 正文中出现的三期 prob_up/low/high 须等于 JSON 块 ----
 // 只在句子**唯一**指向一个周期时才锁定它。设计要求汇总三档,模型自然一句写完,
 // 而取第一个匹配会把整句按 short 判 ⇒ 正确的中期/长期值全被拦,每天必触发。
+// 认 `prob_up=0.55` 这种写法:只认中文「概率」二字的话,模型改用字段名就整类穿过 ——
+// 首日真实产出的第一段恰好就是 `prob_up=0.55`,C14 一条都没判到。
+const C14_PROB_ANCHOR_RE = /概率|prob_up/i;
+const C14_ATTRIBUTED_RE = /基线|原始|朴素|naive|上期|上一期|历史|前值|baseline/i;
+// 「自 0.552 微调至 0.55」的起点是原值,终点才是本期值。整句豁免会连 0.55 一起放掉,
+// 故只豁免紧接在 自/由/从 之后的那一个数。
+const C14_ORIGIN_BEFORE_RE = /(?:自|由|从)[^。，,；;]{0,4}$/;
+// C14 自己的子句切分。不复用 CLAUSE_SPLIT_RE:那条是红线检查的承重件,
+// 在它上面加冒号会让红线子句变细而漏拦。
+const C14_CLAUSE_SPLIT_RE = /[。!!??；;，,:：\n]/;
+
+// 传入的已是归一化文本,故子句内下标可直接喂给 COMPARATOR_* 的前后文判定
+function clausesWithOffset(text) {
+  return text.split(C14_CLAUSE_SPLIT_RE).filter((s) => s.trim()).map((s) => ({ text: s }));
+}
+
 function matchHorizonKeyword(sent) {
   const hit = HORIZONS.filter((h) => HORIZON_KEYWORDS[h].some((kw) => sent.includes(kw)));
   return hit.length === 1 ? hit[0] : undefined;
@@ -605,17 +678,28 @@ function checkC14(doc) {
   const probOf = (h) => doc.json.horizons[h] && doc.json.horizons[h].prob_up;
 
   for (const sent of sentences) {
-    if (!sent.includes('概率')) continue;
+    if (!C14_PROB_ANCHOR_RE.test(sent)) continue;
+    // 周期词按整句取:子句常写成「故短窗 prob_up 自 0.552 微调至 0.55」,
+    // 周期词与概率锚点本就分处两个子句
     const target = matchHorizonKeyword(sent);
     const cands = target ? [target] : HORIZONS;
-    const norm = stripDates(normalizeDigits(sent));
-    for (const num of extractNumbers(sent)) {
-      if (!num.isPercent && !(num.raw.includes('.') && num.numeric >= 0 && num.numeric <= 1)) continue;
-      if (COMPARATOR_BEFORE_RE.test(norm.slice(0, num.index))
-        || COMPARATOR_AFTER_RE.test(norm.slice(num.index + num.raw.length))) continue;
-      const value = num.isPercent ? num.numeric / 100 : num.numeric;
-      const ok = cands.some((h) => within(value, probOf(h), 0.0005, 0.001));
-      if (!ok) out.push(findingOf('C14', `「${sent.trim()}」`, '概率提及须等于 JSON 中对应周期的 prob_up', num.raw));
+    for (const cl of clausesWithOffset(stripDates(normalizeDigits(sent)))) {
+      // 判据从整句收到子句:整句判会把「DFF 为 3.63%」这种同句里的非概率数值一起吃掉
+      // (首日实测,标题里一个「概率」就够了)。子句里没有概率锚点就不是概率声明。
+      if (!C14_PROB_ANCHOR_RE.test(cl.text)) continue;
+      // 归属他方的概率(基线/朴素/上期)本就不该等于本期 prob_up,设计还要求第一段
+      // 写「相对基线的调整幅度」—— 这里不放行等于自检在阻止报告满足契约。
+      // 放行不等于不管:它们的出处仍由 C4 管辖,编造的基线概率照样被拦。
+      if (C14_ATTRIBUTED_RE.test(cl.text)) continue;
+      for (const num of extractNumbers(cl.text)) {
+        if (!num.isPercent && !(num.raw.includes('.') && num.numeric >= 0 && num.numeric <= 1)) continue;
+        const before = cl.text.slice(0, num.index);
+        if (COMPARATOR_BEFORE_RE.test(before) || C14_ORIGIN_BEFORE_RE.test(before)
+          || COMPARATOR_AFTER_RE.test(cl.text.slice(num.index + num.raw.length))) continue;
+        const value = num.isPercent ? num.numeric / 100 : num.numeric;
+        const ok = cands.some((h) => within(value, probOf(h), 0.0005, 0.001));
+        if (!ok) out.push(findingOf('C14', `「${sent.trim()}」`, '概率提及须等于 JSON 中对应周期的 prob_up', num.raw));
+      }
     }
   }
 
