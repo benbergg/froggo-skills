@@ -45,6 +45,12 @@ const SENTENCE_SPLIT_RE = /[。!!??\n]/;
 // 按句判定会把每天都要写的免责句拦下。不切「、」—— 顿号连接的枚举项共享同一个主语。
 const CLAUSE_SPLIT_RE = /[。!!??；;，,\n]/;
 const RANGE_RE = /(\d[\d,]*(?:\.\d+)?)\s*[-~至到]\s*(\d[\d,]*(?:\.\d+)?)/g;
+// 比较语境里的数字是阈值,不是「该周期概率等于它」。「三档概率均高于 0.5」要表达这个
+// 正确意思就必然写 0.5,拦下它模型第 2/3 轮只会原样重犯 ⇒ 每天降级。溯源仍由 C4 管。
+// 比较词与数字之间会夹名词(实测「高于对称值 0.5」),故放宽到若干非句读字符;
+// 上界防的是「概率为 0.42，高于均值」这种跨子句误豁免 —— 那里还隔着逗号,本就切断了
+const COMPARATOR_BEFORE_RE = /(高于|低于|大于|小于|超过|不足|不到|超出|至少|至多|不低于|不高于|突破|跌破)[^。，,；;]{0,6}$/;
+const COMPARATOR_AFTER_RE = /^[\s]*(以上|以下|上方|下方|之上|之下)/;
 // 全角数字对 `\d` 完全不可见:实测同一个编造值,`51737` 被 C4 拦下、`５１７３７` 零 findings,
 // 一处编码问题同时关掉 C4 整个溯源层与产品红线。故在抽取数字的入口统一归一化,
 // 各 check 里各写一遍就又是一份清单。`０-９．％` 与半角差恒为 0xFEE0 且长度 1:1,
@@ -321,7 +327,11 @@ function checkC7(doc, ctx) {
   const allowed = [];
   for (const h of HORIZONS) {
     const stat = byH[h];
-    if (!stat || stat.insufficient_sample) continue;
+    if (!stat) continue;
+    // n 是样本量不是指标:设计要第五段如实写「样本不足」,而 C4 认它、C7 不认
+    // 就等于两个自检对同一个数字给出相反判断,模型无路可走(部署首日实测)
+    if (Number.isFinite(stat.n)) allowed.push(stat.n);
+    if (stat.insufficient_sample) continue;
     deepNumbers(stat.final, allowed);
     deepNumbers(stat.baseline, allowed);
     deepNumbers(stat.naive, allowed);
@@ -591,8 +601,11 @@ function checkC14(doc) {
     if (!sent.includes('概率')) continue;
     const target = matchHorizonKeyword(sent);
     const cands = target ? [target] : HORIZONS;
+    const norm = stripDates(normalizeDigits(sent));
     for (const num of extractNumbers(sent)) {
       if (!num.isPercent && !(num.raw.includes('.') && num.numeric >= 0 && num.numeric <= 1)) continue;
+      if (COMPARATOR_BEFORE_RE.test(norm.slice(0, num.index))
+        || COMPARATOR_AFTER_RE.test(norm.slice(num.index + num.raw.length))) continue;
       const value = num.isPercent ? num.numeric / 100 : num.numeric;
       const ok = cands.some((h) => within(value, probOf(h), 0.0005, 0.001));
       if (!ok) out.push(findingOf('C14', `「${sent.trim()}」`, '概率提及须等于 JSON 中对应周期的 prob_up', num.raw));

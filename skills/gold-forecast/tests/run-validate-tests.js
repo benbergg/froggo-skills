@@ -138,6 +138,50 @@ test('T18: C14 正文数字与 JSON 块不一致被拦', () => {
   assert.ok(validate(doc, CTX()).findings.some((f) => f.check === 'C14'));
 });
 
+test('T18b: 比较语境里的概率阈值不算取值声明,但断言式取值照拦', () => {
+  // 首次部署演练实测:M3 写「三档概率均高于 0.5」被 C14 判成「概率提及 ≠ prob_up」,
+  // 而要表达这个正确意思就必然写 0.5 ⇒ 第 2/3 轮原样重犯 ⇒ 每天降级、每天多付 3 次模型费。
+  const { checkC14 } = require('../references/scripts/validate');
+  const base = parseForecast(md('forecast-good.md'));
+  const withSent = (s) => { const d = JSON.parse(JSON.stringify(base)); d.sections['一'] = s; return d; };
+  const n = (d) => checkC14(d).filter((f) => f.check === 'C14').length;
+
+  assert.equal(n(withSent('三档概率均高于 0.5，方向全为 up。')), 0, '比较语境是阈值,不是在声称某周期的概率');
+  assert.equal(n(withSent('短期上涨概率不足 0.90。')), 0, '同上,且真伪由 C4 溯源管');
+  assert.ok(n(withSent('短期上涨概率为 0.42。')) > 0, '断言式取值与 JSON 不符必须照拦');
+});
+
+test('T18c: 比较词与数字之间夹了名词仍算比较语境', () => {
+  // r3 实测:被 T18b 拦下后模型改写成「高于对称值 0.5」,只允许「约/近/空白」的正则就漏了
+  const { checkC14 } = require('../references/scripts/validate');
+  const base = parseForecast(md('forecast-good.md'));
+  const withSent = (s) => { const d = JSON.parse(JSON.stringify(base)); d.sections['一'] = s; return d; };
+  assert.equal(checkC14(withSent('三档概率均高于对称值 0.5，方向全为 up。')).length, 0);
+  assert.ok(checkC14(withSent('短期上涨概率为 0.42。')).length > 0, '断言式取值仍须照拦');
+});
+
+test('T18d: 样本不足时样本量 n 可引用,只有指标不可', () => {
+  // 部署首日实测:模型如实写「样本量 n 均为 0…因此无法提供胜率/Brier/Winkler」被 C7 拦,
+  // 而这正是设计要第五段做的事。n 不是指标;且 promptScorecard 已把它送进 prompt、
+  // C4 认它 —— 两个自检对同一个数字给出相反判断,模型无路可走。
+  const { checkC7 } = require('../references/scripts/validate');
+  const base = parseForecast(md('forecast-good.md'));
+  const ctx = { ...CTX(), scorecard: { by_horizon: {
+    short: { insufficient_sample: true, n: 0, final: null, baseline: null, naive: null } } } };
+  const withSent = (s) => { const d = JSON.parse(JSON.stringify(base)); d.sections['五'] = s; return d; };
+  assert.equal(checkC7(withSent('短期样本量 n 为 0，无法提供胜率、Brier 或 Winkler。'), ctx).length, 0);
+  assert.ok(checkC7(withSent('短期胜率为 0.63，Brier 0.21。'), ctx).length > 0,
+    '样本不足却报出指标数字仍须照拦');
+
+  // 上一条在 final:null 的夹具下对「守卫还在不在」无判别力 —— 删掉 insufficient_sample
+  // 那行照样全绿。反向控制必须让被放宽的那一侧真的有数字可漏。
+  const ctxWithStats = { ...CTX(), scorecard: { by_horizon: {
+    short: { insufficient_sample: true, n: 3, final: { dir_rate: 0.63 }, baseline: null, naive: null } } } };
+  assert.ok(checkC7(withSent('短期胜率为 0.63。'), ctxWithStats).length > 0,
+    'insufficient_sample 的周期,其指标即使算得出来也不可引用');
+  assert.equal(checkC7(withSent('短期样本量 n 为 3。'), ctxWithStats).length, 0);
+});
+
 test('T19: findings 带可定位的 locator', () => {
   const f = findings('forecast-c4-bad.md').find((x) => x.check === 'C4');
   assert.ok(f.locator && f.locator.length > 0, 'locator 不精确等于让模型重猜');
