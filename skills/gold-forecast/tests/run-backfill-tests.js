@@ -165,6 +165,22 @@ test('T12: --only 指定不存在的序列名时报错退出,不静默产出 0/0
   r.cleanup();
 });
 
+test('T12b: --only 接受逗号分隔,拼错的那个仍被点名', () => {
+  const plan = B.applyOnly(B.buildPlan({ since: '2021-07-01', until: '2026-07-28' }),
+    'lbma_pm_usd, cftc_gold');
+  assert.deepEqual(plan.map((p) => p.series).sort(), ['cftc_gold', 'lbma_pm_usd'],
+    '写成一串时若整串当单个名字比,会一条都匹配不上');
+  const r = runCli({
+    script: 'backfill.js',
+    args: ['--history', 'hist', '--since', '2021-07-01', '--until', '2026-07-28',
+      '--only', 'lbma_pm_usd,not_a_series'],
+  });
+  assert.notEqual(r.code, 0);
+  assert.ok(r.stderr.includes('not_a_series'));
+  assert.equal(r.stderr.includes('未知序列名: lbma_pm_usd'), false, '只该点名拼错的那个');
+  r.cleanup();
+});
+
 // —— MF-1:FRED 回填的响应形态断层 ——
 // 原先只断言 URL 拼对了(output_type=2),没有任何测试把回来的东西喂进解析层。
 // 「参数拼对了」与「回来的东西解析对了」之间的断层让整库落成 null 而全程 exit 0。

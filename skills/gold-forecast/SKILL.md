@@ -36,6 +36,12 @@ description: "黄金交易预测日报。确定性脚本从 LBMA/FRED/CFTC/东�
 
 凭据一律由环境提供,本 skill 的任何文件里都不写真实值。
 
+> [!important] `~/.config/gold-forecast/env` 每行必须带 `export`
+> 下文所有命令都用 `. ~/.config/gold-forecast/env;` 前缀载入凭据。`.`(source)只把
+> `KEY=value` 设成**当前 shell 的变量**,不导出 —— `node` 是子进程,`process.env` 里读不到。
+> 首次部署实测:回填的四条 FRED 序列全部 `✗ FRED_API_KEY 未设置`,而 `cat` 那个文件
+> 明明看得见 key。写成 `export KEY=value`。
+
 ## 入口
 
 ```bash
@@ -122,8 +128,17 @@ ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/backtest.js
   --out ~/.local/state/gold-forecast/params.json'
 
 # 5. 首次演练,确认各步产物齐备后再去掉 --dry-run
-ssh <host> 'node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dry-run'
+ssh <host> '. ~/.config/gold-forecast/env; node ~/.openclaw/skills/gold-forecast/references/scripts/run.js --dry-run'
 ```
+
+> [!warning] 第 3 步会把东财打到限流,重跑要留冷却
+> 回填对 5 个东财序列各拉 5000 条 K 线。首次部署实测:前 2 条成功,后 3 条起
+> `fetch failed`;补跑时 `518880` 连挂 6 次才成。签名是 **ICMP 0% 丢包 84ms,
+> 而 HTTPS 在 0.5s 内被拒**(`http=000`,不是超时),同机访问其他站点正常
+> —— 应用层按 IP 拒连,不是网络故障。
+> 补跑用 `--only`(支持逗号分隔),**每次之间隔几秒**;连续失败就停手等十几分钟,
+> 继续重试只会把冷却时间拉长。日常 `collect-facts` 每序列只拉 60 条、总共 5 个请求,
+> 负载与回填不是一个量级。
 
 ### 第 3b 步的判据(两条都必须成立)
 

@@ -27,8 +27,12 @@ function pendingSeries(store, plan) {
   return plan.filter((p) => !meta[p.series] || meta[p.series].until < p.range.until);
 }
 
+// 逗号分隔:重跑失败序列时逐个敲太啰嗦,而写成一串会撞上「未知序列名」而全不跑
+const parseOnly = (only) => (only ? String(only).split(',').map((s) => s.trim()).filter(Boolean) : null);
+
 function applyOnly(plan, only) {
-  return only ? plan.filter((p) => p.series === only) : plan;
+  const want = parseOnly(only);
+  return want ? plan.filter((p) => want.includes(p.series)) : plan;
 }
 
 // 逐序列抓取实现,按 kind 分派;测试注入受控成功/失败实现以避免联网。
@@ -89,9 +93,10 @@ async function main() {
     return;
   }
   const fullPlan = buildPlan({ since: args.since, until: args.until });
-  if (args.only && !fullPlan.some((p) => p.series === args.only)) {
+  const unknown = (parseOnly(args.only) || []).filter((s) => !fullPlan.some((p) => p.series === s));
+  if (unknown.length) {
     // 拼错序列名不该悄悄产出 0/0——那看起来像"跑完了",实际什么都没做。
-    console.error(`未知序列名: ${args.only}；合法序列名: ${fullPlan.map((p) => p.series).join(', ')}`);
+    console.error(`未知序列名: ${unknown.join(', ')}；合法序列名: ${fullPlan.map((p) => p.series).join(', ')}`);
     process.exit(1);
     return;
   }
