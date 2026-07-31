@@ -2,6 +2,7 @@
 
 const crypto = require('node:crypto');
 const { DISCLAIMER_TEXT } = require('./lib/disclaimer');
+const { SECTION_TITLES } = require('./forecast-parser');
 const { findingTargets, findingEvidence, normalizePriorFindings } = require('./lib/prompt-payload');
 
 const MAX_BYTES = 100 * 1024;
@@ -159,12 +160,24 @@ function buildPrompt({ facts, baseline, scorecard, lessons, contextTags, news = 
   return { text: render(), bytes, blocks };
 }
 
+// 契约比自检严一档是安全方向:这里要求逐字,C15 只查前缀,故只会少拦不会误拦。
+const SECTION_SPEC = [
+  ['一', '三期方向、概率、区间,以及相对量化基线的调整幅度与理由'],
+  ['二', '价格、宏观、持仓、新闻快照;标注观测日与可得日,并写明缺失项'],
+  ['三', '投机/商业/小散净持仓与分位、周变化、内外价差'],
+  ['四', '逐条论据,每条溯源到第二、三段的具体字段'],
+  ['五', '已结算预测的对错、三方对照、覆盖率与 abandoned 计数、新增与退休的教训'],
+  ['六', '用波动率区间自行推算止损距离的方法说明,不给具体数值'],
+  ['七', '固定文案,见下方免责声明'],
+].map(([n, desc]) => `   ${n}、${SECTION_TITLES[n]} —— ${desc}`).join('\n');
+
 const CONTRACT = `## 任务
 根据以下事实撰写黄金交易预测报告。
 
 输出必须由两部分组成:
 1. 文件开头一个围栏 JSON 块(\`\`\`json ... \`\`\`),承载全部可判定字段
-2. 其后为七段中文正文,章节标题用「一、」至「七、」
+2. 其后为七段中文正文,章节标题必须逐字使用下列七个,顺序不得调换:
+${SECTION_SPEC}
 
 JSON 块字段:
 { "horizons": { "short": { "prob_up": 0.58, "direction": "up", "low": 3987, "high": 4059,
@@ -181,6 +194,7 @@ JSON 块字段:
   两值之差、百分比变化、盎司克换算(÷31.1035)、汇率换算、分位数取整得出,容差 0.5%
 - 标记为 missing 的字段,正文不得出现相关论据
 - 胜率/Brier/Winkler 必须直接引用统计校准中的数值,不得自行计算
+- 正文数字小数位不得超过 4 位;分位数、概率、z 值一律先舍入再写,不得直抄完整浮点位数
 - 新闻必须带链接,且链接须来自新闻线索块
 - 不得给出仓位、杠杆、买卖点位、止损价
 - 第六段只讲「怎么用这个区间」的方法,不得出现任何具体数量:阿拉伯数字、中文数量

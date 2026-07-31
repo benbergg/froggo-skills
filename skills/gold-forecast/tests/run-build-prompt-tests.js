@@ -390,3 +390,19 @@ test('T-P3: scorecard 没有该 id ⇒ 按 trials=0 排,排在已检验的前面
   const sel = selectLessons(lessons, ['t'], { B: { trials: 3 } });
   assert.deepEqual(sel.map((l) => l.id), ['A', 'B']);
 });
+
+// 首日事故:契约只写了「七段中文正文,标题用一、至七、」,段主题一个字没提,
+// 于是每跑一次主题换一套而 C1 只查齐全。期望值取自 SECTION_TITLES 而非手抄字面量 ——
+// 手抄一份就是把「两处各写一份」的漂移风险搬进测试。
+test('T34: 契约必须逐字给出设计 8.1 的七段标题', () => {
+  const { SECTION_TITLES, NUMERALS } = require('../references/scripts/forecast-parser');
+  const p = P.buildPrompt(BASE_ARGS).text;
+  for (const n of NUMERALS) {
+    assert.ok(p.includes(`${n}、${SECTION_TITLES[n]}`), `契约缺第${n}段标题「${SECTION_TITLES[n]}」`);
+  }
+});
+
+test('T35: 契约须约束小数位,否则 JSON 浮点原样抄进正文无人拦', () => {
+  const p = P.buildPrompt(BASE_ARGS).text;
+  assert.match(p, /小数位不得超过\s*4\s*位/);
+});

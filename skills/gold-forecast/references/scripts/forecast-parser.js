@@ -4,6 +4,19 @@
 // 「## 八、」做右边界,永远解析失败——免责声明段(C12 依赖)因此在真实报告里必挂。
 const NUMERALS = ['一', '二', '三', '四', '五', '六', '七'];
 
+// 段主题(设计 8.1)。住在这里而非各自写一份:build-prompt 的契约与 validate 的 C15
+// 一旦漂移,就是「契约要 A、自检要 B」,模型怎么写都被拦。首日实测契约根本没写段主题,
+// 于是七段主题每跑一次换一套,C1 只查齐全查不出来。
+const SECTION_TITLES = {
+  一: '今日结论',
+  二: '市场事实',
+  三: '对手盘结构',
+  四: '判断依据',
+  五: '上期结算与反思',
+  六: '如何使用本区间',
+  七: '免责声明',
+};
+
 // 唯一解析入口:validate 与 render 共用,杜绝「渲染认、自检不认」的错配。
 function parseForecast(md) {
   const m = md.match(/```json\s*([\s\S]*?)```/);
@@ -28,4 +41,4 @@ function parseForecast(md) {
   return { json, sections, headings, raw: md };
 }
 
-module.exports = { parseForecast, NUMERALS };
+module.exports = { parseForecast, NUMERALS, SECTION_TITLES };

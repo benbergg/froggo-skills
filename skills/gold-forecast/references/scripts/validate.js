@@ -1,9 +1,9 @@
 'use strict';
-// C1-C14 自检:只出 findings,不删任何产物(删除属 run.js 编排职责,见设计 6.2/3.5)。
+// C1-C16 自检:只出 findings,不删任何产物(删除属 run.js 编排职责,见设计 6.2/3.5)。
 const fs = require('node:fs');
 const path = require('node:path');
 const { atomicWriteJSON } = require('./lib/atomic-write');
-const { parseForecast } = require('./forecast-parser');
+const { parseForecast, SECTION_TITLES } = require('./forecast-parser');
 const { DISCLAIMER_TEXT, DISCLAIMER_REQUIRED_PHRASES, REDLINE_WORDS,
   REDLINE_SELF_WORDS, REDLINE_FLOW_WORDS, REDLINE_DIRECTIVE_MARKERS,
   REDLINE_DESCRIPTIVE_SUBJECTS, REDLINE_NEGATION_MARKERS, REDLINE_COMPOUNDS,
@@ -18,6 +18,8 @@ const C3_K_HI = 2.0;
 const C9_PROB_THRESHOLD = 0.08;
 const C9_CENTER_FACTOR = 0.5;
 const C4_TOL_REL = 0.005;
+// 4 位的舍入误差 ≤5e-5,远在 C4 的 0.5% 与 C14 的 0.001 绝对下限之内,不会打架
+const C16_MAX_DECIMALS = 4;
 const OZ_TO_GRAM = 31.1035;
 const COUNTERPARTY_GROUPS = ['commercial', 'noncommercial', 'nonreportable'];
 const LESSON_METRICS = ['range', 'brier', 'dir'];
@@ -638,9 +640,40 @@ function checkC14(doc) {
   return out;
 }
 
+// ---- C15: 段标题须是设计 8.1 的七个,防「七段齐全但各讲各的」 ----
+function checkC15(doc) {
+  const out = [];
+  for (const s of SECTIONS) {
+    // 缺段归 C1;这里只管解析到了却换了主题的
+    if (!doc.sections[s]) continue;
+    const got = (doc.headings[s] || '').trim();
+    // 只查前缀:「今日结论(2026-07-31)」这类尾注无害,拦的是标题换了主题
+    if (!got.startsWith(SECTION_TITLES[s])) {
+      out.push(findingOf('C15', `第${s}段标题`, `须以「${SECTION_TITLES[s]}」开头`, got || '空'));
+    }
+  }
+  return out;
+}
+
+// ---- C16: 正文数字小数位上限,防直抄 JSON 浮点 ----
+function checkC16(doc) {
+  const out = [];
+  for (const s of SECTIONS) {
+    for (const num of extractNumbers(doc.sections[s] || '')) {
+      // 首日实测「spec_pctile 为 0.37055837563451777」,17 位原样抄进报告
+      const frac = (num.raw.replace(/%$/, '').split('.')[1] || '');
+      if (frac.length > C16_MAX_DECIMALS) {
+        out.push(findingOf('C16', `第${s}段:「${num.raw}」`, `小数位不得超过 ${C16_MAX_DECIMALS} 位`, `${frac.length} 位`));
+      }
+    }
+  }
+  return out;
+}
+
 const CHECKS = [
   checkC1, checkC2, checkC3, checkC4, checkC5, checkC6, checkC7,
   checkC8, checkC9, checkC10, checkC11, checkC12, checkC13, checkC14,
+  checkC15, checkC16,
 ];
 
 function validate(doc, ctx) {
@@ -702,7 +735,8 @@ module.exports = {
   validate,
   checkC1, checkC2, checkC3, checkC4, checkC5, checkC6, checkC7,
   checkC8, checkC9, checkC10, checkC11, checkC12, checkC13, checkC14,
-  C3_K_LO, C3_K_HI, C9_PROB_THRESHOLD, C9_CENTER_FACTOR, DISCLAIMER_TEXT,
+  checkC15, checkC16,
+  C3_K_LO, C3_K_HI, C16_MAX_DECIMALS, C9_PROB_THRESHOLD, C9_CENTER_FACTOR, DISCLAIMER_TEXT,
   // 仅供测试:归一化是「数字提取入口」这一层的性质,从各 check 外面测不到它只有一处
   extractNumbers, normalizeDigits, chineseQuantities,
 };

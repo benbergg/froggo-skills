@@ -625,3 +625,41 @@ test('T44: 第六段放过的只有设计要求它讲的那三个概念,其余�
     assert.ok(f.some((x) => x.check === 'C12'), `第六段的无数字操作指令未被拦: ${s}`);
   }
 });
+
+// 首日真实产出的段结构:七段齐全、C1 全绿,但一二三段写成短/中/长期,
+// 第五段挂「宏观与日历背景」的名、写统计校准的实,设计 8.1 的五个主题全丢。
+test('T53: C15 段标题换主题被拦,locator 指到具体段', () => {
+  const doc = parseForecast(md('forecast-good.md').replace('## 五、上期结算与反思', '## 五、宏观与日历背景'));
+  const f = validate(doc, CTX()).findings.filter((x) => x.check === 'C15');
+  assert.equal(f.length, 1, JSON.stringify(f));
+  assert.match(f[0].locator, /第五段/);
+});
+
+test('T54: C15 只查前缀,标题带尾注不误拦', () => {
+  const doc = parseForecast(md('forecast-good.md').replace('## 一、今日结论', '## 一、今日结论(2026-07-31)'));
+  assert.equal(validate(doc, CTX()).findings.some((x) => x.check === 'C15'), false,
+    '判据若写成全等,尾注就成了每天必触发的误拦');
+});
+
+test('T55: 缺段只由 C1 报,C15 不跟着重复报一遍', () => {
+  const broken = md('forecast-good.md').replace(/^## 六、[\s\S]*?(?=^## 七、)/m, '');
+  const f = validate(parseForecast(broken), CTX()).findings;
+  assert.ok(f.some((x) => x.check === 'C1'));
+  assert.equal(f.some((x) => x.check === 'C15'), false);
+});
+
+test('T56: C16 拦直抄的完整浮点(首日实测 spec_pctile 17 位)', () => {
+  const doc = parseForecast(md('forecast-good.md')
+    .replace('Brier误差0.2377', '投机持仓分位为0.37055837563451777，Brier误差0.2377'));
+  const f = validate(doc, CTX()).findings.filter((x) => x.check === 'C16');
+  assert.equal(f.length, 1, JSON.stringify(f));
+  assert.match(f[0].locator, /第五段/);
+});
+
+// 阈值两侧都钉住:只测一侧的话,把上限调宽或调窄各有一半改动测不出来
+test('T57: C16 阈值两侧,4 位放行、5 位被拦', () => {
+  const at = parseForecast(md('forecast-good.md').replace('Brier误差0.2377', '分位0.3706，Brier误差0.2377'));
+  assert.equal(validate(at, CTX()).findings.some((x) => x.check === 'C16'), false, '4 位不得被拦');
+  const over = parseForecast(md('forecast-good.md').replace('Brier误差0.2377', '分位0.37056，Brier误差0.2377'));
+  assert.ok(validate(over, CTX()).findings.some((x) => x.check === 'C16'), '5 位必须被拦');
+});
