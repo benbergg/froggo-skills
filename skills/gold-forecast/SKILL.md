@@ -190,6 +190,17 @@ logistic 永远拿不到系数。现在形态不符会让该序列进 `failed` �
 > 而跑完整条流水线,直到某天成功为止。这是有意的自愈行为(故障修好后无需人工补跑),
 > 代价是每次重跑都真调一次 M3。连挂多天时留意这笔开销,必要时先停掉 cron 再排查。
 
+### 教训库
+
+`lessons.json` 由 `commit.js` 在入库事务里写,与 `predictions.json` 同成同败。
+
+- `trials` / `hits` **不在这个文件里** —— 它们是 scorecard 对 predictions 的投影,
+  看 `scorecard.json` 的 `lessons` 段。改 `lessons.json` 里的 trials 不会有任何效果。
+- 每日最多进 2 条,active 满 20 条后拒收新教训并打 WARN。看到
+  `active 已达上限` 时先查是不是退休没生效(冷门 tag 下的教训攒不够 5 次 trials
+  会永久占位),而不是直接调大上限。
+- status 单向流转,不复活。误判退休的教训要重新提出为新 id。
+
 ## Step 4 写作规范摘要
 
 完整契约在 `references/scripts/build-prompt.js` 的 `CONTRACT` 常量里,**判定在
@@ -303,10 +314,7 @@ openclaw 的 fallback 链在本系统里是污染源,别的模型跑出的预测
    `prob_up=0.58 时须为 up`,那个 `0.58` 来自模型上轮的输出而非事实源。裁定为留:
    它来自 JSON 块、已由 C1/C2/C3/C14 逐值管辖,当轮 `doc.json` 同名值本就在池里,
    回显不引入新能力。
-4. **`lessons.json` 没有写入端 ⇒ 设计 §5.9 的反思累积机制当前是死的。**
-   `build-prompt` 会读它、`scorecard` 会统计它的命中率,但没有任何代码把模型产出的
-   `new_lessons` 落盘。文件不存在时全链路照常工作(选出空数组),所以这件事**不会
-   以任何方式报错**。待独立 task。
+4. ~~（已实现，见 [[20260731-黄金教训库写入端-v1-设计文档]]）~~
 5. **`C3_K_LO` / `C3_K_HI` 仍是占位值**(0.5 / 2.0),待回测枚举宽度倍数后标定。
 6. **`validateParams` 不校验 `params.features` 与系数长度。** `backtest.buildParams`
    专门把 `features: MODEL_FEATURES` 写进 `params.json` —— 那就是 train/serve 契约本身 ——
